@@ -7,15 +7,37 @@ use crate::{Error, Result};
 
 const DATA_DIR_NAME: &str = ".cursor-byok-v3";
 const DATABASE_FILE_NAME: &str = "cursor-byok.db";
+const RULES_DIR_NAME: &str = "rules";
+const COMPACTION_PROMPT_FILE_NAME: &str = "compaction.md";
+const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompt/cursor/compaction/prompt.md");
 
 pub fn managed_data_dir() -> Result<PathBuf> {
     let home_dir = dirs::home_dir()
         .ok_or_else(|| Error::Config("cannot resolve user home directory".into()))?;
+    managed_data_dir_in(&home_dir)
+}
+
+pub fn compaction_prompt_path() -> Result<PathBuf> {
+    let data_dir = managed_data_dir()?;
+    compaction_prompt_path_in(&data_dir)
+}
+
+fn managed_data_dir_in(home_dir: &std::path::Path) -> Result<PathBuf> {
     let data_dir = home_dir.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir)?;
     #[cfg(unix)]
     fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700))?;
     Ok(data_dir)
+}
+
+fn compaction_prompt_path_in(data_dir: &std::path::Path) -> Result<PathBuf> {
+    let rules_dir = data_dir.join(RULES_DIR_NAME);
+    fs::create_dir_all(&rules_dir)?;
+    let path = rules_dir.join(COMPACTION_PROMPT_FILE_NAME);
+    if !path.exists() {
+        fs::write(&path, DEFAULT_COMPACTION_PROMPT)?;
+    }
+    Ok(path)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,11 +147,7 @@ fn default_database_url() -> Result<String> {
 
 #[cfg(test)]
 fn database_url_in(home_dir: &std::path::Path) -> Result<String> {
-    let data_dir = home_dir.join(DATA_DIR_NAME);
-    fs::create_dir_all(&data_dir)?;
-
-    #[cfg(unix)]
-    fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700))?;
+    let data_dir = managed_data_dir_in(home_dir)?;
 
     database_url_for_dir(&data_dir)
 }
@@ -145,6 +163,20 @@ fn database_url_for_dir(data_dir: &std::path::Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_prompt_is_created_once_with_the_default_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = compaction_prompt_path_in(directory.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            DEFAULT_COMPACTION_PROMPT
+        );
+
+        fs::write(&path, "custom prompt").unwrap();
+        assert_eq!(compaction_prompt_path_in(directory.path()).unwrap(), path);
+        assert_eq!(fs::read_to_string(path).unwrap(), "custom prompt");
+    }
 
     #[tokio::test]
     async fn managed_database_supports_home_paths_with_spaces() {

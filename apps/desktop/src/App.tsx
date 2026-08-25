@@ -6,6 +6,7 @@ import { AppFrame } from "./layouts/AppFrame";
 import { AppLayout } from "./layouts/AppLayout";
 import { CallsPage } from "./pages/CallsPage";
 import { CallDetailsPage } from "./pages/CallDetailsPage";
+import { CompactionConfigPage } from "./pages/CompactionConfigPage";
 import { CursorSettingsPage } from "./pages/CursorSettingsPage";
 import { HomePage } from "./pages/HomePage";
 import { ProvidersPage } from "./pages/ProvidersPage";
@@ -25,6 +26,7 @@ export function App() {
               <Route path="providers" element={<ProvidersPage />} />
               <Route path="calls" element={<CallsPage />} />
               <Route path="harness/cursor" element={<CursorSettingsPage />} />
+              <Route path="config" element={<CompactionConfigPage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

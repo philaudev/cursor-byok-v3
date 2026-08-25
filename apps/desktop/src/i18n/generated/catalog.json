@@ -465,6 +465,23 @@
         }
       ]
     },
+    "148d195e21b05db5": {
+      "source": "配置",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "layouts/AppLayout.tsx",
+          "line": 79,
+          "column": 45
+        },
+        {
+          "file": "pages/CompactionConfigPage.tsx",
+          "line": 20,
+          "column": 30
+        }
+      ]
+    },
     "15d76f1c211cc140": {
       "source": "留空表示保留当前 API Key。",
       "kind": "text",
@@ -815,7 +832,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 224,
+          "line": 225,
           "column": 14
         }
       ]
@@ -854,7 +871,7 @@
         },
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 225,
+          "line": 226,
           "column": 19
         },
         {
@@ -1005,7 +1022,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 226,
+          "line": 227,
           "column": 20
         }
       ]
@@ -1413,7 +1430,7 @@
         },
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 197,
+          "line": 198,
           "column": 67
         }
       ]
@@ -1677,7 +1694,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 230,
+          "line": 231,
           "column": 11
         }
       ]
@@ -1789,7 +1806,7 @@
       "refs": [
         {
           "file": "api.ts",
-          "line": 290,
+          "line": 295,
           "column": 43
         }
       ]
@@ -1945,6 +1962,18 @@
         }
       ]
     },
+    "6c6e2f2bcc21ff31": {
+      "source": "当对话接近模型上下文上限时，Cursor BYOK 使用此提示词生成会话摘要。保存文件后的下一次压缩会自动使用新内容。",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/CompactionConfigPage.tsx",
+          "line": 26,
+          "column": 15
+        }
+      ]
+    },
     "6d1876364ac6457d": {
       "source": "代理方式",
       "kind": "text",
@@ -2027,6 +2056,18 @@
         }
       ]
     },
+    "732f1c9ab8bcf646": {
+      "source": "打开配置文件",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/CompactionConfigPage.tsx",
+          "line": 24,
+          "column": 122
+        }
+      ]
+    },
     "7392e20d61abaa07": {
       "source": "额外保存完整请求和流响应；默认只保存时间、状态与用量。",
       "kind": "text",
@@ -2082,7 +2123,7 @@
       "refs": [
         {
           "file": "api.ts",
-          "line": 285,
+          "line": 290,
           "column": 43
         }
       ]
@@ -2120,7 +2161,7 @@
       "refs": [
         {
           "file": "App.tsx",
-          "line": 52,
+          "line": 54,
           "column": 19
         }
       ]
@@ -2388,7 +2429,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 232,
+          "line": 233,
           "column": 16
         }
       ]
@@ -2968,12 +3009,12 @@
         },
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 246,
+          "line": 247,
           "column": 64
         },
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 246,
+          "line": 247,
           "column": 125
         }
       ]
@@ -3219,7 +3260,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 237,
+          "line": 238,
           "column": 24
         }
       ]
@@ -3631,7 +3672,7 @@
       "refs": [
         {
           "file": "layouts/AppLayout.tsx",
-          "line": 183,
+          "line": 184,
           "column": 54
         }
       ]
@@ -3669,6 +3710,18 @@
           "file": "components/cursor/CursorModelEditor.tsx",
           "line": 77,
           "column": 42
+        }
+      ]
+    },
+    "ddc98c965df9280b": {
+      "source": "请在桌面应用中打开压缩提示词配置",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "api.ts",
+          "line": 285,
+          "column": 43
         }
       ]
     },
@@ -4111,6 +4164,18 @@
           "file": "components/ui/FormControls.tsx",
           "line": 15,
           "column": 99
+        }
+      ]
+    },
+    "f31013f459bcdcdf": {
+      "source": "对话压缩提示词",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/CompactionConfigPage.tsx",
+          "line": 24,
+          "column": 26
         }
       ]
     },

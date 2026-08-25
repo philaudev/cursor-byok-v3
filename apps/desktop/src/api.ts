@@ -281,6 +281,11 @@ export const api = {
   discoverCursorModels: (provider: ProviderSelection) => request<{ models: string[] }>("/harness/cursor/models/discover", { method: "POST", body: JSON.stringify({ provider }) }),
   cursorHarness: () => request<CursorHarnessStatus>("/harness/cursor/status"),
   initializeCursorCa: () => request<CursorHarnessStatus>("/harness/cursor/ca/initialize", { method: "POST" }),
+  openCompactionPrompt: async () => {
+    if (!packagedDesktop) throw new Error(t("请在桌面应用中打开压缩提示词配置"));
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_compaction_prompt");
+  },
   openCursorCaInstallTerminal: async (command: string) => {
     if (!packagedDesktop) throw new Error(t("请在桌面应用中打开终端安装 CA"));
     const { invoke } = await import("@tauri-apps/api/core");

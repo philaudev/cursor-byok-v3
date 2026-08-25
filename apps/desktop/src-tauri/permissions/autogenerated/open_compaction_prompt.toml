@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-compaction-prompt"
+description = "Enables the open_compaction_prompt command without any pre-configured scope."
+commands.allow = ["open_compaction_prompt"]
+
+[[permission]]
+identifier = "deny-open-compaction-prompt"
+description = "Denies the open_compaction_prompt command without any pre-configured scope."
+commands.deny = ["open_compaction_prompt"]
