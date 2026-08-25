@@ -19,6 +19,10 @@ fn prepared(
             instructions: "test".into(),
             tools: Vec::new(),
         },
+        compaction_prompt: PromptSpec {
+            instructions: "compaction".into(),
+            tools: Vec::new(),
+        },
         initial_messages: Vec::new(),
         action: RunAction::Resume {
             pending_tool_round: None,

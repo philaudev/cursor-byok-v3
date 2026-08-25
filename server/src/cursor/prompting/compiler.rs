@@ -61,7 +61,14 @@ impl PromptCompiler {
 
     fn instructions(&self, mode: Mode, fake_model_name: &str) -> Result<String> {
         let prompt = match (mode, &self.compaction_prompt_path) {
-            (Mode::Compaction, Some(path)) => read_compaction_prompt(path)?,
+            (Mode::Compaction, Some(path)) => {
+                let prompt = read_compaction_prompt(path)?;
+                if prompt.trim().is_empty() {
+                    self.assets.mode(Mode::Compaction).prompt.clone()
+                } else {
+                    prompt
+                }
+            }
             _ => self.assets.mode(mode).prompt.clone(),
         };
         Ok(prompt.replace("{{FAKE_MODEL_NAME}}", fake_model_name))
@@ -138,6 +145,21 @@ mod tests {
         assert_eq!(
             render("before {{USER_QUERY}} after", &values).unwrap(),
             "before hello after"
+        );
+    }
+
+    #[test]
+    fn empty_runtime_compaction_prompt_uses_embedded_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("compaction.md");
+        fs::write(&path, " \n\t").unwrap();
+        let assets = PromptAssets::embedded().unwrap();
+        let expected = assets.mode(Mode::Compaction).prompt.clone();
+        let compiler = PromptCompiler::with_compaction_prompt_path(assets, path);
+
+        assert_eq!(
+            compiler.instructions(Mode::Compaction, "model").unwrap(),
+            expected.replace("{{FAKE_MODEL_NAME}}", "model")
         );
     }
 

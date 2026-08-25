@@ -23,6 +23,10 @@ async fn results_commit_adjacent_pairs_in_arrival_order() {
             instructions: String::new(),
             tools: Vec::new(),
         },
+        compaction_prompt: PromptSpec {
+            instructions: String::new(),
+            tools: Vec::new(),
+        },
         initial_messages: Vec::new(),
         action: RunAction::Resume {
             pending_tool_round: None,

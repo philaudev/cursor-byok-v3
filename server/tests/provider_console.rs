@@ -144,6 +144,10 @@ async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
                 instructions: String::new(),
                 tools: Vec::new(),
             },
+            compaction_prompt: PromptSpec {
+                instructions: String::new(),
+                tools: Vec::new(),
+            },
             initial_messages: Vec::new(),
             action: RunAction::Resume {
                 pending_tool_round: None,
