@@ -38,6 +38,15 @@ struct DesktopRuntime {
 }
 
 #[tauri::command]
+fn open_compaction_prompt() -> tauri::Result<()> {
+    let path = cursor_server::config::compaction_prompt_path()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    tauri_plugin_opener::open_path(path, None::<&str>)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
 fn open_terminal_with_command(command: String) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -129,7 +138,10 @@ pub fn run() {
         .init();
 
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_terminal_with_command])
+        .invoke_handler(tauri::generate_handler![
+            open_compaction_prompt,
+            open_terminal_with_command
+        ])
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             tray::show_main_window(app);
         }))

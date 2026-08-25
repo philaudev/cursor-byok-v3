@@ -13,7 +13,7 @@ import controls from "../components/ui/Controls.module.scss";
 import { Icon } from "../components/ui/Icon";
 import { Modal } from "../components/ui/Modal";
 import { TooltipTrigger } from "../components/ui/TooltipTrigger";
-import { flatColorAboutIcon, flatColorAreaChartIcon, flatColorOrganizationIcon, flatColorSalesPerformanceIcon, flatColorSettingsIcon, refreshIcon } from "../components/ui/icons";
+import { flatColorAboutIcon, flatColorAreaChartIcon, flatColorDataConfigurationIcon, flatColorOrganizationIcon, flatColorSalesPerformanceIcon, flatColorSettingsIcon, refreshIcon } from "../components/ui/icons";
 import { useMessage } from "../components/ui/message";
 import { VirtualList } from "../components/virtual/VirtualList";
 import { useI18n } from "../i18n/store";
@@ -27,7 +27,7 @@ type MenuItem =
   | { kind: "external"; id: string; label: string; icon: IconifyIcon | string }
   | { kind: "group"; label: string };
 
-const keptAlivePages = ["/", "/calls", "/providers", "/settings", "/harness/cursor"];
+const keptAlivePages = ["/", "/calls", "/providers", "/settings", "/harness/cursor", "/config"];
 const readAdStorageKey = "cursor-byok:read-ad-ids";
 const dismissedAdStorageKey = "cursor-byok:dismissed-ad-ids";
 const tutorialReadStorageKey = "cursor-byok:tutorial-read";
@@ -76,6 +76,7 @@ export function AppLayout() {
     { kind: "group", label: "Harness" },
     { kind: "page", path: "/settings", label: t("系统设置"), icon: flatColorSettingsIcon },
     { kind: "page", path: "/harness/cursor", label: t("Cursor 设置"), icon: cursorIconUrl },
+    { kind: "page", path: "/config", label: t("配置"), icon: flatColorDataConfigurationIcon },
   ];
 
   const openTutorial = useCallback(() => {

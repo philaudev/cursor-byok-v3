@@ -52,6 +52,7 @@ pub struct PreparedRun {
     pub kind: RunKind,
     pub model: ModelSpec,
     pub prompt: PromptSpec,
+    pub compaction_prompt: PromptSpec,
     pub initial_messages: Vec<CanonicalMessage>,
     pub action: RunAction,
     pub base_revision_id: RevisionId,

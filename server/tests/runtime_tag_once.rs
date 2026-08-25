@@ -19,6 +19,10 @@ async fn runtime_event_is_appended_exactly_once() {
             instructions: String::new(),
             tools: Vec::new(),
         },
+        compaction_prompt: PromptSpec {
+            instructions: String::new(),
+            tools: Vec::new(),
+        },
         initial_messages: Vec::new(),
         action: RunAction::Resume {
             pending_tool_round: None,

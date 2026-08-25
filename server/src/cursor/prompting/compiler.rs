@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     cursor::rules,
@@ -12,6 +14,7 @@ use super::{assets::runtime_expression, Mode, PromptAssets};
 #[derive(Clone)]
 pub struct PromptCompiler {
     assets: PromptAssets,
+    compaction_prompt_path: Option<PathBuf>,
     global_rules_dir: Option<PathBuf>,
 }
 
@@ -19,6 +22,15 @@ impl PromptCompiler {
     pub fn new(assets: PromptAssets) -> Self {
         Self {
             assets,
+            compaction_prompt_path: None,
+            global_rules_dir: None,
+        }
+    }
+
+    pub fn with_compaction_prompt_path(assets: PromptAssets, path: impl Into<PathBuf>) -> Self {
+        Self {
+            assets,
+            compaction_prompt_path: Some(path.into()),
             global_rules_dir: None,
         }
     }
@@ -26,7 +38,20 @@ impl PromptCompiler {
     pub fn with_global_rules_dir(assets: PromptAssets, directory: impl Into<PathBuf>) -> Self {
         Self {
             assets,
+            compaction_prompt_path: None,
             global_rules_dir: Some(directory.into()),
+        }
+    }
+
+    pub fn with_runtime_configuration(
+        assets: PromptAssets,
+        compaction_prompt_path: impl Into<PathBuf>,
+        global_rules_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            assets,
+            compaction_prompt_path: Some(compaction_prompt_path.into()),
+            global_rules_dir: Some(global_rules_dir.into()),
         }
     }
 
@@ -52,15 +77,25 @@ impl PromptCompiler {
             .display_name
             .as_deref()
             .unwrap_or(model.model_id.as_str());
-        let instructions = self
-            .assets
-            .mode(mode)
-            .prompt
-            .replace("{{FAKE_MODEL_NAME}}", fake_model_name);
         Ok(PromptSpec {
-            instructions: self.append_global_rules(instructions)?,
+            instructions: self.append_global_rules(self.instructions(mode, fake_model_name)?)?,
             tools,
         })
+    }
+
+    fn instructions(&self, mode: Mode, fake_model_name: &str) -> Result<String> {
+        let prompt = match (mode, &self.compaction_prompt_path) {
+            (Mode::Compaction, Some(path)) => {
+                let prompt = read_compaction_prompt(path)?;
+                if prompt.trim().is_empty() {
+                    self.assets.mode(Mode::Compaction).prompt.clone()
+                } else {
+                    prompt
+                }
+            }
+            _ => self.assets.mode(mode).prompt.clone(),
+        };
+        Ok(prompt.replace("{{FAKE_MODEL_NAME}}", fake_model_name))
     }
 
     fn append_global_rules(&self, mut instructions: String) -> Result<String> {
@@ -82,6 +117,15 @@ impl PromptCompiler {
         }
         tools
     }
+}
+
+fn read_compaction_prompt(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|error| {
+        Error::Config(format!(
+            "cannot read compaction prompt at {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn render(template: &str, values: &BTreeMap<&str, String>) -> Result<String> {
@@ -116,4 +160,52 @@ fn append_dynamic_tools(
         tools.push(tool);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn compaction_prompt_error_identifies_the_configured_file() {
+        let path = std::path::PathBuf::from("missing-compaction.md");
+        let error = read_compaction_prompt(&path).unwrap_err();
+        assert!(error.to_string().contains("missing-compaction.md"));
+    }
+
+    #[test]
+    fn render_replaces_runtime_variables() {
+        let values = BTreeMap::from([("USER_QUERY", "hello".to_string())]);
+        assert_eq!(
+            render("before {{USER_QUERY}} after", &values).unwrap(),
+            "before hello after"
+        );
+    }
+
+    #[test]
+    fn empty_runtime_compaction_prompt_uses_embedded_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("compaction.md");
+        fs::write(&path, " \n\t").unwrap();
+        let assets = PromptAssets::embedded().unwrap();
+        let expected = assets.mode(Mode::Compaction).prompt.clone();
+        let compiler = PromptCompiler::with_compaction_prompt_path(assets, path);
+
+        assert_eq!(
+            compiler.instructions(Mode::Compaction, "model").unwrap(),
+            expected.replace("{{FAKE_MODEL_NAME}}", "model")
+        );
+    }
+
+    #[test]
+    fn compaction_prompt_content_can_change_between_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("compaction.md");
+        fs::write(&path, "first").unwrap();
+        assert_eq!(read_compaction_prompt(&path).unwrap(), "first");
+        fs::write(&path, "second").unwrap();
+        assert_eq!(read_compaction_prompt(&path).unwrap(), "second");
+    }
 }

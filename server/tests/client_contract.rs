@@ -212,6 +212,10 @@ async fn prepared(store: &cursor_server::store::Store) -> PreparedRun {
             }],
         },
         initial_messages: vec![fixtures::user("user", "hello")],
+        compaction_prompt: PromptSpec {
+            instructions: "compaction".into(),
+            tools: Vec::new(),
+        },
         action: RunAction::Start,
         base_revision_id: root,
     }

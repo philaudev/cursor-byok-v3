@@ -34,9 +34,14 @@ impl App {
                 .listen_addr
                 .set_port(store.port_settings().await?.service_port);
         }
+        let compaction_prompt_path = crate::config::compaction_prompt_path()?;
         let global_rules_dir = crate::config::global_rules_dir()?;
         let assets = PromptAssets::embedded()?;
-        let compiler = PromptCompiler::with_global_rules_dir(assets, global_rules_dir);
+        let compiler = PromptCompiler::with_runtime_configuration(
+            assets,
+            compaction_prompt_path,
+            global_rules_dir,
+        );
         let provider = std::sync::Arc::new(ProviderRouter::new(
             store.clone(),
             config.provider_request_timeout,

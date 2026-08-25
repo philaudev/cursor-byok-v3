@@ -18,7 +18,6 @@ use super::{consume_model_cycle, ModelCycleFailure, RunFailure, RunOutcome};
 const COMPACTION_RESERVE_TOKENS: u64 = 10_000;
 const COMPACTION_OUTPUT_TOKENS: u64 = 4_096;
 const COMPACTION_FALLBACK_CHARS: usize = 12_000;
-const COMPACTION_INSTRUCTIONS: &str = "Summarize the conversation for the next model turn. Preserve goals, constraints, decisions, files, commands, errors, results, and unfinished work. Do not call tools. Return only the concise durable summary.";
 
 pub struct RunEngine {
     store: Store,
@@ -487,7 +486,7 @@ impl RunEngine {
             provider_call_index,
             request: crate::model::ModelRequest {
                 prompt: crate::model::PromptSpec {
-                    instructions: COMPACTION_INSTRUCTIONS.into(),
+                    instructions: prepared.compaction_prompt.instructions.clone(),
                     tools: Vec::new(),
                 },
                 model,

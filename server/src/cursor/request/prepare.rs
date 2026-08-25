@@ -161,8 +161,9 @@ pub(crate) async fn prepare(
     if subagents_disabled {
         checkpoint_prompt.tools.retain(|tool| tool.name != "Task");
     }
+    let compaction_prompt = compiler.prompt_spec(Mode::Compaction, &model, &[], false)?;
     let prompt = if compacting {
-        compiler.prompt_spec(Mode::Compaction, &model, &[], false)?
+        compaction_prompt.clone()
     } else {
         checkpoint_prompt.clone()
     };
@@ -290,6 +291,7 @@ pub(crate) async fn prepare(
             kind,
             model,
             prompt,
+            compaction_prompt,
             initial_messages,
             action,
             base_revision_id,

@@ -908,7 +908,10 @@ mod tests {
         assert_eq!(listed[0].api_key.as_deref(), Some("secret"));
         assert!(listed[0].has_api_key);
 
-        let without_key = ProviderEndpointInput { api_key: None, ..provider() };
+        let without_key = ProviderEndpointInput {
+            api_key: None,
+            ..provider()
+        };
         let empty = store.create_provider(&without_key).await.unwrap();
         assert_eq!(empty.api_key, None);
         assert!(!empty.has_api_key);
