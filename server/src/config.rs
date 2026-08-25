@@ -22,6 +22,10 @@ pub fn compaction_prompt_path() -> Result<PathBuf> {
     compaction_prompt_path_in(&data_dir)
 }
 
+pub fn global_rules_dir() -> Result<PathBuf> {
+    Ok(managed_data_dir()?.join(RULES_DIR_NAME).join("global"))
+}
+
 fn managed_data_dir_in(home_dir: &std::path::Path) -> Result<PathBuf> {
     let data_dir = home_dir.join(DATA_DIR_NAME);
     fs::create_dir_all(&data_dir)?;
