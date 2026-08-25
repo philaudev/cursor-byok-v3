@@ -173,7 +173,8 @@ async fn summarize_replaces_model_history_and_preserves_cursor_history() {
         .prompt
         .instructions
         .contains("compacting conversation history"));
-    assert_eq!(requests[1].history.len(), 2);
+    assert_eq!(requests[1].history.len(), 1);
+    assert_eq!(requests[1].history[0].role, Role::User);
     assert_eq!(requests[2].history.len(), 2);
     let ProjectedContent::Parts(summary_parts) = &requests[2].history[0].content else {
         panic!("first post-compaction message must be the summary")
