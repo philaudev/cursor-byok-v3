@@ -307,6 +307,126 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
     );
 }
 
+#[tokio::test]
+async fn input_only_usage_updates_context_usage() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let endpoint = store
+        .create_provider(&ProviderEndpointInput {
+            name: "Antigravity".into(),
+            provider_type: ProviderType::OpenAiChat,
+            base_url: "https://example.com/v1".into(),
+            api_key: None,
+            custom_headers: serde_json::json!({}),
+            extra_params: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+    let configured_model = store
+        .save_provider_model(
+            endpoint.provider_id,
+            &ProviderModelInput {
+                model_id: "antigravity".into(),
+                display_name: "Antigravity".into(),
+                endpoint_type: ProviderType::OpenAiChat,
+                request_url: String::new(),
+                enabled: true,
+                sort_order: 0,
+                context_window_tokens: None,
+                max_output_tokens: None,
+                reasoning_enabled: false,
+                reasoning_effort: None,
+                supports_image_generation: false,
+            },
+        )
+        .await
+        .unwrap();
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(vec![
+        ModelEvent::Start {
+            model_call_id: "ignored".into(),
+        },
+        ModelEvent::TextStart,
+        ModelEvent::TextDelta("hello".into()),
+        ModelEvent::TextEnd,
+        ModelEvent::Usage(Usage {
+            input_tokens: Some(218_000),
+            ..Default::default()
+        }),
+        ModelEvent::Done(FinishReason::Stop),
+    ]);
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = CursorSessionRegistry::new(
+        store,
+        Arc::new(provider),
+        PromptCompiler::new(assets),
+        Default::default(),
+    );
+    let handle = registry.get_or_create("request").await.unwrap();
+    let mut output = handle.subscribe();
+    handle
+        .command(CursorCommand::Append {
+            seqno: 0,
+            message: Box::new(client_run(
+                "conversation",
+                "hello",
+                &configured_model.model_hash,
+            )),
+        })
+        .await
+        .unwrap();
+
+    let mut append_seqno = 1;
+    let mut turn_usage = None;
+    let mut final_checkpoint = None;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            break;
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        match server.message {
+            Some(pb::agent_server_message::Message::KvServerMessage(kv)) => {
+                handle
+                    .command(CursorCommand::Append {
+                        seqno: append_seqno,
+                        message: Box::new(kv_ack(kv.id)),
+                    })
+                    .await
+                    .unwrap();
+                append_seqno += 1;
+            }
+            Some(pb::agent_server_message::Message::InteractionUpdate(update)) => {
+                if let Some(pb::interaction_update::Message::TurnEnded(usage)) = update.message {
+                    turn_usage = Some(usage);
+                }
+            }
+            Some(pb::agent_server_message::Message::ConversationCheckpointUpdate(checkpoint)) => {
+                if checkpoint.pending_tool_calls.is_empty() {
+                    final_checkpoint = Some(checkpoint);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let turn_usage = turn_usage.unwrap();
+    assert_eq!(turn_usage.input_tokens, Some(218_000));
+    assert_eq!(turn_usage.output_tokens, None);
+    assert_eq!(
+        final_checkpoint.unwrap().token_details.unwrap().used_tokens,
+        218_000
+    );
+}
+
 fn client_run(conversation_id: &str, text: &str, model_id: &str) -> pb::AgentClientMessage {
     let user = pb::UserMessage {
         text: text.into(),

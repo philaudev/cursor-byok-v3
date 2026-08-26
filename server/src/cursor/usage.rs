@@ -92,10 +92,18 @@ pub(crate) fn breakdown(
         estimates[SUMMARY] = summary.estimated_tokens as u64;
     }
     let easter_egg_tokens = 1_u64;
-    let categorized_tokens = used_tokens as u64;
-    fit_special_estimates(&mut estimates, categorized_tokens);
-    estimates[CONVERSATION] =
-        categorized_tokens.saturating_sub(estimates[..CONVERSATION].iter().sum::<u64>());
+    let local_total: u64 = estimates.iter().sum();
+    let effective_used_tokens = if used_tokens as u64 > 0 {
+        used_tokens as u64
+    } else {
+        local_total
+    };
+
+    if effective_used_tokens > 0 {
+        fit_special_estimates(&mut estimates, effective_used_tokens);
+        estimates[CONVERSATION] =
+            effective_used_tokens.saturating_sub(estimates[..CONVERSATION].iter().sum::<u64>());
+    }
 
     let mut categories = CATEGORIES
         .iter()
@@ -114,8 +122,10 @@ pub(crate) fn breakdown(
         estimated_tokens: easter_egg_tokens as u32,
         character_count: None,
     });
+    let total_used_tokens = (effective_used_tokens.min(u32::MAX as u64) as u32)
+        .max(categories.iter().map(|c| c.estimated_tokens).sum::<u32>().saturating_sub(easter_egg_tokens as u32));
     Ok(pb::PromptTokenBreakdownSnapshot {
-        total_used_tokens: used_tokens,
+        total_used_tokens,
         max_tokens,
         categories,
     })
@@ -126,7 +136,7 @@ fn measure_message(message: &CanonicalMessage, measures: &mut [Measure; 8]) -> R
         MessageContent::Parts { parts } => {
             for part in parts {
                 if let ContentPart::Text { text } = part {
-                    if message.origin == Origin::Runtime {
+                    if message.origin == Origin::Runtime || message.origin == Origin::Prompt {
                         measure_runtime(text, measures);
                     } else {
                         measures[CONVERSATION].add(text);
@@ -327,5 +337,34 @@ mod tests {
                 - first.categories[CONVERSATION].estimated_tokens,
             2_000
         );
+    }
+
+    #[test]
+    fn breakdown_with_zero_used_tokens_falls_back_to_local_estimates() {
+        let request_context = CanonicalMessage::text(
+            "request-context:test",
+            Role::User,
+            Origin::Prompt,
+            "before<rules><user_rule>rule content</user_rule></rules><agent_skills><skill>skill content</skill></agent_skills>",
+        );
+        let snapshot = breakdown(
+            0,
+            256_000,
+            None,
+            "system instructions",
+            &[],
+            &HashSet::new(),
+            &[request_context],
+        )
+        .unwrap();
+
+        assert!(snapshot.total_used_tokens > 0);
+        let rules = snapshot.categories.iter().find(|c| c.id == "rules").unwrap();
+        let skills = snapshot.categories.iter().find(|c| c.id == "skills").unwrap();
+        let system = snapshot.categories.iter().find(|c| c.id == "system_prompt").unwrap();
+
+        assert!(rules.estimated_tokens > 0);
+        assert!(skills.estimated_tokens > 0);
+        assert!(system.estimated_tokens > 0);
     }
 }

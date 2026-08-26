@@ -191,7 +191,7 @@ impl CheckpointBuilder {
         checkpoint.communicate_update_states_by_parent_tool_call_id =
             communicate_update_states_by_parent_tool_call_id;
         if let Some(details) = checkpoint.token_details.as_mut() {
-            details.breakdown = Some(crate::cursor::usage::breakdown(
+            let breakdown = crate::cursor::usage::breakdown(
                 details.used_tokens,
                 details.max_tokens,
                 details.breakdown.as_ref(),
@@ -199,7 +199,11 @@ impl CheckpointBuilder {
                 &self.tool_definitions,
                 &self.dynamic_tools,
                 messages,
-            )?);
+            )?;
+            if details.used_tokens == 0 && breakdown.total_used_tokens > 0 {
+                details.used_tokens = breakdown.total_used_tokens;
+            }
+            details.breakdown = Some(breakdown);
         }
         Ok(checkpoint)
     }

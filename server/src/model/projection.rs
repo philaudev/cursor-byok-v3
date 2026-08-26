@@ -108,7 +108,13 @@ pub fn project_compaction_messages(messages: &[CanonicalMessage]) -> Result<Vec<
                 };
                 let content = result.content.trim();
                 let summary_content = if content.len() > 300 {
-                    format!("{}...", &content[..300])
+                    let end = content
+                        .char_indices()
+                        .map(|(index, character)| index + character.len_utf8())
+                        .take_while(|end| *end <= 300)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}...", &content[..end])
                 } else if content.is_empty() {
                     "completed".into()
                 } else {
@@ -287,13 +293,13 @@ mod tests {
                 runtime_event_id: None,
             },
             CanonicalMessage {
-                message_id: "r1".into(),
+                message_id: "unicode-tool-result".into(),
                 role: Role::Tool,
                 origin: Origin::Tool,
                 content: MessageContent::ToolResult(ToolResultContent {
-                    call_id: "call-1".into(),
+                    call_id: "call-unicode".into(),
                     name: "Read".into(),
-                    content: "fn main() {}".into(),
+                    content: format!("{}ỉ", "x".repeat(298)),
                     is_error: false,
                     image: None,
                     provider_parts: Vec::new(),
@@ -317,7 +323,8 @@ mod tests {
         assert!(text.contains("1. user=Hello"));
         assert!(text.contains("assistant=I can help"));
         assert!(text.contains("tool_call=Read"));
-        assert!(text.contains("Read=fn main() {}"));
+        assert!(text.contains("Read=xxxxxxxx"));
+        assert!(text.contains("..."));
         assert!(text.contains("Return only the replacement summary text."));
     }
 }

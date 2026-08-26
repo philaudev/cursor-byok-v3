@@ -85,15 +85,17 @@ impl CheckpointBuilder {
         }
         self.base.self_summary_count = self.base.self_summary_count.saturating_add(1);
         if let Some(details) = self.base.token_details.as_mut() {
-            details.breakdown = Some(crate::cursor::usage::breakdown(
-                details.used_tokens,
+            let breakdown = crate::cursor::usage::breakdown(
+                0,
                 details.max_tokens,
                 details.breakdown.as_ref(),
                 &self.instructions,
                 &self.tool_definitions,
                 &self.dynamic_tools,
                 messages,
-            )?);
+            )?;
+            details.used_tokens = breakdown.total_used_tokens;
+            details.breakdown = Some(breakdown);
         }
         Ok(self.base.clone())
     }
