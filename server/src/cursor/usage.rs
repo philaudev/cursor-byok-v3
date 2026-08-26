@@ -30,26 +30,36 @@ const CONVERSATION: usize = 7;
 #[derive(Clone, Copy, Default)]
 struct Measure {
     characters: u64,
-    token_units: u64,
+    newlines: u64,
+    overhead_tokens: u64,
 }
 
 impl Measure {
     fn add(&mut self, text: &str) {
-        self.characters += text.encode_utf16().count() as u64;
-        let mut units = 0_u64;
-        for character in text.chars() {
-            let width = character.len_utf16() as u64;
-            units += if character.is_ascii() {
-                width * 273
-            } else {
-                width * 550
-            };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
         }
-        self.token_units += units;
+        self.characters += trimmed.chars().count() as u64;
+        self.newlines += trimmed.chars().filter(|&c| c == '\n').count() as u64;
+    }
+
+    fn add_overhead(&mut self, tokens: u64) {
+        self.overhead_tokens += tokens;
     }
 
     fn estimated_tokens(self) -> u64 {
-        self.token_units.div_ceil(1_000)
+        if self.characters == 0 && self.overhead_tokens == 0 {
+            return 0;
+        }
+        let text_tokens = if self.characters > 0 {
+            let rune_based = (self.characters + 3) / 4;
+            let total = rune_based + self.newlines;
+            total.max(1)
+        } else {
+            0
+        };
+        text_tokens + self.overhead_tokens
     }
 }
 
@@ -77,27 +87,25 @@ pub(crate) fn breakdown(
     }
 
     let mut estimates = [0_u64; 8];
-    for index in 0..CONVERSATION {
+    for index in 0..CATEGORIES.len() {
         estimates[index] = measures[index].estimated_tokens();
     }
-    if measures[SUMMARY].characters != 0 {
-        estimates[SUMMARY] = measures[SUMMARY].estimated_tokens();
-    } else if let Some(summary) = baseline.and_then(|snapshot| {
-        snapshot
-            .categories
-            .iter()
-            .find(|category| category.id == CATEGORIES[SUMMARY].0)
-    }) {
-        measures[SUMMARY].characters = summary.character_count.unwrap_or(0) as u64;
-        estimates[SUMMARY] = summary.estimated_tokens as u64;
+    if measures[SUMMARY].characters == 0 {
+        if let Some(summary) = baseline.and_then(|snapshot| {
+            snapshot
+                .categories
+                .iter()
+                .find(|category| category.id == CATEGORIES[SUMMARY].0)
+        }) {
+            measures[SUMMARY].characters = summary.character_count.unwrap_or(0) as u64;
+            estimates[SUMMARY] = summary.estimated_tokens as u64;
+        }
     }
     let easter_egg_tokens = 1_u64;
     let local_total: u64 = estimates.iter().sum();
-    let effective_used_tokens = if used_tokens as u64 > 0 {
-        used_tokens as u64
-    } else {
-        local_total
-    };
+    // Align with Go fork behavior: take max(provider_reported, local_compiled_estimate)
+    // so that intermediate tool outputs & prompt growth immediately reflect in context usage.
+    let effective_used_tokens = (used_tokens as u64).max(local_total);
 
     if effective_used_tokens > 0 {
         fit_special_estimates(&mut estimates, effective_used_tokens);
@@ -132,6 +140,7 @@ pub(crate) fn breakdown(
 }
 
 fn measure_message(message: &CanonicalMessage, measures: &mut [Measure; 8]) -> Result<()> {
+    measures[CONVERSATION].add_overhead(8); // estimatedTokensPerMessageOverhead
     match &message.content {
         MessageContent::Parts { parts } => {
             for part in parts {
@@ -152,7 +161,10 @@ fn measure_message(message: &CanonicalMessage, measures: &mut [Measure; 8]) -> R
         } => {
             measures[CONVERSATION].add(text);
             measures[CONVERSATION].add(thinking);
-            measures[CONVERSATION].add(&serde_json::to_string(tool_calls)?);
+            if !tool_calls.is_empty() {
+                measures[CONVERSATION].add_overhead(tool_calls.len() as u64 * 6); // estimatedTokensPerToolCallOverhead
+                measures[CONVERSATION].add(&serde_json::to_string(tool_calls)?);
+            }
         }
         MessageContent::ToolResult(result) => {
             measures[CONVERSATION].add(&serde_json::to_string(result)?);
@@ -293,6 +305,36 @@ mod tests {
                 estimated_tokens: 1,
                 character_count: None,
             }
+        );
+    }
+
+    #[test]
+    fn breakdown_uses_provider_usage_when_available() {
+        let snapshot = breakdown(
+            17_000,
+            256_000,
+            None,
+            "system",
+            &[],
+            &HashSet::new(),
+            &[CanonicalMessage::text(
+                "history",
+                Role::User,
+                Origin::User,
+                "conversation ".repeat(300),
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.total_used_tokens, 17_000);
+        assert_eq!(
+            snapshot.total_used_tokens,
+            snapshot
+                .categories
+                .iter()
+                .map(|category| category.estimated_tokens)
+                .sum::<u32>()
+                .saturating_sub(1)
         );
     }
 

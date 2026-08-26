@@ -12,6 +12,27 @@ pub struct Usage {
     pub reasoning_tokens: Option<u64>,
 }
 
+impl Usage {
+    /// Returns provider-reported prompt tokens, including cache reads and writes.
+    /// Returns `None` when the provider omitted every prompt-token field.
+    pub fn context_tokens(self) -> Option<u64> {
+        let tokens = [
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+        ];
+        tokens
+            .iter()
+            .any(Option::is_some)
+            .then(|| {
+                tokens.into_iter().try_fold(0_u64, |total, tokens| {
+                    total.checked_add(tokens.unwrap_or_default())
+                })
+            })
+            .flatten()
+    }
+}
+
 impl AddAssign for Usage {
     fn add_assign(&mut self, rhs: Self) {
         self.input_tokens = sum(self.input_tokens, rhs.input_tokens);
@@ -30,6 +51,23 @@ fn sum(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::Usage;
+
+    #[test]
+    fn context_tokens_include_cached_prompt_tokens() {
+        let usage = Usage {
+            input_tokens: Some(17_000),
+            cache_read_tokens: Some(10_000),
+            cache_write_tokens: Some(3_000),
+            ..Default::default()
+        };
+
+        assert_eq!(usage.context_tokens(), Some(30_000));
+    }
+
+    #[test]
+    fn absent_prompt_usage_uses_local_estimation() {
+        assert_eq!(Usage::default().context_tokens(), None);
+    }
 
     #[test]
     fn turn_total_only_reports_fields_known_for_every_cycle() {

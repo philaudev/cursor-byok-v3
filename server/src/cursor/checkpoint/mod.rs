@@ -97,9 +97,7 @@ impl CheckpointBuilder {
             return;
         };
         let details = self.base.token_details.get_or_insert_with(Default::default);
-        if let Some(used_tokens) = used_tokens {
-            details.used_tokens = used_tokens.min(u32::MAX as u64) as u32;
-        }
+        details.used_tokens = checkpoint_used_tokens(used_tokens);
         details.max_tokens = max_tokens.min(u32::MAX as u64) as u32;
         details.prompt_context_usage_tree = None;
         details.prompt_context_usage_snapshot_blob_id = None;
@@ -200,9 +198,7 @@ impl CheckpointBuilder {
                 &self.dynamic_tools,
                 messages,
             )?;
-            if details.used_tokens == 0 && breakdown.total_used_tokens > 0 {
-                details.used_tokens = breakdown.total_used_tokens;
-            }
+            details.used_tokens = details.used_tokens.max(breakdown.total_used_tokens);
             details.breakdown = Some(breakdown);
         }
         Ok(checkpoint)
@@ -305,13 +301,23 @@ impl CheckpointBuilder {
     }
 }
 
+fn checkpoint_used_tokens(used_tokens: Option<u64>) -> u32 {
+    used_tokens.unwrap_or_default().min(u32::MAX as u64) as u32
+}
+
 fn context_limit(selected: Option<u64>, previous: Option<u64>) -> Option<u64> {
     selected.or(previous.filter(|tokens| *tokens != 0))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::context_limit;
+    use super::{checkpoint_used_tokens, context_limit};
+
+    #[test]
+    fn missing_usage_clears_a_previous_provider_snapshot() {
+        assert_eq!(checkpoint_used_tokens(Some(88_000)), 88_000);
+        assert_eq!(checkpoint_used_tokens(None), 0);
+    }
 
     #[test]
     fn selected_context_replaces_checkpoint_context() {
