@@ -73,7 +73,7 @@ pub(crate) fn breakdown(
     messages: &[CanonicalMessage],
 ) -> Result<pb::PromptTokenBreakdownSnapshot> {
     let mut measures = [Measure::default(); 8];
-    measures[SYSTEM].add(instructions);
+    measure_system_prompt(instructions, &mut measures);
     for tool in tools {
         let encoded = serde_json::to_string(tool)?;
         if dynamic_tools.contains(&tool.name) {
@@ -173,10 +173,31 @@ fn measure_message(message: &CanonicalMessage, measures: &mut [Measure; 8]) -> R
     Ok(())
 }
 
-fn measure_runtime(text: &str, measures: &mut [Measure; 8]) {
+fn measure_system_prompt(text: &str, measures: &mut [Measure; 8]) {
     let mut ranges = Vec::new();
+    collect_ranges(text, "shared_user_rules", RULES, &mut ranges);
     collect_ranges(text, "rules", RULES, &mut ranges);
     collect_ranges(text, "rule", RULES, &mut ranges);
+    ranges.sort_by_key(|range| range.0);
+
+    let mut cursor = 0;
+    for (start, end, category) in ranges {
+        if start < cursor {
+            continue;
+        }
+        measures[SYSTEM].add(&text[cursor..start]);
+        measures[category].add(&text[start..end]);
+        cursor = end;
+    }
+    measures[SYSTEM].add(&text[cursor..]);
+}
+
+fn measure_runtime(text: &str, measures: &mut [Measure; 8]) {
+    let mut ranges = Vec::new();
+    collect_ranges(text, "shared_user_rules", RULES, &mut ranges);
+    collect_ranges(text, "rules", RULES, &mut ranges);
+    collect_ranges(text, "rule", RULES, &mut ranges);
+    collect_ranges(text, "user_rule", RULES, &mut ranges);
     collect_ranges(text, "agent_skills", SKILLS, &mut ranges);
     collect_ranges(text, "skill", SKILLS, &mut ranges);
     collect_ranges(text, "subagents", SUBAGENTS, &mut ranges);
