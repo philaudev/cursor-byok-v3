@@ -180,6 +180,9 @@ impl ModelConfig {
     }
 
     pub fn configure(&self, model: &mut super::ModelSpec) {
+        model.context_window_tokens = self.context_window_tokens.or(model.context_window_tokens);
+        model.max_output_tokens = self.max_output_tokens().or(model.max_output_tokens);
+        model.extra_params = self.extra_params().clone();
         model.display_name = Some(self.display_name.clone());
         if model.reasoning.effort.is_none() {
             model.reasoning.effort = match self.model_type {
@@ -416,6 +419,7 @@ fn empty_object_ref() -> &'static serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelSpec;
 
     fn input() -> ModelConfigInput {
         ModelConfigInput {
@@ -441,6 +445,48 @@ mod tests {
             anthropic_thinking_effort: None,
             thinking_budget_tokens: None,
         }
+    }
+
+    #[test]
+    fn configured_context_window_overrides_the_cursor_catalog() {
+        let mut requested = ModelSpec {
+            context_window_tokens: Some(272_000),
+            max_output_tokens: Some(4_096),
+            extra_params: serde_json::json!({"from_cursor": true}),
+            ..ModelSpec::new("model-a")
+        };
+
+        let config = ModelConfig {
+            model_hash: "hash".into(),
+            sort_order: 1,
+            display_name: "Model A".into(),
+            model_type: ModelType::OpenAi,
+            base_url: "https://example.com".into(),
+            use_full_url: true,
+            api_key: "secret".into(),
+            tooltip_data: "Model A".into(),
+            model_id: "model-a".into(),
+            reasoning_effort: Some("high".into()),
+            openai_endpoint: OPENAI_RESPONSES_ENDPOINT.into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: empty_object(),
+            custom_headers_enabled: false,
+            custom_headers: empty_object(),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: empty_object(),
+            context_window_tokens: Some(200_000),
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        config.configure(&mut requested);
+
+        assert_eq!(requested.context_window_tokens, Some(200_000));
+        assert_eq!(requested.max_output_tokens, Some(4_096));
+        assert_eq!(requested.extra_params, empty_object());
     }
 
     #[test]

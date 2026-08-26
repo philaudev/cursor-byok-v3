@@ -165,7 +165,10 @@ impl RunEngine {
             };
         }
 
-        let mut auto_compacted = prepared.action == RunAction::Compact;
+        // After a compaction, wait for at least one newly persisted message before
+        // compacting again. The baseline must be the replacement history size, not
+        // the pre-compaction size: compaction deliberately shrinks that history.
+        let mut last_auto_compaction_message_count = None;
         'model: loop {
             if cancellation.is_cancelled() {
                 return (RunOutcome::Cancelled, usage);
@@ -174,7 +177,7 @@ impl RunEngine {
                 Ok(messages) => messages,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            let context_anchor = if !auto_compacted && prepared.action == RunAction::Start {
+            let context_anchor = if prepared.action == RunAction::Start {
                 match self
                     .store
                     .latest_llm_call_usage_anchor(
@@ -189,14 +192,19 @@ impl RunEngine {
             } else {
                 None
             };
-            if !auto_compacted && should_auto_compact(prepared, &messages, context_anchor) {
-                auto_compacted = true;
+            let history_grew_since_auto_compaction =
+                should_repeat_auto_compaction(last_auto_compaction_message_count, messages.len());
+            if prepared.action == RunAction::Start
+                && history_grew_since_auto_compaction
+                && should_auto_compact(prepared, &messages, context_anchor)
+            {
                 match self
                     .auto_compact(prepared, revision, &messages, client, cancellation)
                     .await
                 {
-                    Ok((next_revision, compaction_usage)) => {
+                    Ok((next_revision, compaction_usage, replacement_message_count)) => {
                         revision = next_revision;
+                        last_auto_compaction_message_count = Some(replacement_message_count);
                         if let Some(compaction_usage) = compaction_usage {
                             accumulate_usage(&mut usage, compaction_usage);
                         }
@@ -475,7 +483,7 @@ impl RunEngine {
         messages: &[CanonicalMessage],
         client: &mut ClientPort,
         cancellation: &CancellationToken,
-    ) -> std::result::Result<(crate::model::RevisionId, Option<Usage>), RunOutcome> {
+    ) -> std::result::Result<(crate::model::RevisionId, Option<Usage>, usize), RunOutcome> {
         let current_ids = prepared
             .initial_messages
             .iter()
@@ -484,7 +492,7 @@ impl RunEngine {
         let (compactable, retained_request_context) =
             auto_compaction_partition(messages, &current_ids);
         if compactable.is_empty() {
-            return Ok((revision, None));
+            return Ok((revision, None, messages.len()));
         }
 
         emit(client, ClientEvent::AutoCompactionStarted)
@@ -554,6 +562,7 @@ impl RunEngine {
         let mut replacement = retained_request_context.into_iter().collect::<Vec<_>>();
         replacement.push(summary_message);
         replacement.extend(prepared.initial_messages.iter().cloned());
+        let replacement_message_count = replacement.len();
         let revision = self
             .store
             .replace_revision(
@@ -580,8 +589,15 @@ impl RunEngine {
         emit(client, ClientEvent::AutoCompactionCompleted)
             .await
             .map_err(|_| client_failure())?;
-        Ok((revision, compaction_usage))
+        Ok((revision, compaction_usage, replacement_message_count))
     }
+}
+
+fn should_repeat_auto_compaction(
+    previous_message_count: Option<usize>,
+    current_message_count: usize,
+) -> bool {
+    previous_message_count.is_none_or(|count| current_message_count > count)
 }
 
 fn auto_compaction_partition(
@@ -808,7 +824,7 @@ fn failure_message(failure: &RunFailure) -> String {
 mod tests {
     use super::{
         auto_compaction_partition, estimate_context_tokens, hydrate_tool_images,
-        should_auto_compact, ContextUsageAnchor,
+        should_auto_compact, should_repeat_auto_compaction, ContextUsageAnchor,
     };
     use crate::{
         model::{
@@ -867,6 +883,10 @@ mod tests {
                 instructions: "system".into(),
                 tools: Vec::new(),
             },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
+                tools: Vec::new(),
+            },
             initial_messages: vec![current_runtime],
             action: RunAction::Start,
             base_revision_id: RevisionId(1),
@@ -908,6 +928,10 @@ mod tests {
                 instructions: "system".into(),
                 tools: Vec::new(),
             },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
+                tools: Vec::new(),
+            },
             initial_messages: vec![current_runtime],
             action: RunAction::Start,
             base_revision_id: RevisionId(1),
@@ -919,6 +943,22 @@ mod tests {
         };
 
         assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
+    }
+
+    #[test]
+    fn replacement_history_is_the_auto_compaction_baseline() {
+        let pre_compaction_count = 10;
+        let replacement_count = 2;
+
+        assert!(should_repeat_auto_compaction(None, pre_compaction_count));
+        assert!(!should_repeat_auto_compaction(
+            Some(replacement_count),
+            replacement_count
+        ));
+        assert!(should_repeat_auto_compaction(
+            Some(replacement_count),
+            replacement_count + 1
+        ));
     }
 
     #[test]

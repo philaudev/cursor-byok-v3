@@ -335,11 +335,10 @@ pub(crate) async fn prepare(
 }
 
 fn needs_history_restore(
-    state: Option<&pb::ConversationStateStructure>,
+    _state: Option<&pb::ConversationStateStructure>,
     root_message_count: usize,
 ) -> bool {
     root_message_count <= 1
-        || state.is_some_and(|state| state.summary.is_some() && root_message_count <= 2)
 }
 
 fn conversation_history(request: &pb::AgentRunRequest) -> Option<&pb::ConversationHistory> {
@@ -752,15 +751,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compacted_checkpoint_restores_request_history_after_summary() {
+    fn compacted_checkpoint_keeps_summary_without_restoring_full_history() {
         let compacted = pb::ConversationStateStructure {
             root_prompt_messages_json: vec![vec![1], vec![2]],
             summary: Some(vec![3]),
             ..Default::default()
         };
 
-        assert!(needs_history_restore(Some(&compacted), 2));
-        assert!(!needs_history_restore(Some(&compacted), 3));
+        assert!(!needs_history_restore(Some(&compacted), 2));
+        assert!(needs_history_restore(Some(&compacted), 1));
     }
 
     #[test]
