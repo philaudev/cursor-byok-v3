@@ -9,11 +9,11 @@ import { FloatingAd } from "../components/ads/FloatingAd";
 import { AdActionType, type AdAction, type AdSlot } from "../components/ads/types";
 import { PageLayout } from "../components/layout/PageLayout";
 import { Card } from "../components/ui/Card";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import controls from "../components/ui/Controls.module.scss";
 import { Icon } from "../components/ui/Icon";
-import { Modal } from "../components/ui/Modal";
 import { TooltipTrigger } from "../components/ui/TooltipTrigger";
-import { flatColorAboutIcon, flatColorAreaChartIcon, flatColorDataConfigurationIcon, flatColorOrganizationIcon, flatColorSalesPerformanceIcon, flatColorSettingsIcon, refreshIcon } from "../components/ui/icons";
+import { flatColorAboutIcon, flatColorAreaChartIcon, flatColorDataConfigurationIcon, flatColorSalesPerformanceIcon, flatColorSettingsIcon, refreshIcon } from "../components/ui/icons";
 import { useMessage } from "../components/ui/message";
 import { VirtualList } from "../components/virtual/VirtualList";
 import { useI18n } from "../i18n/store";
@@ -27,7 +27,7 @@ type MenuItem =
   | { kind: "external"; id: string; label: string; icon: IconifyIcon | string }
   | { kind: "group"; label: string };
 
-const keptAlivePages = ["/", "/calls", "/providers", "/settings", "/harness/cursor", "/config"];
+const keptAlivePages = ["/", "/calls", "/settings", "/harness/cursor", "/config"];
 const readAdStorageKey = "cursor-byok:read-ad-ids";
 const dismissedAdStorageKey = "cursor-byok:dismissed-ad-ids";
 const tutorialReadStorageKey = "cursor-byok:tutorial-read";
@@ -54,6 +54,7 @@ export function AppLayout() {
   const [activeAd, setActiveAd] = useState<AdSlot | null>(null);
   const [dismissCandidate, setDismissCandidate] = useState<AdSlot | null>(null);
   const [dismissReason, setDismissReason] = useState("");
+  const [confirmTutorial, setConfirmTutorial] = useState(false);
   const [tutorialRead, setTutorialRead] = useState(() => {
     try {
       return localStorage.getItem(tutorialReadStorageKey) === "true";
@@ -71,22 +72,24 @@ export function AppLayout() {
   const menuItems: MenuItem[] = [
     { kind: "page", path: "/", label: t("数据概览"), icon: flatColorAreaChartIcon },
     { kind: "page", path: "/calls", label: t("调用详细"), icon: flatColorSalesPerformanceIcon },
-    { kind: "page", path: "/providers", label: t("上游配置"), icon: flatColorOrganizationIcon },
-    { kind: "external", id: "tutorial", label: t("使用教程"), icon: flatColorAboutIcon },
     { kind: "group", label: "Harness" },
-    { kind: "page", path: "/settings", label: t("系统设置"), icon: flatColorSettingsIcon },
-    { kind: "page", path: "/harness/cursor", label: t("Cursor 设置"), icon: cursorIconUrl },
+    { kind: "page", path: "/harness/cursor", label: t("Cursor 配置"), icon: cursorIconUrl },
     { kind: "page", path: "/config", label: t("配置"), icon: flatColorDataConfigurationIcon },
+    { kind: "page", path: "/settings", label: t("系统设置"), icon: flatColorSettingsIcon },
+    { kind: "external", id: "tutorial", label: t("使用教程"), icon: flatColorAboutIcon },
   ];
 
   const openTutorial = useCallback(() => {
-    setTutorialRead(true);
-    try {
-      localStorage.setItem(tutorialReadStorageKey, "true");
-    } catch {
-      // Read state remains valid for the current session when storage is unavailable.
-    }
+    setConfirmTutorial(false);
     void api.openExternalUrl(tutorialUrl)
+      .then(() => {
+        setTutorialRead(true);
+        try {
+          localStorage.setItem(tutorialReadStorageKey, "true");
+        } catch {
+          // Read state remains valid for the current session when storage is unavailable.
+        }
+      })
       .catch((cause) => message(cause instanceof Error ? cause.message : String(cause)));
   }, [message]);
 
@@ -196,7 +199,7 @@ export function AppLayout() {
             <button
               type="button"
               aria-label={`${item.label}${tutorialRead ? "" : `，${t("未读")}`}`}
-              onClick={openTutorial}
+              onClick={() => setConfirmTutorial(true)}
             >
               {typeof item.icon === "string"
                 ? <Icon src={item.icon} size="1.3em" />
@@ -219,14 +222,25 @@ export function AppLayout() {
       </nav>
     </Card>
     {activeAd && <FloatingAd ad={activeAd} trigger={adTriggers.current.get(activeAd.id) ?? null} onClose={closeAd} onAction={performAdAction} />}
-    <Modal
+    <ConfirmDialog
+      id="open-tutorial-dialog"
+      open={confirmTutorial}
+      title={t("打开使用教程？")}
+      cancelLabel={t("取消")}
+      confirmLabel={t("打开教程")}
+      onCancel={() => setConfirmTutorial(false)}
+      onConfirm={openTutorial}
+    >
+      <p>{t("将在系统浏览器中打开使用教程，是否继续？")}</p>
+    </ConfirmDialog>
+    <ConfirmDialog
       id="dismiss-ad-dialog"
       open={dismissCandidate !== null}
       title={t("不再显示此广告")}
-      closeLabel={t("取消")}
-      submitLabel={t("确认")}
-      onClose={closeDismissAd}
-      onSubmit={() => void dismissAd()}
+      cancelLabel={t("取消")}
+      confirmLabel={t("确认")}
+      onCancel={closeDismissAd}
+      onConfirm={() => void dismissAd()}
     >
       <p>{t("你确认不想再看到此广告吗？")}</p>
       <label className={styles.dismissReason}>
@@ -239,7 +253,7 @@ export function AppLayout() {
           onChange={(event) => setDismissReason(event.target.value)}
         />
       </label>
-    </Modal>
+    </ConfirmDialog>
     <main className={styles.content}>
       <div className={styles.actionRegion}>
         <Card className={styles.actions}>

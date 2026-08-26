@@ -5,7 +5,9 @@ use crate::{
         proto::agent::v1 as pb,
         tools::{
             edit::{self, EditWrite},
-            runtime::{ExecContext, McpRoute},
+            runtime::{
+                ExecContext, McpRoute, DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS,
+            },
         },
     },
     model::ToolCall,
@@ -302,23 +304,18 @@ pub(crate) fn mcp_meta_request(
             "MCP definition for {server_identifier} is incomplete"
         )));
     }
-    let requested_tool = call
-        .arguments
-        .get("toolName")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Protocol("CallMcpTool is missing toolName".into()))?;
-    if requested_tool != route.tool_name {
-        return Err(Error::Protocol(format!(
-            "MCP definition mismatch: requested {requested_tool}, resolved {}",
-            route.tool_name
-        )));
-    }
-    let args = call
+
+    let args = match call
         .arguments
         .get("arguments")
-        .and_then(Value::as_object)
-        .map(json_object_to_prost)
-        .unwrap_or_default();
+        .or_else(|| call.arguments.get("args"))
+    {
+        Some(Value::Object(map)) => json_object_to_prost(map),
+        Some(Value::String(raw)) => serde_json::from_str::<serde_json::Map<String, Value>>(raw)
+            .map(|map| json_object_to_prost(&map))
+            .unwrap_or_default(),
+        _ => std::collections::HashMap::new(),
+    };
     Ok(server_message(
         id,
         call,
@@ -424,16 +421,14 @@ fn shell_timeout(call: &ToolCall) -> Result<i32> {
         .arguments
         .get("block_until_ms")
         .map(|value| {
-            value
-                .as_i64()
-                .ok_or_else(|| Error::Protocol("Shell block_until_ms must be an integer".into()))
+            value.as_u64().ok_or_else(|| {
+                Error::Protocol("Shell block_until_ms must be a non-negative integer".into())
+            })
         })
         .transpose()?
-        .unwrap_or(30_000);
-    i32::try_from(value)
-        .ok()
-        .filter(|value| *value >= 0)
-        .ok_or_else(|| Error::Protocol("Shell block_until_ms is out of range".into()))
+        .unwrap_or(DEFAULT_SHELL_BLOCK_UNTIL_MS);
+    let value = value.min(MAX_SHELL_BLOCK_UNTIL_MS);
+    i32::try_from(value).map_err(|_| Error::Protocol("Shell block_until_ms is out of range".into()))
 }
 
 fn smart_mode_approval(

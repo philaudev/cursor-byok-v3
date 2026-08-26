@@ -36,6 +36,7 @@ pub struct ClaimedRun {
 
 impl Store {
     pub async fn claim_run(&self, prepared: &PreparedRun) -> Result<ClaimedRun> {
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = now_ms();
         Self::ensure_conversation_tx(&mut tx, &prepared.conversation_id).await?;
@@ -88,12 +89,13 @@ impl Store {
             run_kind_columns(&prepared.kind);
         sqlx::query(
             "INSERT INTO runs
-             (run_id, conversation_id, base_revision_id, head_revision_id,
+             (run_id, cursor_request_id, conversation_id, base_revision_id, head_revision_id,
               parent_run_id, parent_tool_call_id, run_kind, subagent_kind,
               status, created_at_ms, updated_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
         )
         .bind(prepared.run_id.as_str())
+        .bind(prepared.cursor_request_id.as_deref())
         .bind(prepared.conversation_id.as_str())
         .bind(prepared.base_revision_id.0)
         .bind(prepared.base_revision_id.0)
@@ -128,7 +130,24 @@ impl Store {
         })
     }
 
+    pub async fn active_run_for_cursor_request(
+        &self,
+        cursor_request_id: &str,
+    ) -> Result<Option<RunId>> {
+        let run_id: Option<String> = sqlx::query_scalar(
+            "SELECT run_id FROM runs
+             WHERE cursor_request_id = ? AND status = 'running'
+             ORDER BY created_at_ms DESC
+             LIMIT 1",
+        )
+        .bind(cursor_request_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(run_id.map(RunId))
+    }
+
     pub async fn begin_provider_call(&self, run_id: &RunId) -> Result<u64> {
+        let _write = self.writes.lock().await;
         let index: Option<i64> = sqlx::query_scalar(
             "UPDATE runs SET provider_call_index = provider_call_index + 1, updated_at_ms = ?
              WHERE run_id = ? AND status = 'running'
@@ -150,6 +169,8 @@ impl Store {
         usage: Option<Usage>,
         failure: Option<(&str, &str)>,
     ) -> Result<bool> {
+        let usage_json = serde_json::to_string(&usage)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
             "SELECT conversation_id, status, failure_category, failure_summary
@@ -183,7 +204,7 @@ impl Store {
              WHERE run_id = ? AND status = 'running'",
         )
         .bind(status.as_str())
-        .bind(serde_json::to_string(&usage)?)
+        .bind(usage_json)
         .bind(category)
         .bind(summary)
         .bind(now)

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use uuid::Uuid;
 
 use crate::{
     cursor::prompting::{Mode, PromptCompiler},
@@ -41,6 +42,7 @@ pub struct CursorRunContext {
     pub dynamic_tools: BTreeMap<String, pb::McpToolDefinition>,
     pub checkpoint_prompt: PromptSpec,
     pub compacting: bool,
+    pub background_completion: bool,
 }
 
 pub(crate) struct PrepareDependencies<'a> {
@@ -75,7 +77,7 @@ pub(crate) async fn prepare(
     );
     // RunSSE/Bidi request_id identifies this concrete execution attempt. Cursor may
     // reuse AgentRunRequest.run_id when a queued or subagent-driven attempt resumes.
-    let run_id = RunId::new(request_id);
+    let run_id = execution_run_id(request_id);
     let history = conversation_history(request);
     let mut base_messages = if request.conversation_state.is_some() {
         Some(
@@ -138,24 +140,20 @@ pub(crate) async fn prepare(
         mode: mode_number,
         mut turn_user,
         action_context,
-        event_id,
+        mut event_id,
         input_id,
         starts_turn,
         compacting,
         background_completion,
-    } = action(request_id, request)?;
+    } = action(request)?;
     let checkpoint_mode = if request.subagent_type_name.is_some() {
         Mode::Subagent
     } else {
         mode_from_proto(mode_number)?
     };
     let mut model = model::requested_model(request)?;
-    if let Some(provider_model) = store
-        .provider_model(&model.model_id)
-        .await?
-        .filter(|model| model.enabled)
-    {
-        provider_model.configure(&mut model);
+    if let Some(configured_model) = store.model(&model.model_id).await? {
+        configured_model.configure(&mut model);
     }
     let dynamic = context::dynamic_mcp(request, &request_context)?;
     let subagent_model_overrides = model::overrides(request)?;
@@ -201,17 +199,46 @@ pub(crate) async fn prepare(
             }
             Some(_) | None => store.ensure_conversation(&conversation_id).await?,
         };
-        match input_id {
+        match input_id.as_deref() {
             Some(input_id) => {
                 store
-                    .anchor_input(&conversation_id, &input_id, proposed_base_revision_id)
+                    .anchor_input(&conversation_id, input_id, proposed_base_revision_id)
                     .await?
             }
             None => proposed_base_revision_id,
         }
     };
+    let mut projected_user_context = if input_id.is_some() && !compacting && !background_completion
+    {
+        runtime::compile_request_context(
+            "identity",
+            &request_context,
+            base_messages.as_deref().unwrap_or_default(),
+        )?
+    } else {
+        None
+    };
+    if event_id.is_none() {
+        if let (Some(input_id), Some(user)) = (input_id.as_deref(), turn_user.as_ref()) {
+            event_id = Some(
+                runtime::user_event_id(
+                    input_id,
+                    checkpoint_mode,
+                    user,
+                    &request_context,
+                    &action_context,
+                    projected_user_context
+                        .as_ref()
+                        .map(|message| &message.content),
+                    compiler,
+                    blob_sync,
+                )
+                .await?,
+            );
+        }
+    }
     let existing_runtime = match event_id.as_deref() {
-        Some(event_id) if !background_completion => {
+        Some(event_id) => {
             store
                 .message(&conversation_id, &format!("runtime:{event_id}"))
                 .await?
@@ -223,6 +250,10 @@ pub(crate) async fn prepare(
             let message_id = format!("request-context:{event_id}");
             match store.message(&conversation_id, &message_id).await? {
                 Some(message) => Some(message),
+                None if input_id.is_some() => projected_user_context.take().map(|mut message| {
+                    message.message_id = message_id;
+                    message
+                }),
                 None => runtime::compile_request_context(
                     event_id,
                     &request_context,
@@ -232,19 +263,27 @@ pub(crate) async fn prepare(
         }
         _ => None,
     };
-    let initial_messages = if compacting {
+    let mut initial_messages = if compacting {
         Vec::new()
     } else {
         match (turn_user.clone(), event_id) {
             (Some(mut user), Some(event_id)) if background_completion => {
-                let (message, text) = runtime::compile_background(
-                    event_id,
-                    &user,
-                    &request_context,
-                    &action_context,
-                    blob_sync,
-                )
-                .await?;
+                let (message, text) = match existing_runtime {
+                    Some(message) => {
+                        let text = runtime_message_text(&message)?;
+                        (message, text)
+                    }
+                    None => {
+                        runtime::compile_background(
+                            event_id,
+                            &user,
+                            &request_context,
+                            &action_context,
+                            blob_sync,
+                        )
+                        .await?
+                    }
+                };
                 user.text = text;
                 turn_user = Some(user);
                 vec![message]
@@ -278,6 +317,10 @@ pub(crate) async fn prepare(
             }
         }
     };
+    let (base_revision_id, reused) = store
+        .match_revision_prefix(&conversation_id, base_revision_id, &initial_messages)
+        .await?;
+    initial_messages.drain(..reused);
     let action = if compacting {
         RunAction::Compact
     } else if starts_turn {
@@ -312,6 +355,7 @@ pub(crate) async fn prepare(
     Ok((
         PreparedRun {
             run_id,
+            cursor_request_id: Some(request_id.into()),
             conversation_id,
             kind,
             model,
@@ -332,16 +376,16 @@ pub(crate) async fn prepare(
                 .collect(),
             checkpoint_prompt,
             compacting,
+            background_completion,
         },
     ))
 }
 
 fn needs_history_restore(
-    state: Option<&pb::ConversationStateStructure>,
+    _state: Option<&pb::ConversationStateStructure>,
     root_message_count: usize,
 ) -> bool {
     root_message_count <= 1
-        || state.is_some_and(|state| state.summary.is_some() && root_message_count <= 2)
 }
 
 fn conversation_history(request: &pb::AgentRunRequest) -> Option<&pb::ConversationHistory> {
@@ -491,6 +535,20 @@ fn decode_conversation_history(history: &pb::ConversationHistory) -> Result<Vec<
     Ok(messages)
 }
 
+fn runtime_message_text(message: &CanonicalMessage) -> Result<String> {
+    let MessageContent::Parts { parts } = &message.content else {
+        return Err(Error::Protocol(
+            "stored runtime message does not contain parts".into(),
+        ));
+    };
+    let Some(ContentPart::Text { text }) = parts.first() else {
+        return Err(Error::Protocol(
+            "stored runtime message does not start with text".into(),
+        ));
+    };
+    Ok(text.clone())
+}
+
 fn run_kind(subagent_type_name: Option<&str>, parent: Option<(RunId, String)>) -> Result<RunKind> {
     match (subagent_type_name, parent) {
         (None | Some("side-chat"), _) => Ok(RunKind::Root),
@@ -530,12 +588,17 @@ fn validate_prompt_root(messages: &[CanonicalMessage]) -> Result<()> {
     Ok(())
 }
 
-fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProjection> {
-    let mode = request
+fn execution_run_id(request_id: &str) -> RunId {
+    let execution_id = Uuid::new_v4().simple().to_string();
+    RunId::new(format!("{request_id}:{}", &execution_id[..8]))
+}
+
+fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+    let conversation_mode = request
         .conversation_state
         .as_ref()
-        .and_then(|state| state.mode)
-        .unwrap_or(pb::AgentMode::Agent as i32);
+        .and_then(|state| state.mode);
+    let mode = conversation_mode.unwrap_or(pb::AgentMode::Agent as i32);
     let Some(action) = request
         .action
         .as_ref()
@@ -557,6 +620,11 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
             let user = action.user_message.as_ref().ok_or_else(|| {
                 Error::Protocol("Cursor user message action has no UserMessage".into())
             })?;
+            let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
+                conversation_mode.unwrap_or(user.mode)
+            } else {
+                user.mode
+            };
             if user.message_id.is_empty() {
                 return Err(Error::Protocol(
                     "Cursor user message action has no message_id".into(),
@@ -564,7 +632,7 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
             }
             if user.text.trim() == "/summarize" {
                 return Ok(ActionProjection {
-                    mode: user.mode,
+                    mode,
                     turn_user: Some(user.clone()),
                     action_context: String::new(),
                     event_id: None,
@@ -587,23 +655,25 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
                     .filter(|text| !text.is_empty())
                     .cloned(),
             );
+            let input_id = format!("cursor:user:{}", user.message_id);
             Ok(ActionProjection {
-                mode: user.mode,
+                mode,
                 turn_user: Some(user.clone()),
                 action_context: context.join("\n\n"),
-                event_id: Some(format!("run-request:{request_id}")),
-                input_id: Some(format!("cursor:user:{}", user.message_id)),
+                event_id: None,
+                input_id: Some(input_id),
                 starts_turn: true,
                 compacting: false,
                 background_completion: false,
             })
         }
         pb::conversation_action::Action::BackgroundTaskCompletionAction(action) => {
-            let projection = background::project(action, mode)?;
+            let projection = background::project_background_completion(action, mode)?;
+            let event_id = projection.turn_user.message_id.clone();
             Ok(ActionProjection {
                 mode,
                 action_context: projection.context,
-                event_id: Some(format!("run-request:{request_id}")),
+                event_id: Some(event_id),
                 input_id: None,
                 turn_user: Some(projection.turn_user),
                 starts_turn: true,
@@ -742,15 +812,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compacted_checkpoint_restores_request_history_after_summary() {
+    fn compacted_checkpoint_keeps_summary_without_restoring_full_history() {
         let compacted = pb::ConversationStateStructure {
             root_prompt_messages_json: vec![vec![1], vec![2]],
             summary: Some(vec![3]),
             ..Default::default()
         };
 
-        assert!(needs_history_restore(Some(&compacted), 2));
-        assert!(!needs_history_restore(Some(&compacted), 3));
+        assert!(!needs_history_restore(Some(&compacted), 2));
+        assert!(needs_history_restore(Some(&compacted), 1));
     }
 
     #[test]
@@ -793,6 +863,18 @@ mod tests {
     }
 
     #[test]
+    fn execution_run_id_keeps_the_request_id_and_adds_eight_uuid_hex_digits() {
+        let run_id = execution_run_id("01bba7c5-9c00-4922-b1df-1f58146b5d90");
+        let suffix = run_id
+            .as_str()
+            .strip_prefix("01bba7c5-9c00-4922-b1df-1f58146b5d90:")
+            .unwrap();
+
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn current_user_message_consumes_the_mode_instead_of_history_mode() {
         let request = pb::AgentRunRequest {
             conversation_state: Some(pb::ConversationStateStructure {
@@ -815,13 +897,72 @@ mod tests {
             }),
             ..Default::default()
         };
-        let projection = action("request", &request).unwrap();
+        let projection = action(&request).unwrap();
         assert_eq!(projection.mode, pb::AgentMode::Ask as i32);
         assert_eq!(
             projection.input_id.as_deref(),
             Some("cursor:user:user-message")
         );
         assert_eq!(mode_from_proto(projection.mode).unwrap(), Mode::Ask);
+    }
+
+    #[test]
+    fn queued_user_message_without_mode_inherits_conversation_mode() {
+        let request = pb::AgentRunRequest {
+            conversation_state: Some(pb::ConversationStateStructure {
+                mode: Some(pb::AgentMode::Agent as i32),
+                ..Default::default()
+            }),
+            action: Some(pb::ConversationAction {
+                action: Some(pb::conversation_action::Action::UserMessageAction(
+                    pb::UserMessageAction {
+                        user_message: Some(pb::UserMessage {
+                            text: "queued follow-up".into(),
+                            message_id: "queued-user-message".into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let projection = action(&request).unwrap();
+
+        assert_eq!(projection.mode, pb::AgentMode::Agent as i32);
+        assert_eq!(mode_from_proto(projection.mode).unwrap(), Mode::Agent);
+    }
+
+    #[test]
+    fn queued_messages_keep_distinct_input_anchors_until_runtime_identity_is_compiled() {
+        let request = |message_id: &str| pb::AgentRunRequest {
+            action: Some(pb::ConversationAction {
+                action: Some(pb::conversation_action::Action::UserMessageAction(
+                    pb::UserMessageAction {
+                        user_message: Some(pb::UserMessage {
+                            text: "queued follow-up".into(),
+                            message_id: message_id.into(),
+                            mode: pb::AgentMode::Agent as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let first = action(&request("message-one")).unwrap();
+        let second = action(&request("message-two")).unwrap();
+
+        assert_eq!(first.event_id, None);
+        assert_eq!(second.event_id, None);
+        assert_eq!(first.input_id.as_deref(), Some("cursor:user:message-one"));
+        assert_eq!(second.input_id.as_deref(), Some("cursor:user:message-two"));
+        assert_ne!(first.input_id, second.input_id);
     }
 
     #[test]
@@ -842,8 +983,8 @@ mod tests {
             ..Default::default()
         };
 
-        let first = action("request-one", &request).unwrap();
-        let second = action("request-two", &request).unwrap();
+        let first = action(&request).unwrap();
+        let second = action(&request).unwrap();
         assert_eq!(first.mode, pb::AgentMode::Agent as i32);
         assert!(first.starts_turn);
         assert_eq!(first.event_id, second.event_id);

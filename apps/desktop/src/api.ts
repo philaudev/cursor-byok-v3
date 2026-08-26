@@ -1,60 +1,87 @@
 import type { AdRuntime } from "./components/ads/types";
 import type { Locale } from "./i18n/runtime";
 
-export type ProviderType = "openai-chat" | "openai-responses" | "anthropic";
-
-export interface Provider {
-  provider_id: number;
-  name: string;
-  provider_type: ProviderType;
-  base_url: string;
-  api_key?: string;
-  has_api_key: boolean;
-  custom_headers: Record<string, string | null>;
-  extra_params: Record<string, unknown>;
-  created_at_ms: number;
-  updated_at_ms: number;
-}
-
-export interface ProviderInput {
-  name: string;
-  provider_type: ProviderType;
-  base_url: string;
-  api_key?: string;
-  custom_headers: Record<string, string | null>;
-  extra_params: Record<string, unknown>;
-}
+export type ModelType = "openai" | "anthropic";
 
 export interface Model {
   model_hash: string;
-  provider_id: number;
-  model_id: string;
-  display_name: string;
-  endpoint_type: ProviderType;
-  request_url: string;
-  enabled: boolean;
   sort_order: number;
-  context_window_tokens: number | null;
-  max_output_tokens: number | null;
-  reasoning_enabled: boolean;
+  display_name: string;
+  type: ModelType;
+  base_url: string;
+  use_full_url: boolean;
+  api_key: string;
+  tooltip_data: string;
+  model_id: string;
   reasoning_effort: string | null;
-  supports_image_generation: boolean;
+  openai_endpoint: string;
+  openai_extra_params_enabled: boolean;
+  openai_extra_params: Record<string, unknown>;
+  custom_headers_enabled: boolean;
+  custom_headers: Record<string, string>;
+  anthropic_extra_params_enabled: boolean;
+  anthropic_extra_params: Record<string, unknown>;
+  context_window_tokens: number | null;
+  max_completion_tokens: number | null;
+  anthropic_max_tokens: number | null;
+  anthropic_thinking_effort: string | null;
+  thinking_budget_tokens: number | null;
   created_at_ms: number;
   updated_at_ms: number;
 }
 
 export interface ModelInput {
-  model_id: string;
-  display_name: string;
-  endpoint_type: ProviderType;
-  request_url: string;
-  enabled: boolean;
   sort_order: number;
-  context_window_tokens: number | null;
-  max_output_tokens: number | null;
-  reasoning_enabled: boolean;
+  display_name: string;
+  type: ModelType;
+  base_url: string;
+  use_full_url: boolean;
+  api_key: string;
+  tooltip_data: string;
+  model_id: string;
   reasoning_effort: string | null;
-  supports_image_generation: boolean;
+  openai_endpoint: string;
+  openai_extra_params_enabled: boolean;
+  openai_extra_params: Record<string, unknown>;
+  custom_headers_enabled: boolean;
+  custom_headers: Record<string, string>;
+  anthropic_extra_params_enabled: boolean;
+  anthropic_extra_params: Record<string, unknown>;
+  context_window_tokens: number | null;
+  max_completion_tokens: number | null;
+  anthropic_max_tokens: number | null;
+  anthropic_thinking_effort: string | null;
+  thinking_budget_tokens: number | null;
+}
+
+export interface ModelDiscoveryInput {
+  type: ModelType;
+  base_url: string;
+  api_key: string;
+  custom_headers_enabled: boolean;
+  custom_headers: Record<string, string>;
+}
+
+export interface LegacyModelImportPreviewItem {
+  model_hash: string;
+  display_name: string;
+  model_id: string;
+  type: ModelType;
+  existing: boolean;
+}
+
+export interface LegacyModelImportPreview {
+  source: string;
+  total: number;
+  new_models: number;
+  existing_models: number;
+  models: LegacyModelImportPreviewItem[];
+}
+
+export interface LegacyModelImportResult {
+  imported: number;
+  skipped: number;
+  total: number;
 }
 
 export interface ModelConnectivityResult {
@@ -66,7 +93,7 @@ export interface ModelConnectivityResult {
   output: string;
 }
 
-export type CaState = "missing" | "untrusted" | "ready" | "invalid" | "unsupported";
+export type CaState = "missing" | "untrusted" | "ready" | "invalid";
 export type IntegrationState = "disabled" | "enabled" | "degraded";
 export interface CursorHarnessStatus {
   platform: string;
@@ -114,6 +141,10 @@ export interface TabSettings {
   address: string;
 }
 
+export interface DesktopSettings {
+  silent_start: boolean;
+}
+
 export interface OverviewMetrics {
   llm_calls: number;
   successful_calls: number;
@@ -141,10 +172,6 @@ export interface Overview {
   token_usage_granularity: TokenUsageGranularity;
   token_usage_series: OverviewTokenUsageBucket[];
 }
-
-export type ProviderSelection =
-  | { kind: "existing"; provider_id: number }
-  | { kind: "new"; input: ProviderInput };
 
 export interface LlmCall {
   call_kind: "provider_llm" | "cursor_official";
@@ -256,29 +283,26 @@ export const api = {
     });
   },
   dismissAd: (id: string, reason: string) => request<void>(`/ads/${encodeURIComponent(id)}/dismissals`, { method: "POST", body: JSON.stringify({ reason }) }),
-  providers: () => request<Provider[]>("/providers"),
-  createProvider: (input: ProviderInput) => request<Provider>("/providers", { method: "POST", body: JSON.stringify(input) }),
-  updateProvider: (id: number, input: ProviderInput) => request<Provider>(`/providers/${id}`, { method: "PUT", body: JSON.stringify(input) }),
-  deleteProvider: (id: number) => request<void>(`/providers/${id}`, { method: "DELETE" }),
-  discoverModels: (id: number) => request<{ models: string[] }>(`/providers/${id}/models/discover`, { method: "POST" }),
-  saveModels: (id: number, models: ModelInput[]) => request<Model[]>(`/providers/${id}/models`, { method: "POST", body: JSON.stringify({ models }) }),
   models: () => request<Model[]>("/models"),
+  createModels: (models: ModelInput[]) => request<Model[]>("/models", { method: "POST", body: JSON.stringify({ models }) }),
+  reorderModels: (modelHashes: string[]) => request<Model[]>("/models/order", { method: "PUT", body: JSON.stringify({ model_hashes: modelHashes }) }),
+  discoverModels: (input: ModelDiscoveryInput) => request<{ models: string[] }>("/models/discover", { method: "POST", body: JSON.stringify(input) }),
+  previewV0049Models: () => request<LegacyModelImportPreview>("/models/import-v0049"),
+  importV0049Models: () => request<LegacyModelImportResult>("/models/import-v0049", { method: "POST" }),
   updateModel: (hash: string, model: ModelInput) => request<Model>(`/models/${hash}`, { method: "PUT", body: JSON.stringify(model) }),
   deleteModel: (hash: string) => request<void>(`/models/${hash}`, { method: "DELETE" }),
-  testModel: (hash: string) => request<ModelConnectivityResult>(`/models/${hash}/test`, { method: "POST" }),
-  overview: (filter?: { startMs: number; endMs: number; modelHashes?: string[]; providerIds?: number[] }) => {
+  testModel: (hash: string, testId: string, signal?: AbortSignal) => request<ModelConnectivityResult>(`/models/${hash}/test/${encodeURIComponent(testId)}`, { method: "POST", signal }),
+  cancelModelTest: (hash: string, testId: string) => request<void>(`/models/${hash}/test/${encodeURIComponent(testId)}`, { method: "DELETE" }),
+  overview: (filter?: { startMs: number; endMs: number; modelHashes?: string[] }) => {
     const params = new URLSearchParams();
     if (filter) {
       params.set("start_ms", String(filter.startMs));
       params.set("end_ms", String(filter.endMs));
       if (filter.modelHashes?.length) params.set("model_hashes", JSON.stringify(filter.modelHashes));
-      if (filter.providerIds?.length) params.set("provider_ids", JSON.stringify(filter.providerIds));
     }
     const query = params.size ? `?${params}` : "";
     return request<Overview>(`/overview${query}`);
   },
-  createCursorModels: (provider: ProviderSelection, models: ModelInput[]) => request<{ provider: Provider; models: Model[] }>("/harness/cursor/models", { method: "POST", body: JSON.stringify({ provider, models }) }),
-  discoverCursorModels: (provider: ProviderSelection) => request<{ models: string[] }>("/harness/cursor/models/discover", { method: "POST", body: JSON.stringify({ provider }) }),
   cursorHarness: () => request<CursorHarnessStatus>("/harness/cursor/status"),
   initializeCursorCa: () => request<CursorHarnessStatus>("/harness/cursor/ca/initialize", { method: "POST" }),
   openCompactionPrompt: async () => {
@@ -315,4 +339,6 @@ export const api = {
   setProxySettings: (settings: ProxySettingsInput) => request<ProxySettings>("/settings/proxy", { method: "PUT", body: JSON.stringify(settings) }),
   tabSettings: () => request<TabSettings>("/settings/tab"),
   setTabSettings: (settings: TabSettings) => request<TabSettings>("/settings/tab", { method: "PUT", body: JSON.stringify(settings) }),
+  desktopSettings: () => request<DesktopSettings>("/settings/desktop"),
+  setDesktopSettings: (settings: DesktopSettings) => request<DesktopSettings>("/settings/desktop", { method: "PUT", body: JSON.stringify(settings) }),
 };

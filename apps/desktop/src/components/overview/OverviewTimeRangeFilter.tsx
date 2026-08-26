@@ -11,22 +11,19 @@ import styles from "./OverviewTimeRangeFilter.module.scss";
 
 export type OverviewRangePreset = "ten-minutes" | "hour" | "today" | "week" | "month" | "custom";
 
-export function OverviewTimeRangeFilter({ value, customOpen, customStart, customEnd, modelOptions, providerOptions, selectedModels, selectedProviders, busy, onSelect, onCustomOpenChange, onCustomStartChange, onCustomEndChange, onSelectedModelsChange, onSelectedProvidersChange, onCustomApply, onRefresh }: {
+export function OverviewTimeRangeFilter({ value, customOpen, customStart, customEnd, modelOptions, selectedModels, busy, onSelect, onCustomOpenChange, onCustomStartChange, onCustomEndChange, onSelectedModelsChange, onCustomApply, onRefresh }: {
   value: OverviewRangePreset;
   customOpen: boolean;
   customStart: string;
   customEnd: string;
   modelOptions: MultiSelectOption[];
-  providerOptions: MultiSelectOption[];
   selectedModels: string[];
-  selectedProviders: string[];
   busy: boolean;
   onSelect: (value: Exclude<OverviewRangePreset, "custom">) => void;
   onCustomOpenChange: (open: boolean) => void;
   onCustomStartChange: (value: string) => void;
   onCustomEndChange: (value: string) => void;
   onSelectedModelsChange: (value: string[]) => void;
-  onSelectedProvidersChange: (value: string[]) => void;
   onCustomApply: () => void;
   onRefresh: () => void;
 }) {
@@ -109,7 +106,6 @@ export function OverviewTimeRangeFilter({ value, customOpen, customStart, custom
       <label><span>{t("开始时间")}</span><input type="text" placeholder={t("如：2026-08-23 09:00、1小时前")} value={customStart} onChange={(event) => onCustomStartChange(event.target.value)} /></label>
       <label><span>{t("结束时间")}</span><input type="text" placeholder={t("如：现在、2026-08-23 18:00")} value={customEnd} onChange={(event) => onCustomEndChange(event.target.value)} /></label>
       <div className={styles.filterRow}><MultiSelect label={t("模型")} value={selectedModels} options={modelOptions} onChange={onSelectedModelsChange} /></div>
-      <div className={styles.filterRow}><MultiSelect label={t("上游")} value={selectedProviders} options={providerOptions} onChange={onSelectedProvidersChange} /></div>
       <div className={styles.popoverActions}>
         <button type="button" className={controls.secondary} onClick={() => onCustomOpenChange(false)}>{t("取消")}</button>
         <button type="button" className={controls.primary} disabled={!customValid} onClick={onCustomApply}>{t("应用")}</button>

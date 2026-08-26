@@ -308,7 +308,8 @@ pub async fn consume_model_cycle(
             usage,
         ));
     }
-    if matches!(finish_reason, FinishReason::ToolUse) != !calls.is_empty() {
+    let has_tool_calls = !calls.is_empty();
+    if matches!(finish_reason, FinishReason::ToolUse) != has_tool_calls {
         return Err(failure(
             RunFailure::Protocol("finish reason and tool calls disagree".into()),
             text,

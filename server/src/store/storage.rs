@@ -54,6 +54,7 @@ impl Store {
     }
 
     pub async fn clear_statistics_storage(&self) -> Result<StatisticsStorage> {
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM llm_calls")
             .execute(&mut *transaction)
@@ -69,12 +70,37 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ModelConfigInput, ModelType, OPENAI_CHAT_ENDPOINT};
 
     #[tokio::test]
     async fn clears_observability_without_removing_configuration() {
         let store = Store::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("INSERT INTO provider_endpoints(name, provider_type, base_url, api_key, created_at_ms, updated_at_ms) VALUES ('Example', 'openai-chat', 'https://example.com', 'secret', 1, 1)")
-            .execute(store.pool()).await.unwrap();
+        store
+            .create_model(&ModelConfigInput {
+                sort_order: 0,
+                display_name: "Model".into(),
+                model_type: ModelType::OpenAi,
+                base_url: "https://example.com/v1/chat/completions".into(),
+                use_full_url: true,
+                api_key: "secret".into(),
+                tooltip_data: "Model".into(),
+                model_id: "model".into(),
+                reasoning_effort: None,
+                openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+                openai_extra_params_enabled: false,
+                openai_extra_params: serde_json::json!({}),
+                custom_headers_enabled: false,
+                custom_headers: serde_json::json!({}),
+                anthropic_extra_params_enabled: false,
+                anthropic_extra_params: serde_json::json!({}),
+                context_window_tokens: None,
+                max_completion_tokens: None,
+                anthropic_max_tokens: None,
+                anthropic_thinking_effort: None,
+                thinking_budget_tokens: None,
+            })
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO llm_calls(call_id, run_id, conversation_id, provider_call_index, provider_type, provider_url, request_type, request_url, model_id, display_name, status, created_at_ms, message_count, tool_count, detailed) VALUES ('call-1', 'run-1', 'conversation-1', 0, 'openai-chat', 'https://example.com', 'openai-chat', 'https://example.com/v1/chat/completions', 'model', 'Model', 'completed', 1, 1, 0, 0)")
             .execute(store.pool()).await.unwrap();
 
@@ -82,11 +108,11 @@ mod tests {
         let cleared = store.clear_statistics_storage().await.unwrap();
         assert_eq!(cleared.bytes, 0);
         assert_eq!(cleared.call_count, 0);
-        let provider_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM provider_endpoints")
+        let model_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_configs")
             .fetch_one(store.pool())
             .await
             .unwrap();
-        assert_eq!(provider_count, 1);
+        assert_eq!(model_count, 1);
 
         store
             .record_llm_request(

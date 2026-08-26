@@ -12,9 +12,7 @@ use cursor_server::{
     cursor::prompting::{PromptAssets, PromptCompiler},
     cursor::{connect, proto::agent::v1 as pb},
     cursor::{CursorCommand, CursorSessionRegistry},
-    model::{
-        ProjectedContent, ProviderEndpointInput, ProviderModelInput, ProviderType, Role, Usage,
-    },
+    model::{ModelConfigInput, ModelType, ProjectedContent, Role, Usage, OPENAI_CHAT_ENDPOINT},
     provider::{FinishReason, ModelEvent},
 };
 use prost::Message;
@@ -22,34 +20,30 @@ use prost::Message;
 #[tokio::test]
 async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
     let (_directory, store) = fixtures::temp_store().await;
-    let endpoint = store
-        .create_provider(&ProviderEndpointInput {
-            name: "Test".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: "https://example.com/v1".into(),
-            api_key: None,
-            custom_headers: serde_json::json!({}),
-            extra_params: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
     let configured_model = store
-        .save_provider_model(
-            endpoint.provider_id,
-            &ProviderModelInput {
-                model_id: "test-model".into(),
-                display_name: "Test Model".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: false,
-            },
-        )
+        .create_model(&ModelConfigInput {
+            sort_order: 0,
+            display_name: "Test Model".into(),
+            model_type: ModelType::OpenAi,
+            base_url: "https://example.com/v1/chat/completions".into(),
+            use_full_url: true,
+            api_key: "test-key".into(),
+            tooltip_data: "Test Model".into(),
+            model_id: "test-model".into(),
+            reasoning_effort: None,
+            openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: serde_json::json!({}),
+            custom_headers_enabled: false,
+            custom_headers: serde_json::json!({}),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: serde_json::json!({}),
+            context_window_tokens: None,
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
+        })
         .await
         .unwrap();
     let provider = fake_provider::FakeProvider::default();
@@ -199,10 +193,10 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
     assert!(after_turn_checkpoints[1].pending_tool_calls.is_empty());
     assert_eq!(after_turn_checkpoints[1], after_turn_checkpoints[2]);
     let token_details = after_turn_checkpoints[1].token_details.as_ref().unwrap();
-    assert_eq!(token_details.used_tokens, 20_008);
+    assert_eq!(token_details.used_tokens, 20_080);
     assert_eq!(token_details.max_tokens, 256_000);
     let breakdown = token_details.breakdown.as_ref().unwrap();
-    assert_eq!(breakdown.total_used_tokens, 20_008);
+    assert_eq!(breakdown.total_used_tokens, 20_080);
     assert_eq!(breakdown.max_tokens, 256_000);
     assert_eq!(breakdown.categories.len(), 9);
     assert_eq!(
@@ -211,7 +205,7 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
             .iter()
             .map(|category| category.estimated_tokens)
             .sum::<u32>(),
-        20_009
+        20_081
     );
     assert_eq!(
         after_turn_checkpoints[0].turns, after_turn_checkpoints[1].turns,
@@ -274,7 +268,7 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
     assert!(matches!(
         runtime.as_slice(),
         [cursor_server::model::ContentPart::Text { text }]
-            if text.contains("<user_query>\nhello\n</user_query>")
+            if text.contains("hello")
                 && !text.contains("<user_info>")
     ));
     assert_eq!(
@@ -289,7 +283,9 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
         .unwrap();
     assert!(messages[0].message_id.starts_with("request-context:"));
     assert_eq!(messages[0].role, Role::User);
-    assert_eq!(messages[1].message_id, "runtime:run-request:request");
+    assert!(messages[1]
+        .message_id
+        .starts_with("runtime:cursor:user:user:"));
     assert_eq!(messages[1].role, Role::User);
     assert_eq!(
         messages.len(),
@@ -300,44 +296,43 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
         .fetch_all(store.pool())
         .await
         .unwrap();
-    assert_eq!(
-        stored_runs,
-        vec!["request"],
-        "the concrete request_id, not Cursor's reusable wire run_id, owns the execution"
-    );
+    assert_eq!(stored_runs.len(), 1);
+    let execution_suffix = stored_runs[0]
+        .strip_prefix("request:")
+        .expect("the local Run keeps the Cursor request id as a readable prefix");
+    assert_eq!(execution_suffix.len(), 8);
+    assert!(execution_suffix
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit()));
 }
 
 #[tokio::test]
 async fn cached_only_usage_updates_context_usage() {
     let (_directory, store) = fixtures::temp_store().await;
-    let endpoint = store
-        .create_provider(&ProviderEndpointInput {
-            name: "Antigravity".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: "https://example.com/v1".into(),
-            api_key: None,
-            custom_headers: serde_json::json!({}),
-            extra_params: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
     let configured_model = store
-        .save_provider_model(
-            endpoint.provider_id,
-            &ProviderModelInput {
-                model_id: "antigravity".into(),
-                display_name: "Antigravity".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: false,
-            },
-        )
+        .create_model(&ModelConfigInput {
+            sort_order: 0,
+            display_name: "Antigravity".into(),
+            model_type: ModelType::OpenAi,
+            base_url: "https://example.com/v1/chat/completions".into(),
+            use_full_url: true,
+            api_key: "secret".into(),
+            tooltip_data: "Antigravity".into(),
+            model_id: "antigravity".into(),
+            reasoning_effort: None,
+            openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: serde_json::json!({}),
+            custom_headers_enabled: false,
+            custom_headers: serde_json::json!({}),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: serde_json::json!({}),
+            context_window_tokens: None,
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
+        })
         .await
         .unwrap();
     let provider = fake_provider::FakeProvider::default();

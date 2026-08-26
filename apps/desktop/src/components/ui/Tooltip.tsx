@@ -5,7 +5,7 @@ import styles from "./Tooltip.module.scss";
 
 export type TooltipAnchor = VirtualElement;
 
-export function Tooltip({ anchor, children }: { anchor: TooltipAnchor | null; children: ReactNode }) {
+export function Tooltip({ id, anchor, children }: { id?: string; anchor: TooltipAnchor | null; children: ReactNode }) {
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
@@ -32,6 +32,7 @@ export function Tooltip({ anchor, children }: { anchor: TooltipAnchor | null; ch
   return createPortal(
     <div
       ref={tooltipRef}
+      id={id}
       className={styles.root}
       role="tooltip"
       style={{ left: position?.left ?? 0, top: position?.top ?? 0, visibility: position ? "visible" : "hidden" }}

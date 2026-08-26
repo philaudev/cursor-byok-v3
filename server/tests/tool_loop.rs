@@ -58,6 +58,7 @@ fn mcp_context(server: &str, provider: &str, tool: &str) -> ExecContext {
         cursor_server::cursor::tools::runtime::McpRoute {
             name: format!("{server}-{tool}"),
             provider_identifier: provider.into(),
+            server_identifier: server.into(),
             tool_name: tool.into(),
             description: "fixture MCP tool".into(),
         },
@@ -414,6 +415,22 @@ async fn shell_uses_background_timeout_and_preserves_stream_identity() {
         [("word", "-m"), ("word", "http.server"), ("word", "8000")]
     );
 
+    let mut timeout_call = call("call-shell-timeout", "Shell");
+    timeout_call.arguments = json!({"command": "cargo test", "block_until_ms": 7_140_000});
+    let timeout_call = context.prepare_call(&timeout_call).unwrap();
+    let timeout_args = codec::request(8, &timeout_call, &context).unwrap();
+    let Some(pb::agent_server_message::Message::ExecServerMessage(timeout_args)) =
+        timeout_args.message
+    else {
+        panic!("expected ExecServerMessage")
+    };
+    let Some(pb::exec_server_message::Message::ShellStreamArgs(timeout_args)) =
+        timeout_args.message
+    else {
+        panic!("expected ShellArgs")
+    };
+    assert_eq!(timeout_args.timeout, 60_000);
+
     let rendered = cursor_server::cursor::interaction::render_tool_call(&shell, false).unwrap();
     let Some(pb::tool_call::Tool::ShellToolCall(rendered)) = rendered.tool else {
         panic!("expected rendered ShellToolCall")
@@ -502,6 +519,41 @@ async fn shell_uses_background_timeout_and_preserves_stream_identity() {
     assert_eq!(result.is_background, Some(true));
     assert_eq!(result.terminals_folder.as_deref(), Some("/tmp/terminals"));
     assert_eq!(result.pid, Some(1234));
+    let state = pending.background_shell("42").await.unwrap();
+    assert_eq!(state.shell_id, "42");
+    assert_eq!(
+        state.status,
+        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Backgrounded
+    );
+    assert_eq!(state.stdout, "Serving HTTP on port 8000\n");
+
+    let exit = codec::client_event(
+        &pb::ExecClientMessage {
+            id,
+            exec_id: "call-shell".into(),
+            message: Some(pb::exec_client_message::Message::ShellStream(
+                pb::ShellStream {
+                    event: Some(pb::shell_stream::Event::Exit(pb::ShellStreamExit {
+                        code: 1,
+                        cwd: "/tmp/project".into(),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &pending,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(exit, codec::ClientExecEvent::Pending));
+    let state = pending.background_shell("42").await.unwrap();
+    assert_eq!(
+        state.status,
+        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Completed
+    );
+    assert_eq!(state.exit_code, Some(1));
+
     assert!(
         pending.drain_running().await.is_empty(),
         "a backgrounded Shell is no longer an abortable Run Exec"
@@ -561,6 +613,36 @@ async fn empty_exec_client_message_is_not_a_terminal_result() {
         pending.exec_call(id).await.map(|call| call.call_id),
         Some("call-1".into())
     );
+}
+
+#[tokio::test]
+async fn exec_stream_close_without_a_terminal_result_becomes_a_tool_error() {
+    let pending = CursorToolRuntime::default();
+    let mut shell = call("call-1", "Shell");
+    shell.arguments = json!({"command": "git status"});
+    let id = pending.reserve_exec(&shell, &exec_context()).await.unwrap();
+
+    let completion = codec::stream_closed(id, &pending)
+        .await
+        .unwrap()
+        .expect("a running Exec should complete when its stream closes");
+
+    assert_eq!(completion.result().call_id, "call-1");
+    assert!(completion.result().is_error);
+    assert_eq!(
+        completion.result().content,
+        "Cursor Exec stream closed before returning a terminal result"
+    );
+    let Some(pb::tool_call::Tool::ShellToolCall(shell)) = &completion.tool_call().tool else {
+        panic!("expected typed Shell completion")
+    };
+    assert!(matches!(
+        shell.result.as_ref().and_then(|result| result.result.as_ref()),
+        Some(pb::shell_result::Result::SpawnError(error))
+            if error.error == "Cursor Exec stream closed before returning a terminal result"
+    ));
+    assert!(pending.exec_call(id).await.is_none());
+    assert!(codec::stream_closed(id, &pending).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -799,6 +881,356 @@ async fn await_shell_consumes_the_background_output_file_terminal_state() {
 }
 
 #[tokio::test]
+async fn await_shell_uses_completed_background_state_when_terminal_file_lags() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-state", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .await;
+    runtime.background_shell_exit("42", 1).await;
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content("running\n".into())),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("background shell state must complete AwaitShell without terminal-file exit_code")
+    };
+    assert!(completion.result().content.contains("\"exit_code\":1"));
+}
+
+#[tokio::test]
+async fn await_shell_survives_stream_close_after_backgrounding() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-transport", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .await;
+    assert!(
+        !runtime.mark_background_shell_transport_closed(900).await,
+        "the normal StreamClose after Backgrounded must not terminate the shell"
+    );
+    runtime.background_shell_exit("42", 1).await;
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content("running\n".into())),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("background shell exit after StreamClose must complete AwaitShell")
+    };
+    assert!(!completion.result().is_error);
+    assert!(completion.result().content.contains("\"exit_code\":1"));
+}
+
+#[tokio::test]
+async fn await_shell_reports_running_shell_transport_close() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-transport", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .await;
+    runtime
+        .background_shell_stdout("42", "still running\n")
+        .await;
+    assert!(runtime.mark_background_shell_transport_closed(900).await);
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content("running\n".into())),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("running-shell transport close must complete AwaitShell")
+    };
+    assert!(completion.result().is_error);
+    assert!(completion.result().content.contains("transport closed"));
+}
+
+#[tokio::test]
+async fn await_shell_uses_terminal_file_after_successful_background_completion() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-background-completion", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .await;
+    runtime
+        .observe_background_task_completion(&pb::BackgroundTaskCompletionAction {
+            completions: vec![pb::BackgroundTaskCompletion {
+                task_id: "42".into(),
+                kind: pb::BackgroundTaskKind::Shell as i32,
+                status: pb::BackgroundTaskStatus::Success as i32,
+                detail: Some("background task completed".into()),
+                ..Default::default()
+            }],
+        })
+        .await;
+    let state = runtime.background_shell("42").await.unwrap();
+    assert_eq!(
+        state.status,
+        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Backgrounded
+    );
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content(
+                            "---\nexit_code: 0\n".into(),
+                        )),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("terminal file exit code must complete AwaitShell")
+    };
+    assert!(!completion.result().is_error);
+    assert!(completion.result().content.contains("\"exit_code\":0"));
+}
+
+#[tokio::test]
+async fn await_shell_rechecks_within_fifty_milliseconds_and_completes_after_exit() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-poll", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let context = exec_context();
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &context,
+        )
+        .await
+        .unwrap();
+    let id = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    let started = std::time::Instant::now();
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content("running\n".into())),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    let codec::ClientExecEvent::Message(read_again) = event else {
+        panic!("running shell should schedule another terminal-file read")
+    };
+    let Some(pb::agent_server_message::Message::ExecServerMessage(read_again)) = read_again.message
+    else {
+        panic!("expected a terminal-file read request")
+    };
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: read_again.id,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content(
+                            "build failed\n---\nexit_code: 1\n".into(),
+                        )),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("terminal exit must complete AwaitShell immediately")
+    };
+    assert!(!completion.result().is_error);
+    assert!(completion.result().content.contains("\"exit_code\":1"));
+}
+
+#[tokio::test]
 async fn provider_tool_use_waits_for_client_result_then_calls_provider_again() {
     let (directory, store) = fixtures::temp_store().await;
     let provider = fake_provider::FakeProvider::default();
@@ -965,7 +1397,7 @@ async fn provider_tool_use_waits_for_client_result_then_calls_provider_again() {
     .await
     .unwrap();
     let provider_call_index: i64 =
-        sqlx::query_scalar("SELECT provider_call_index FROM runs WHERE run_id = ?")
+        sqlx::query_scalar("SELECT provider_call_index FROM runs WHERE cursor_request_id = ?")
             .bind("tool-request")
             .fetch_one(&database)
             .await

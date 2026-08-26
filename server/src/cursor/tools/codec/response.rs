@@ -5,7 +5,7 @@ use crate::{
         tools::{
             edit,
             result::{self, ToolCompletion},
-            runtime::{CursorToolRuntime, ExecStage, PendingExec},
+            runtime::{BackgroundShellStatus, CursorToolRuntime, ExecStage, PendingExec},
         },
     },
     model::ToolCall,
@@ -27,6 +27,13 @@ pub async fn client_event(
 ) -> Result<ClientExecEvent> {
     let call = match pending.exec_call(message.id).await {
         Some(call) => call,
+        None if pending
+            .background_shell_for_event(message.id, &message.exec_id)
+            .await
+            .is_some() =>
+        {
+            return background_shell_event(message, pending).await;
+        }
         None if pending.completed_call(message.id).await.is_some() => {
             return Err(Error::Protocol(format!(
                 "duplicate terminal ExecClientMessage id: {}",
@@ -57,6 +64,11 @@ pub async fn client_event(
     let event = match &stream.event {
         Some(Event::Stdout(stdout)) => {
             if pending.append_stdout(message.id, &stdout.data).await {
+                if let Some(shell_id) = pending.background_shell_for_exec(&message.exec_id).await {
+                    pending
+                        .background_shell_stdout(&shell_id, &stdout.data)
+                        .await;
+                }
                 ClientExecEvent::Delta(Box::new(shell_delta(&call, true, &stdout.data)))
             } else {
                 ClientExecEvent::Pending
@@ -64,6 +76,11 @@ pub async fn client_event(
         }
         Some(Event::Stderr(stderr)) => {
             if pending.append_stderr(message.id, &stderr.data).await {
+                if let Some(shell_id) = pending.background_shell_for_exec(&message.exec_id).await {
+                    pending
+                        .background_shell_stderr(&shell_id, &stderr.data)
+                        .await;
+                }
                 ClientExecEvent::Delta(Box::new(shell_delta(&call, false, &stderr.data)))
             } else {
                 ClientExecEvent::Pending
@@ -71,12 +88,26 @@ pub async fn client_event(
         }
         Some(Event::Start(_)) | Some(Event::HookContext(_)) => ClientExecEvent::Pending,
         Some(Event::Exit(exit)) => {
+            if let Some(shell_id) = pending.background_shell_for_exec(&message.exec_id).await {
+                pending
+                    .background_shell_exit(&shell_id, exit.code as i32)
+                    .await;
+            }
             let entry = take(message.id, pending).await?;
             let result = shell_exit_result(message, exit, &entry.stdout, &entry.stderr);
             completed(entry, pb::exec_client_message::Message::ShellResult(result))?
         }
         Some(Event::Backgrounded(backgrounded)) => {
             let entry = take(message.id, pending).await?;
+            pending
+                .background_shell_backgrounded(
+                    backgrounded.shell_id,
+                    message.id,
+                    &message.exec_id,
+                    entry.stdout.clone(),
+                    entry.stderr.clone(),
+                )
+                .await;
             let result = shell_backgrounded_result(
                 backgrounded,
                 &entry.stdout,
@@ -130,6 +161,102 @@ pub async fn client_event(
     Ok(event)
 }
 
+async fn background_shell_event(
+    message: &pb::ExecClientMessage,
+    runtime: &CursorToolRuntime,
+) -> Result<ClientExecEvent> {
+    let Some(pb::exec_client_message::Message::ShellStream(stream)) = &message.message else {
+        return Ok(ClientExecEvent::Pending);
+    };
+    let Some(shell_id) = runtime
+        .background_shell_for_event(message.id, &message.exec_id)
+        .await
+    else {
+        return Ok(ClientExecEvent::Pending);
+    };
+    use pb::shell_stream::Event;
+    match &stream.event {
+        Some(Event::Stdout(stdout)) => {
+            runtime
+                .background_shell_stdout(&shell_id, &stdout.data)
+                .await
+        }
+        Some(Event::Stderr(stderr)) => {
+            runtime
+                .background_shell_stderr(&shell_id, &stderr.data)
+                .await
+        }
+        Some(Event::Exit(exit)) => {
+            runtime
+                .background_shell_exit(&shell_id, exit.code as i32)
+                .await
+        }
+        Some(Event::Rejected(_)) => {
+            runtime
+                .background_shell_terminal(&shell_id, BackgroundShellStatus::Rejected)
+                .await
+        }
+        Some(Event::PermissionDenied(_)) => {
+            runtime
+                .background_shell_terminal(&shell_id, BackgroundShellStatus::PermissionDenied)
+                .await
+        }
+        Some(Event::Start(_))
+        | Some(Event::HookContext(_))
+        | Some(Event::Backgrounded(_))
+        | Some(Event::SandboxUnsupported(_))
+        | None => {}
+    }
+    Ok(ClientExecEvent::Pending)
+}
+
+pub async fn stream_closed(id: u32, pending: &CursorToolRuntime) -> Result<Option<ToolCompletion>> {
+    let Some(entry) = pending.take_exec(id).await else {
+        return Ok(None);
+    };
+    let error = "Cursor Exec stream closed before returning a terminal result";
+    if entry.call.name.eq_ignore_ascii_case("Shell") {
+        let command = entry
+            .call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let working_directory = entry
+            .call
+            .arguments
+            .get("working_directory")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        return Ok(Some(result::from_exec(
+            entry,
+            &pb::exec_client_message::Message::ShellResult(pb::ShellResult {
+                result: Some(pb::shell_result::Result::SpawnError(pb::ShellSpawnError {
+                    command,
+                    working_directory,
+                    error: error.into(),
+                })),
+                ..Default::default()
+            }),
+        )?));
+    }
+    let rendered = match &entry.stage {
+        ExecStage::DynamicMcp(definition) => {
+            interaction::render_dynamic_mcp(&entry.call, definition, false)
+        }
+        _ => interaction::render_tool_call(&entry.call, false)?,
+    };
+    Ok(Some(ToolCompletion::from_rendered(
+        &entry.call,
+        entry.started_at_ms,
+        error.into(),
+        true,
+        rendered,
+    )?))
+}
+
 async fn advance_await(
     entry: PendingExec,
     result: &pb::exec_client_message::Message,
@@ -145,6 +272,44 @@ async fn advance_await(
             "AwaitShell result reached a non-await execution stage".into(),
         ));
     };
+    let shell_state = registry.background_shell(&state.task_id).await;
+    if let Some(shell) = shell_state
+        .as_ref()
+        .filter(|shell| shell.status.is_terminal())
+    {
+        let combined_output = format!("{}{}", shell.stdout, shell.stderr);
+        let regex_match = state
+            .regex
+            .as_ref()
+            .map(|pattern| regex::Regex::new(pattern))
+            .transpose()
+            .map_err(|error| Error::Protocol(format!("invalid AwaitShell pattern: {error}")))?
+            .and_then(|pattern| {
+                pattern
+                    .find(&combined_output)
+                    .map(|found| found.as_str().to_string())
+            });
+        if let Some(exit_code) = shell.exit_code {
+            return Ok(ClientExecEvent::Completed(Box::new(result::await_result(
+                entry,
+                combined_output.len() as u64,
+                regex_match,
+                Some(exit_code),
+            )?)));
+        }
+        let message = match shell.status {
+            BackgroundShellStatus::Rejected => "background shell was rejected",
+            BackgroundShellStatus::PermissionDenied => "background shell permission was denied",
+            BackgroundShellStatus::TransportClosed => {
+                "background shell transport closed before exit"
+            }
+            BackgroundShellStatus::Completed => "background shell completed without an exit code",
+            BackgroundShellStatus::Backgrounded | BackgroundShellStatus::Running => unreachable!(),
+        };
+        return Ok(ClientExecEvent::Completed(Box::new(result::await_error(
+            entry, message,
+        )?)));
+    }
     let content = match read.result.as_ref() {
         Some(pb::read_result::Result::Success(success)) => match success.output.as_ref() {
             Some(pb::read_success::Output::Content(content)) => content.as_str(),
@@ -193,7 +358,7 @@ async fn advance_await(
     let wait = state
         .deadline
         .saturating_duration_since(std::time::Instant::now())
-        .min(std::time::Duration::from_secs(1));
+        .min(std::time::Duration::from_millis(50));
     tokio::time::sleep(wait).await;
     let call = entry.call.clone();
     let context = entry.context.clone();

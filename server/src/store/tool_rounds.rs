@@ -50,6 +50,8 @@ impl Store {
         if calls.is_empty() {
             return Err(Error::Store("cannot persist an empty tool round".into()));
         }
+        let assistant_json = serde_json::to_string(assistant)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let ownership: bool = sqlx::query_scalar(
             "SELECT EXISTS(
@@ -82,7 +84,7 @@ impl Store {
         .bind(round_id.as_str())
         .bind(run_id.as_str())
         .bind(base_revision_id.0)
-        .bind(serde_json::to_string(assistant)?)
+        .bind(assistant_json)
         .bind(created_at_ms)
         .bind(now)
         .execute(&mut *tx)
@@ -113,6 +115,7 @@ impl Store {
         round_id: &ToolRoundId,
         result: &ToolResult,
     ) -> Result<ToolCommit> {
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let round = sqlx::query(
             "SELECT assistant_json, status, version, next_completion_seq

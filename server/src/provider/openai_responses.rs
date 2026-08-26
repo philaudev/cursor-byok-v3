@@ -501,9 +501,14 @@ fn required_u64(value: &Value, name: &str) -> Result<u64> {
 }
 
 fn responses_usage(value: &Value) -> Usage {
-    let prompt_tokens = value.get("input_tokens").and_then(Value::as_u64);
+    let prompt_tokens = value
+        .get("input_tokens")
+        .or_else(|| value.get("prompt_tokens"))
+        .and_then(Value::as_u64);
     let cached_tokens = value
         .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| value.pointer("/input_token_details/cached_tokens"))
+        .or_else(|| value.pointer("/prompt_tokens_details/cached_tokens"))
         .and_then(Value::as_u64);
     let input_tokens = match (prompt_tokens, cached_tokens) {
         (Some(prompt), Some(cached)) => Some(prompt.saturating_sub(cached)),
@@ -513,12 +518,17 @@ fn responses_usage(value: &Value) -> Usage {
 
     Usage {
         input_tokens,
-        output_tokens: value.get("output_tokens").and_then(Value::as_u64),
+        output_tokens: value
+            .get("output_tokens")
+            .or_else(|| value.get("completion_tokens"))
+            .and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
         cache_read_tokens: cached_tokens,
         cache_write_tokens: None,
         reasoning_tokens: value
             .pointer("/output_tokens_details/reasoning_tokens")
+            .or_else(|| value.pointer("/output_token_details/reasoning_tokens"))
+            .or_else(|| value.pointer("/completion_tokens_details/reasoning_tokens"))
             .and_then(Value::as_u64),
     }
 }
@@ -627,5 +637,27 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn parses_responses_usage_standard_and_details() {
+        let val = serde_json::json!({
+            "total_tokens": 100,
+            "input_tokens": 80,
+            "output_tokens": 20,
+            "input_token_details": {
+                "cached_tokens": 30
+            },
+            "output_token_details": {
+                "reasoning_tokens": 10
+            }
+        });
+
+        let usage = super::responses_usage(&val);
+        assert_eq!(usage.input_tokens, Some(50)); // 80 - 30
+        assert_eq!(usage.cache_read_tokens, Some(30));
+        assert_eq!(usage.output_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(100));
+        assert_eq!(usage.reasoning_tokens, Some(10));
     }
 }

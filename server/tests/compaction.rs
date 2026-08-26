@@ -9,8 +9,8 @@ use cursor_server::{
     cursor::prompting::{PromptAssets, PromptCompiler},
     cursor::{connect, proto::agent::v1 as pb, CursorCommand, CursorSessionRegistry},
     model::{
-        ContentPart, ConversationId, MessageContent, Origin, ProjectedContent,
-        ProviderEndpointInput, ProviderModelInput, ProviderType, Role, Usage,
+        ContentPart, ConversationId, MessageContent, ModelConfigInput, ModelType, Origin,
+        ProjectedContent, Role, Usage, OPENAI_CHAT_ENDPOINT,
     },
     provider::{FinishReason, ModelEvent},
 };
@@ -19,34 +19,30 @@ use prost::Message;
 #[tokio::test]
 async fn summarize_replaces_model_history_and_preserves_cursor_history() {
     let (_directory, store) = fixtures::temp_store().await;
-    let endpoint = store
-        .create_provider(&ProviderEndpointInput {
-            name: "Test".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: "https://example.com/v1".into(),
-            api_key: None,
-            custom_headers: serde_json::json!({}),
-            extra_params: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
     let model = store
-        .save_provider_model(
-            endpoint.provider_id,
-            &ProviderModelInput {
-                model_id: "test-model".into(),
-                display_name: "Test Model".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: false,
-            },
-        )
+        .create_model(&ModelConfigInput {
+            sort_order: 0,
+            display_name: "Test Model".into(),
+            model_type: ModelType::OpenAi,
+            base_url: "https://example.com/v1/chat/completions".into(),
+            use_full_url: true,
+            api_key: "test-key".into(),
+            tooltip_data: "Test Model".into(),
+            model_id: "test-model".into(),
+            reasoning_effort: None,
+            openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: serde_json::json!({}),
+            custom_headers_enabled: false,
+            custom_headers: serde_json::json!({}),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: serde_json::json!({}),
+            context_window_tokens: None,
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
+        })
         .await
         .unwrap();
     let provider = fake_provider::FakeProvider::default();

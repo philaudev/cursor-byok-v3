@@ -15,7 +15,7 @@ use axum::{
 };
 use tauri::{
     async_runtime::JoinHandle, webview::Color, AppHandle, Manager, RunEvent, WebviewUrl,
-    WebviewWindowBuilder,
+    WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +30,7 @@ use crate::frontend;
 use crate::tray;
 
 pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+const AUTOSTART_ARG: &str = "--autostart";
 
 struct DesktopRuntime {
     shutdown: CancellationToken,
@@ -61,12 +62,30 @@ fn open_terminal_with_command(command: String) -> tauri::Result<()> {
             .spawn()?;
         Ok(())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = command;
+        const TERMINALS: &[(&str, &[&str])] = &[
+            ("x-terminal-emulator", &["-e"]),
+            ("gnome-terminal", &["--"]),
+            ("konsole", &["-e"]),
+            ("xfce4-terminal", &["--execute"]),
+            ("alacritty", &["-e"]),
+            ("kitty", &[]),
+        ];
+        let script = format!("{command}; exec bash");
+        for (terminal, separator) in TERMINALS {
+            let mut process = Command::new(terminal);
+            process.args(*separator);
+            process.arg("bash").arg("-c").arg(&script);
+            match process.spawn() {
+                Ok(_) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
         Err(tauri::Error::from(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "terminal guidance is unsupported on this platform",
+            std::io::ErrorKind::NotFound,
+            "no supported terminal emulator found",
         )))
     }
 }
@@ -105,7 +124,10 @@ fn desktop_api_router(app: AppHandle) -> Router {
         .layer(Extension(app))
 }
 
-fn create_main_window(app: &AppHandle, address: std::net::SocketAddr) -> tauri::Result<()> {
+fn create_main_window(
+    app: &AppHandle,
+    address: std::net::SocketAddr,
+) -> tauri::Result<WebviewWindow> {
     let url = format!("http://{address}/__byok-api__/")
         .parse()
         .expect("local frontend URL");
@@ -117,18 +139,20 @@ fn create_main_window(app: &AppHandle, address: std::net::SocketAddr) -> tauri::
         .background_color(Color(20, 20, 20, 255))
         .decorations(cfg!(target_os = "macos"))
         .shadow(true)
-        .resizable(true);
+        .resizable(true)
+        .visible(false);
 
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true);
 
-    builder.build()?;
-    Ok(())
+    builder.build()
 }
 
 pub fn run() {
+    let started_by_autostart = std::env::args_os().any(|arg| arg == AUTOSTART_ARG);
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -142,17 +166,19 @@ pub fn run() {
             open_compaction_prompt,
             open_terminal_with_command
         ])
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            tray::show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == AUTOSTART_ARG) {
+                tray::show_main_window(app);
+            }
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
             app.handle().plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-                None,
+                Some(vec![AUTOSTART_ARG]),
             ))?;
             let config = Config::desktop()?;
             #[cfg(dev)]
@@ -172,6 +198,9 @@ pub fn run() {
             let listener = tauri::async_runtime::block_on(server.bind())?;
             let address = listener.local_addr()?;
             tauri::async_runtime::block_on(server.harness().cleanup_stale_settings())?;
+            let silent_start = tauri::async_runtime::block_on(server.store().desktop_settings())
+                .map(|settings| settings.silent_start)
+                .unwrap_or(false);
             let shutdown = CancellationToken::new();
             let server_shutdown = shutdown.clone();
             let app_handle = app.handle().clone();
@@ -188,7 +217,13 @@ pub fn run() {
                 server: Mutex::new(Some(task)),
                 exiting: AtomicBool::new(false),
             });
-            create_main_window(app.handle(), address)?;
+            let window = create_main_window(app.handle(), address)?;
+            if silent_start && started_by_autostart {
+                tracing::info!("silent autostart enabled; keeping the main window hidden");
+            } else {
+                window.show()?;
+                window.set_focus()?;
+            }
             tray::create(app)?;
             Ok(())
         })

@@ -40,7 +40,7 @@ pub struct CursorSession {
     results: ToolResultReceiver,
     checkpoint: CheckpointBuilder,
     tool_runtime: CursorToolRuntime,
-    runtime_actions: mpsc::UnboundedReceiver<pb::InjectContextAction>,
+    runtime_actions: mpsc::UnboundedReceiver<RuntimeAction>,
     compiler: PromptCompiler,
     blob_sync: BlobSynchronizer,
     injection_ids: HashSet<String>,
@@ -52,12 +52,17 @@ struct PendingInjection {
     delivery_batch_id: String,
 }
 
+pub(crate) enum RuntimeAction {
+    InjectContext(pb::InjectContextAction),
+    BackgroundTaskCompletion(pb::BackgroundTaskCompletionAction),
+}
+
 pub(crate) struct CursorSessionRuntime {
     pub tools: ToolDispatcher,
     pub results: ToolResultReceiver,
     pub checkpoint: CheckpointBuilder,
     pub tool_runtime: CursorToolRuntime,
-    pub runtime_actions: mpsc::UnboundedReceiver<pb::InjectContextAction>,
+    pub runtime_actions: mpsc::UnboundedReceiver<RuntimeAction>,
     pub compiler: PromptCompiler,
     pub blob_sync: BlobSynchronizer,
 }
@@ -88,6 +93,23 @@ impl CursorSession {
     }
 
     pub async fn run(mut self) -> Result<()> {
+        let result = self.run_inner().await;
+        if let Err(error) = &result {
+            self.abort_execs().await;
+            let error = match error {
+                Error::Protocol(message) => message.clone(),
+                error => error.to_string(),
+            };
+            let _ = self
+                .core
+                .commands
+                .send(ClientCommand::ClientClosed { error })
+                .await;
+        }
+        result
+    }
+
+    async fn run_inner(&mut self) -> Result<()> {
         if self.context.compacting {
             self.handle.emit(&interaction::summary_started())?;
         }
@@ -119,7 +141,7 @@ impl CursorSession {
                 tokio::select! {
                     event = self.core.events.recv() => Input::Event(event),
                     completion = self.results.recv() => Input::CompletionResult(completion),
-                    action = self.runtime_actions.recv() => Input::RuntimeAction(action.map(Box::new)),
+                    action = self.runtime_actions.recv() => Input::RuntimeAction(action),
                     failure = worker.failures.recv(), if checkpoint_worker_open => Input::CheckpointFailure(failure),
                 }
             };
@@ -146,8 +168,11 @@ impl CursorSession {
                 Input::CompletionResult(None) => {
                     return Err(Error::Protocol("tool result channel closed".into()));
                 }
-                Input::RuntimeAction(Some(action)) => {
-                    self.forward_injection(*action).await?;
+                Input::RuntimeAction(Some(RuntimeAction::InjectContext(action))) => {
+                    self.forward_injection(action).await?;
+                }
+                Input::RuntimeAction(Some(RuntimeAction::BackgroundTaskCompletion(action))) => {
+                    self.forward_background_completion(action).await?;
                 }
                 Input::RuntimeAction(None) => {
                     return Err(Error::Protocol("runtime action channel closed".into()));
@@ -615,6 +640,21 @@ impl CursorSession {
         Ok(dispatched.completion)
     }
 
+    async fn forward_background_completion(
+        &self,
+        action: pb::BackgroundTaskCompletionAction,
+    ) -> Result<()> {
+        self.tool_runtime
+            .observe_background_task_completion(&action)
+            .await;
+        let event = background_completion_event(action, self.context.mode)?;
+        self.core
+            .commands
+            .send(ClientCommand::RuntimeEvent(event))
+            .await
+            .map_err(|_| Error::RunNotFound(self.context.request_id.clone()))
+    }
+
     async fn forward_injection(&mut self, action: pb::InjectContextAction) -> Result<()> {
         if action.injection_id.is_empty() {
             return Err(Error::Protocol(
@@ -696,8 +736,55 @@ enum Input {
     Event(Option<ClientEvent>),
     Completion(ToolCompletion),
     CompletionResult(Option<Result<ToolCompletion>>),
-    RuntimeAction(Option<Box<pb::InjectContextAction>>),
+    RuntimeAction(Option<RuntimeAction>),
     CheckpointFailure(Option<Error>),
+}
+
+fn background_completion_event(
+    action: pb::BackgroundTaskCompletionAction,
+    mode: i32,
+) -> Result<crate::model::RuntimeEvent> {
+    let projection = crate::cursor::request::project_background_completion(&action, mode)?;
+    Ok(crate::model::RuntimeEvent {
+        event_id: projection.turn_user.message_id,
+        text: format!("{}\n\n{}", projection.context, projection.turn_user.text),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_subagent_completion_becomes_a_runtime_event() {
+        let event = background_completion_event(
+            pb::BackgroundTaskCompletionAction {
+                completions: vec![pb::BackgroundTaskCompletion {
+                    task_id: "child-id".into(),
+                    kind: pb::BackgroundTaskKind::Subagent as i32,
+                    status: pb::BackgroundTaskStatus::Success as i32,
+                    title: "Inspect protocol".into(),
+                    detail: Some("child result".into()),
+                    reason: pb::BackgroundTaskCompletionReason::TaskFinished as i32,
+                    subagent_id: Some("child-id".into()),
+                    tool_call_id: Some("task-call".into()),
+                    ..Default::default()
+                }],
+            },
+            pb::AgentMode::Multitask as i32,
+        )
+        .unwrap();
+
+        assert_eq!(
+            event.event_id,
+            "background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id:task-call"
+        );
+        assert!(event.text.contains("kind: subagent"));
+        assert!(event.text.contains("child result"));
+        assert!(event
+            .text
+            .contains("Perform any necessary follow-up actions"));
+    }
 }
 
 fn cursor_error(failure: RunFailure) -> Error {

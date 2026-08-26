@@ -4,7 +4,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    client::{ClientEvent, ClientPort, CommitBarrier, CommitCause, StateCommitted},
+    client::{
+        ClientCommand, ClientEvent, ClientPort, CommitBarrier, CommitCause, MessageInsertion,
+        StateCommitted,
+    },
     model::{
         CanonicalMessage, MessageContent, Origin, PreparedRun, Role, RunAction, ToolRoundAssistant,
         ToolRoundId, Usage,
@@ -157,6 +160,7 @@ impl RunEngine {
                     calls: round.calls.clone(),
                     recovered_started_at_ms: Some(round.started_at_ms),
                 },
+                Vec::new(),
             )
             .await
             {
@@ -165,7 +169,10 @@ impl RunEngine {
             };
         }
 
-        let mut auto_compacted = prepared.action == RunAction::Compact;
+        // After a compaction, wait for at least one newly persisted message before
+        // compacting again. The baseline must be the replacement history size, not
+        // the pre-compaction size: compaction deliberately shrinks that history.
+        let mut last_auto_compaction_message_count = None;
         'model: loop {
             if cancellation.is_cancelled() {
                 return (RunOutcome::Cancelled, usage);
@@ -174,14 +181,34 @@ impl RunEngine {
                 Ok(messages) => messages,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            if !auto_compacted && should_auto_compact(prepared, &messages) {
-                auto_compacted = true;
+            let context_anchor = if prepared.action == RunAction::Start {
+                match self
+                    .store
+                    .latest_llm_call_usage_anchor(
+                        &prepared.conversation_id,
+                        &prepared.model.model_id,
+                    )
+                    .await
+                {
+                    Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                }
+            } else {
+                None
+            };
+            let history_grew_since_auto_compaction =
+                should_repeat_auto_compaction(last_auto_compaction_message_count, messages.len());
+            if prepared.action == RunAction::Start
+                && history_grew_since_auto_compaction
+                && should_auto_compact(prepared, &messages, context_anchor)
+            {
                 match self
                     .auto_compact(prepared, revision, &messages, client, cancellation)
                     .await
                 {
-                    Ok((next_revision, compaction_usage)) => {
+                    Ok((next_revision, compaction_usage, replacement_message_count)) => {
                         revision = next_revision;
+                        last_auto_compaction_message_count = Some(replacement_message_count);
                         if let Some(compaction_usage) = compaction_usage {
                             accumulate_usage(&mut usage, compaction_usage);
                         }
@@ -233,21 +260,27 @@ impl RunEngine {
                 &cycle_cancellation,
             );
             tokio::pin!(cycle);
-            let cycle = tokio::select! {
-                    result = &mut cycle => result,
+            let mut pending_insertions = Vec::new();
+            let cycle = loop {
+                tokio::select! {
+                    result = &mut cycle => break result,
                     command = client.commands.recv() => {
                         let message = match command {
-                            Some(crate::client::ClientCommand::RuntimeMessage(message)) => message,
-                            Some(crate::client::ClientCommand::RuntimeEvent(event)) => event.into_message(),
-                            Some(crate::client::ClientCommand::Cancel) => {
+                            Some(ClientCommand::InsertMessages(insertion)) => {
+                                pending_insertions.push(insertion);
+                                continue;
+                            }
+                            Some(ClientCommand::RuntimeMessage(message)) => message,
+                            Some(ClientCommand::RuntimeEvent(event)) => event.into_message(),
+                            Some(ClientCommand::Cancel) => {
                                 cycle_cancellation.cancel();
                                 return (RunOutcome::Cancelled, usage);
                             }
-                            Some(crate::client::ClientCommand::ClientClosed { error }) => {
+                            Some(ClientCommand::ClientClosed { error }) => {
                                 cycle_cancellation.cancel();
                                 return (RunOutcome::Failed(RunFailure::Client(error)), usage);
                             }
-                            Some(crate::client::ClientCommand::ToolResult(_)) => {
+                            Some(ClientCommand::ToolResult(_)) => {
                                 cycle_cancellation.cancel();
                                 return (
                                     RunOutcome::Failed(RunFailure::Protocol(
@@ -275,6 +308,19 @@ impl RunEngine {
                                 }
                             }
                         }
+                        revision = match append_insertions(
+                            &self.store,
+                            prepared,
+                            client,
+                            cancellation,
+                            revision,
+                            std::mem::take(&mut pending_insertions),
+                        )
+                        .await
+                        {
+                            Ok((revision, _)) => revision,
+                            Err(outcome) => return (outcome, usage),
+                        };
                         revision = match append_runtime_message(
                             &self.store,
                             prepared,
@@ -285,11 +331,12 @@ impl RunEngine {
                         )
                         .await
                         {
-                            Ok(revision) => revision,
+                            Ok((revision, _)) => revision,
                             Err(outcome) => return (outcome, usage),
                         };
                         continue 'model;
                     }
+                }
             };
             let cycle = match cycle {
                 Ok(cycle) => cycle,
@@ -404,6 +451,27 @@ impl RunEngine {
                     Ok(revision) => revision,
                     Err(error) => return (RunOutcome::Failed(error.into()), usage),
                 };
+                if !pending_insertions.is_empty() {
+                    let inserted = match append_insertions(
+                        &self.store,
+                        prepared,
+                        client,
+                        cancellation,
+                        revision,
+                        pending_insertions,
+                    )
+                    .await
+                    {
+                        Ok((next, inserted)) => {
+                            revision = next;
+                            inserted
+                        }
+                        Err(outcome) => return (outcome, usage),
+                    };
+                    if inserted {
+                        continue 'model;
+                    }
+                }
                 let (barrier, ready) = CommitBarrier::before_continue();
                 if emit(
                     client,
@@ -444,6 +512,7 @@ impl RunEngine {
                     calls: cycle.calls,
                     recovered_started_at_ms: None,
                 },
+                pending_insertions,
             )
             .await
             {
@@ -460,7 +529,7 @@ impl RunEngine {
         messages: &[CanonicalMessage],
         client: &mut ClientPort,
         cancellation: &CancellationToken,
-    ) -> std::result::Result<(crate::model::RevisionId, Option<Usage>), RunOutcome> {
+    ) -> std::result::Result<(crate::model::RevisionId, Option<Usage>, usize), RunOutcome> {
         let current_ids = prepared
             .initial_messages
             .iter()
@@ -469,7 +538,7 @@ impl RunEngine {
         let (compactable, retained_request_context) =
             auto_compaction_partition(messages, &current_ids);
         if compactable.is_empty() {
-            return Ok((revision, None));
+            return Ok((revision, None, messages.len()));
         }
 
         emit(client, ClientEvent::AutoCompactionStarted)
@@ -539,6 +608,7 @@ impl RunEngine {
         let mut replacement = retained_request_context.into_iter().collect::<Vec<_>>();
         replacement.push(summary_message);
         replacement.extend(prepared.initial_messages.iter().cloned());
+        let replacement_message_count = replacement.len();
         let revision = self
             .store
             .replace_revision(
@@ -565,8 +635,15 @@ impl RunEngine {
         emit(client, ClientEvent::AutoCompactionCompleted)
             .await
             .map_err(|_| client_failure())?;
-        Ok((revision, compaction_usage))
+        Ok((revision, compaction_usage, replacement_message_count))
     }
+}
+
+fn should_repeat_auto_compaction(
+    previous_message_count: Option<usize>,
+    current_message_count: usize,
+) -> bool {
+    previous_message_count.is_none_or(|count| current_message_count > count)
 }
 
 fn auto_compaction_partition(
@@ -592,7 +669,28 @@ fn auto_compaction_partition(
     (compactable, retained)
 }
 
-fn should_auto_compact(prepared: &PreparedRun, messages: &[CanonicalMessage]) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContextUsageAnchor {
+    input_tokens: u64,
+    message_count: usize,
+    tool_count: usize,
+}
+
+impl ContextUsageAnchor {
+    fn from_llm_call(anchor: crate::model::LlmCallUsageAnchor) -> Option<Self> {
+        Some(Self {
+            input_tokens: anchor.usage.context_input_tokens(anchor.request_type)?,
+            message_count: anchor.message_count,
+            tool_count: anchor.tool_count,
+        })
+    }
+}
+
+fn should_auto_compact(
+    prepared: &PreparedRun,
+    messages: &[CanonicalMessage],
+    anchor: Option<ContextUsageAnchor>,
+) -> bool {
     if prepared.action != RunAction::Start {
         return false;
     }
@@ -604,8 +702,18 @@ fn should_auto_compact(prepared: &PreparedRun, messages: &[CanonicalMessage]) ->
     {
         return false;
     }
-    estimate_context_tokens(&prepared.prompt, messages)
-        > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
+    let estimated_input = anchor
+        .filter(|anchor| {
+            anchor.message_count <= messages.len()
+                && anchor.tool_count == prepared.prompt.tools.len()
+        })
+        .map(|anchor| {
+            anchor
+                .input_tokens
+                .saturating_add(estimate_message_tokens(&messages[anchor.message_count..]))
+        })
+        .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, messages));
+    estimated_input > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
 }
 
 fn estimate_context_tokens(
@@ -613,15 +721,21 @@ fn estimate_context_tokens(
     messages: &[CanonicalMessage],
 ) -> u64 {
     let serialized = serde_json::to_string(&(prompt, messages)).unwrap_or_default();
-    let trimmed = serialized.trim();
-    if trimmed.is_empty() {
-        return 0;
-    }
-    let rune_count = trimmed.chars().count() as u64;
-    let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
-    let base = (rune_count + 3) / 4 + newlines;
-    let overhead = messages.len() as u64 * 8;
-    base + overhead
+    estimate_serialized_tokens(&serialized)
+}
+
+fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u64 {
+    let serialized = serde_json::to_string(messages).unwrap_or_default();
+    estimate_serialized_tokens(&serialized)
+}
+
+fn estimate_serialized_tokens(serialized: &str) -> u64 {
+    serialized
+        .chars()
+        .fold(0_u64, |units, character| {
+            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
+        })
+        .div_ceil(1_000)
 }
 
 fn fallback_summary(messages: &[CanonicalMessage]) -> String {
@@ -637,14 +751,36 @@ fn fallback_summary(messages: &[CanonicalMessage]) -> String {
     )
 }
 
-async fn append_runtime_message(
+pub(super) async fn append_insertions(
+    store: &Store,
+    prepared: &PreparedRun,
+    client: &mut ClientPort,
+    cancellation: &CancellationToken,
+    mut revision: crate::model::RevisionId,
+    insertions: Vec<MessageInsertion>,
+) -> std::result::Result<(crate::model::RevisionId, bool), RunOutcome> {
+    let mut inserted_any = false;
+    for insertion in insertions {
+        for message in insertion.messages {
+            let (next, inserted) =
+                append_runtime_message(store, prepared, client, cancellation, revision, message)
+                    .await?;
+            revision = next;
+            inserted_any |= inserted;
+        }
+        let _ = insertion.delivered.send(());
+    }
+    Ok((revision, inserted_any))
+}
+
+pub(super) async fn append_runtime_message(
     store: &Store,
     prepared: &PreparedRun,
     client: &mut ClientPort,
     cancellation: &CancellationToken,
     revision: crate::model::RevisionId,
     message: CanonicalMessage,
-) -> std::result::Result<crate::model::RevisionId, RunOutcome> {
+) -> std::result::Result<(crate::model::RevisionId, bool), RunOutcome> {
     let event_id = message.runtime_event_id.clone().ok_or_else(|| {
         RunOutcome::Failed(RunFailure::Protocol(
             "runtime message has no event identity".into(),
@@ -660,7 +796,7 @@ async fn append_runtime_message(
         .await
         .map_err(|error| RunOutcome::Failed(error.into()))?;
     if !inserted {
-        return Ok(revision);
+        return Ok((revision, false));
     }
     let (barrier, ready) = CommitBarrier::before_continue();
     emit(
@@ -675,7 +811,7 @@ async fn append_runtime_message(
     .await
     .map_err(|_| client_failure())?;
     wait_for_state_ready(ready, cancellation).await?;
-    Ok(revision)
+    Ok((revision, true))
 }
 
 async fn hydrate_tool_images(
@@ -754,11 +890,15 @@ fn failure_message(failure: &RunFailure) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{auto_compaction_partition, estimate_context_tokens, hydrate_tool_images};
+    use super::{
+        auto_compaction_partition, estimate_context_tokens, hydrate_tool_images,
+        should_auto_compact, should_repeat_auto_compaction, ContextUsageAnchor,
+    };
     use crate::{
         model::{
-            CanonicalMessage, ContentPart, Origin, ProjectedContent, ProjectedMessage, PromptSpec,
-            Role, ToolImageReference, ToolResultContent,
+            CanonicalMessage, ContentPart, ConversationId, ModelSpec, Origin, PreparedRun,
+            ProjectedContent, ProjectedMessage, PromptSpec, RevisionId, Role, RunAction, RunId,
+            RunKind, ToolImageReference, ToolResultContent,
         },
         store::Store,
     };
@@ -785,6 +925,108 @@ mod tests {
 
         assert!(estimate_context_tokens(&prompt, &long) > 25_000);
         assert!(estimate_context_tokens(&prompt, &long) > estimate_context_tokens(&prompt, &short));
+    }
+
+    #[test]
+    fn real_previous_input_only_estimates_messages_added_after_the_anchor() {
+        let old_history =
+            CanonicalMessage::text("old-history", Role::User, Origin::User, "x".repeat(698_641));
+        let current_runtime = CanonicalMessage::text(
+            "runtime:current",
+            Role::User,
+            Origin::Runtime,
+            "current request",
+        );
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(200_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert_eq!(
+            estimate_context_tokens(&prepared.prompt, &messages),
+            190_813
+        );
+        assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
+    }
+
+    #[test]
+    fn real_previous_input_compacts_after_the_new_message_crosses_the_reserve() {
+        let old_history =
+            CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text(
+            "runtime:current",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(190_000),
+        );
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(200_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
+    }
+
+    #[test]
+    fn replacement_history_is_the_auto_compaction_baseline() {
+        let pre_compaction_count = 10;
+        let replacement_count = 2;
+
+        assert!(should_repeat_auto_compaction(None, pre_compaction_count));
+        assert!(!should_repeat_auto_compaction(
+            Some(replacement_count),
+            replacement_count
+        ));
+        assert!(should_repeat_auto_compaction(
+            Some(replacement_count),
+            replacement_count + 1
+        ));
     }
 
     #[test]

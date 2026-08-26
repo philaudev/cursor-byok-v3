@@ -2,7 +2,8 @@ use crate::Result;
 use axum::{extract::State, Json};
 
 use crate::store::{
-    PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage, TabSettings,
+    DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage,
+    TabSettings,
 };
 
 use super::{ControlService, ObservabilitySettings};
@@ -59,4 +60,16 @@ pub async fn update_tab(
     Json(settings): Json<TabSettings>,
 ) -> Result<Json<TabSettings>> {
     Ok(Json(service.set_tab_settings(settings).await?))
+}
+
+pub async fn get_desktop(State(service): State<ControlService>) -> Result<Json<DesktopSettings>> {
+    Ok(Json(service.desktop_settings().await?))
+}
+
+pub async fn update_desktop(
+    State(service): State<ControlService>,
+    Json(settings): Json<DesktopSettings>,
+) -> Result<Json<DesktopSettings>> {
+    service.set_desktop_settings(settings).await?;
+    get_desktop(State(service)).await
 }

@@ -12,6 +12,7 @@ async fn runtime_event_is_appended_exactly_once() {
     let root = store.ensure_conversation(&conversation_id).await.unwrap();
     let run = PreparedRun {
         run_id: RunId::new("run"),
+        cursor_request_id: None,
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("model"),

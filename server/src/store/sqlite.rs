@@ -7,9 +7,12 @@ use sqlx::{
 
 use crate::Result;
 
+use super::writer::WriteCoordinator;
+
 #[derive(Clone)]
 pub struct Store {
     pub(crate) pool: SqlitePool,
+    pub(crate) writes: WriteCoordinator,
 }
 
 impl Store {
@@ -25,7 +28,10 @@ impl Store {
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            writes: WriteCoordinator::default(),
+        })
     }
 
     pub fn pool(&self) -> &SqlitePool {

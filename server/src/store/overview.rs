@@ -24,7 +24,6 @@ impl Store {
         start_ms: Option<i64>,
         end_ms: Option<i64>,
         model_hashes: Option<&str>,
-        provider_ids: Option<&str>,
     ) -> Result<Overview> {
         let call_row = sqlx::query(
             "SELECT
@@ -35,11 +34,7 @@ impl Store {
              WHERE status != 'running'
                AND (? IS NULL OR created_at_ms >= ?)
                AND (? IS NULL OR created_at_ms < ?)
-               AND (? IS NULL OR model_hash IN (SELECT value FROM json_each(?)))
-               AND (? IS NULL OR model_hash IN (
-                 SELECT model_hash FROM provider_models
-                 WHERE provider_id IN (SELECT value FROM json_each(?))
-               ))",
+               AND (? IS NULL OR model_hash IN (SELECT value FROM json_each(?)))",
         )
         .bind(start_ms)
         .bind(start_ms)
@@ -47,8 +42,6 @@ impl Store {
         .bind(end_ms)
         .bind(model_hashes)
         .bind(model_hashes)
-        .bind(provider_ids)
-        .bind(provider_ids)
         .fetch_one(&self.pool)
         .await?;
         let token_row = sqlx::query(&format!(
@@ -60,11 +53,7 @@ impl Store {
              FROM llm_calls
              WHERE (? IS NULL OR created_at_ms >= ?)
                AND (? IS NULL OR created_at_ms < ?)
-               AND (? IS NULL OR model_hash IN (SELECT value FROM json_each(?)))
-               AND (? IS NULL OR model_hash IN (
-                 SELECT model_hash FROM provider_models
-                 WHERE provider_id IN (SELECT value FROM json_each(?))
-               ))",
+               AND (? IS NULL OR model_hash IN (SELECT value FROM json_each(?)))",
             fresh_input = fresh_input_sql(),
         ))
         .bind(start_ms)
@@ -73,8 +62,6 @@ impl Store {
         .bind(end_ms)
         .bind(model_hashes)
         .bind(model_hashes)
-        .bind(provider_ids)
-        .bind(provider_ids)
         .fetch_one(&self.pool)
         .await?;
 
@@ -108,10 +95,6 @@ impl Store {
              WHERE created_at_ms >= ?
                AND (? IS NULL OR created_at_ms < ?)
                AND (? IS NULL OR model_hash IN (SELECT value FROM json_each(?)))
-               AND (? IS NULL OR model_hash IN (
-                 SELECT model_hash FROM provider_models
-                 WHERE provider_id IN (SELECT value FROM json_each(?))
-               ))
              GROUP BY bucket_start_ms
              ORDER BY bucket_start_ms",
             fresh_input = fresh_input_sql(),
@@ -121,8 +104,6 @@ impl Store {
         .bind(end_ms)
         .bind(model_hashes)
         .bind(model_hashes)
-        .bind(provider_ids)
-        .bind(provider_ids)
         .fetch_all(&self.pool)
         .await?;
         let mut recorded = rows
@@ -239,7 +220,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overview_aggregates_llm_calls_and_normalizes_provider_usage() {
+    async fn overview_aggregates_llm_calls_and_normalizes_token_usage() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::connect(&format!(
             "sqlite://{}",
@@ -263,7 +244,7 @@ mod tests {
         )
         .await;
 
-        let overview = store.overview(None, None, None, None).await.unwrap();
+        let overview = store.overview(None, None, None).await.unwrap();
         assert_eq!(overview.metrics.llm_calls, 3);
         assert_eq!(overview.metrics.successful_calls, 2);
         assert_eq!(overview.metrics.failed_calls, 1);
@@ -304,7 +285,7 @@ mod tests {
         .await;
 
         let overview = store
-            .overview(Some(now - 1_000), Some(now + 1_000), None, None)
+            .overview(Some(now - 1_000), Some(now + 1_000), None)
             .await
             .unwrap();
 
@@ -325,7 +306,6 @@ mod tests {
                 Some(now - 1_000),
                 Some(now + 1_000),
                 Some(r#"["missing-model"]"#),
-                None,
             )
             .await
             .unwrap();

@@ -3,7 +3,9 @@ import {
   currentAppVersion,
   hasNativeAppLifecycle,
   readAutostart,
+  readSilentStart,
   writeAutostart,
+  writeSilentStart,
 } from "../../native/appLifecycle";
 import { updateStore, useUpdateStore } from "../../store/updateStore";
 import { Button } from "../ui/Button";
@@ -19,6 +21,8 @@ export function AppLifecycleSettingsCard() {
   const [version, setVersion] = useState("…");
   const [autostart, setAutostart] = useState(false);
   const [loadingAutostart, setLoadingAutostart] = useState(native);
+  const [silentStart, setSilentStart] = useState(false);
+  const [loadingSilentStart, setLoadingSilentStart] = useState(native);
 
   useEffect(() => {
     let disposed = false;
@@ -28,6 +32,10 @@ export function AppLifecycleSettingsCard() {
         .then((enabled) => { if (!disposed) setAutostart(enabled); })
         .catch((cause) => message(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => { if (!disposed) setLoadingAutostart(false); });
+      void readSilentStart()
+        .then((silent) => { if (!disposed) setSilentStart(silent); })
+        .catch(() => {})
+        .finally(() => { if (!disposed) setLoadingSilentStart(false); });
     }
     return () => { disposed = true; };
   }, [message, native]);
@@ -42,6 +50,19 @@ export function AppLifecycleSettingsCard() {
       message(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoadingAutostart(false);
+    }
+  };
+
+  const toggleSilentStart = async (enabled: boolean) => {
+    try {
+      setLoadingSilentStart(true);
+      await writeSilentStart(enabled);
+      setSilentStart(await readSilentStart());
+      message(enabled ? t("已开启静默启动") : t("已关闭静默启动"));
+    } catch (cause) {
+      message(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoadingSilentStart(false);
     }
   };
 
@@ -75,6 +96,18 @@ export function AppLifecycleSettingsCard() {
         onChange={(enabled) => void toggleAutostart(enabled)}
       />
     </div>
+    {autostart && <div className={styles.row}>
+      <div>
+        <strong>{t("静默启动")}</strong>
+        <small>{t("开机启动时不显示主窗口，仅保留系统托盘图标。")}</small>
+      </div>
+      <Switch
+        checked={silentStart}
+        disabled={!native || loadingSilentStart}
+        label={t("静默启动")}
+        onChange={(enabled) => void toggleSilentStart(enabled)}
+      />
+    </div>}
     <div className={styles.row}>
       <div>
         <strong>{t("软件更新")}</strong>

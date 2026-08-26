@@ -12,6 +12,7 @@ impl Store {
         input_id: &str,
         base_revision_id: RevisionId,
     ) -> Result<RevisionId> {
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
             "INSERT INTO input_anchors

@@ -409,6 +409,10 @@ fn creates_subagent(call: &ToolCall) -> bool {
     )
 }
 
+fn missing(name: &str) -> Error {
+    Error::Protocol(format!("{name} returned no result"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -507,8 +511,4 @@ mod tests {
         assert!(content.contains("E0425"));
         assert!(content.contains("cannot find value `name`"));
     }
-}
-
-fn missing(name: &str) -> Error {
-    Error::Protocol(format!("{name} returned no result"))
 }

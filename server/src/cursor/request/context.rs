@@ -348,16 +348,12 @@ pub fn meta_mcp_routes(context: &pb::RequestContext) -> HashMap<(String, String)
                 if tool.tool_name.trim().is_empty() {
                     return None;
                 }
-                let provider_identifier = if server.server_name.trim().is_empty() {
-                    server.server_identifier.clone()
-                } else {
-                    server.server_name.clone()
-                };
                 Some((
                     (server.server_identifier.clone(), tool.tool_name.clone()),
                     McpRoute {
                         name: format!("{}-{}", server.server_identifier, tool.tool_name),
-                        provider_identifier,
+                        provider_identifier: server.server_identifier.clone(),
+                        server_identifier: server.server_name.clone(),
                         tool_name: tool.tool_name.clone(),
                         description: tool.description.clone().unwrap_or_default(),
                     },

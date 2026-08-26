@@ -31,7 +31,6 @@ pub enum CaState {
     Untrusted,
     Ready,
     Invalid,
-    Unsupported,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -95,9 +94,9 @@ impl CursorHarness {
     }
 
     pub async fn status(&self) -> Result<CursorHarnessStatus> {
-        let models = self.inner.store.provider_models(false).await?;
+        let models = self.inner.store.models().await?;
         let configured_models = models.len();
-        let enabled_models = models.iter().filter(|model| model.enabled).count();
+        let enabled_models = configured_models;
         let ca = self.inner.ca.state()?;
         if integration_prerequisites_ready(&ca, self.inner.backend_addr.read().is_some()) {
             self.enable().await?;

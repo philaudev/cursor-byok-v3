@@ -12,6 +12,7 @@ fn prepared(
 ) -> PreparedRun {
     PreparedRun {
         run_id: RunId::new(run_id),
+        cursor_request_id: None,
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("test-model"),
@@ -91,6 +92,35 @@ async fn selecting_an_old_revision_creates_a_branch_without_old_suffixes() {
         )
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn reused_cursor_request_id_maps_to_the_current_distinct_execution() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let conversation_id = ConversationId::new("queued-conversation");
+    let root = store.ensure_conversation(&conversation_id).await.unwrap();
+
+    let mut first = prepared("reused-request:11111111", &conversation_id, root);
+    first.cursor_request_id = Some("reused-request".into());
+    store.claim_run(&first).await.unwrap();
+    assert_eq!(
+        store
+            .active_run_for_cursor_request("reused-request")
+            .await
+            .unwrap(),
+        Some(first.run_id.clone())
+    );
+
+    let mut second = prepared("reused-request:22222222", &conversation_id, root);
+    second.cursor_request_id = Some("reused-request".into());
+    store.claim_run(&second).await.unwrap();
+    assert_eq!(
+        store
+            .active_run_for_cursor_request("reused-request")
+            .await
+            .unwrap(),
+        Some(second.run_id)
+    );
 }
 
 #[tokio::test]
@@ -190,5 +220,97 @@ async fn editing_a_logical_input_discards_its_active_suffix() {
     assert_eq!(
         store.load_revision_messages(old_head).await.unwrap(),
         vec![original, suffix]
+    );
+}
+
+#[tokio::test]
+async fn retry_reuses_only_the_matching_initial_child_chain() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let conversation_id = ConversationId::new("retry-conversation");
+    let root = store.ensure_conversation(&conversation_id).await.unwrap();
+    let first = prepared("first-run", &conversation_id, root);
+    store.claim_run(&first).await.unwrap();
+
+    let context = fixtures::user("request-context:event", "context");
+    let context_revision = store
+        .append_revision(
+            &conversation_id,
+            &first.run_id,
+            root,
+            std::slice::from_ref(&context),
+        )
+        .await
+        .unwrap();
+    let runtime = cursor_server::model::RuntimeEvent {
+        event_id: "cursor:user:stable-id:version".into(),
+        text: "query".into(),
+    }
+    .into_message();
+
+    let (partial_revision, partial_count) = store
+        .match_revision_prefix(&conversation_id, root, &[context.clone(), runtime.clone()])
+        .await
+        .unwrap();
+    assert_eq!(partial_revision, context_revision);
+    assert_eq!(partial_count, 1);
+
+    let runtime_revision = store
+        .append_revision(
+            &conversation_id,
+            &first.run_id,
+            context_revision,
+            std::slice::from_ref(&runtime),
+        )
+        .await
+        .unwrap();
+    let suffix = fixtures::user("old-answer", "old answer");
+    let old_head = store
+        .append_revision(
+            &conversation_id,
+            &first.run_id,
+            runtime_revision,
+            std::slice::from_ref(&suffix),
+        )
+        .await
+        .unwrap();
+
+    let (retry_base, reused) = store
+        .match_revision_prefix(&conversation_id, root, &[context.clone(), runtime.clone()])
+        .await
+        .unwrap();
+    assert_eq!(retry_base, runtime_revision);
+    assert_eq!(reused, 2);
+    assert_eq!(
+        store.load_revision_messages(retry_base).await.unwrap(),
+        vec![context.clone(), runtime.clone()]
+    );
+    let retry = prepared("retry-run", &conversation_id, retry_base);
+    let claimed = store.claim_run(&retry).await.unwrap();
+    assert_eq!(claimed.replaced_run_id.as_ref(), Some(&first.run_id));
+    let first_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE run_id = ?")
+        .bind(first.run_id.as_str())
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(first_status, "cancelled");
+
+    let changed = cursor_server::model::RuntimeEvent {
+        event_id: "cursor:user:stable-id:changed-version".into(),
+        text: "edited query".into(),
+    }
+    .into_message();
+    let (changed_base, reused) = store
+        .match_revision_prefix(&conversation_id, root, &[context, changed])
+        .await
+        .unwrap();
+    assert_eq!(changed_base, context_revision);
+    assert_eq!(reused, 1);
+    assert_eq!(
+        store.load_revision_messages(old_head).await.unwrap(),
+        vec![
+            fixtures::user("request-context:event", "context"),
+            runtime,
+            suffix
+        ]
     );
 }

@@ -41,6 +41,24 @@
   }
 }
 
+.importRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px;
+
+  > div {
+    display: grid;
+    gap: 5px;
+  }
+
+  small {
+    color: var(--vscode-descriptionForeground);
+    font-size: type.$font-size-xs;
+  }
+}
+
 .textButton {
   padding: 4px;
   color: var(--vscode-textLink-foreground);
@@ -131,6 +149,11 @@
 @media (max-width: 680px) {
   .portFields {
     grid-template-columns: 1fr;
+  }
+
+  .importRow {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

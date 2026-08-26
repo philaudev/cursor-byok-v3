@@ -15,12 +15,11 @@ export function CursorCaGate({ busy, waitingForRefresh, onInitialize, onRefresh,
   const ready = useContext(CaReady);
   const { cursorHarness } = useAppStore();
   if (ready) return children;
-  const unsupported = cursorHarness?.ca === "unsupported";
   const installedLocally = cursorHarness?.ca === "untrusted";
   return <div className={styles.gate}>
-    <strong>{unsupported ? t("当前系统暂不支持安装 CA") : installedLocally ? t("需要在系统中信任本地 CA") : t("需要先初始化本地 CA")}</strong>
-    <span>{unsupported ? t("请使用 macOS 或 Windows。") : installedLocally ? t("请在终端中粘贴授权命令并输入密码，完成后点击下方按钮") : t("CA 仅保存在本机，用于安全解析 Cursor 的 HTTPS 请求。")}</span>
-    {!unsupported && <button className={controls.primary} disabled={busy} onClick={waitingForRefresh ? onRefresh : onInitialize}>{busy ? t("刷新中…") : waitingForRefresh ? t("我已初始化，刷新") : installedLocally ? t("打开终端安装 CA") : t("初始化 CA")}</button>}
+    <strong>{installedLocally ? t("需要在系统中信任本地 CA") : t("需要先初始化本地 CA")}</strong>
+    <span>{installedLocally ? t("请在终端中粘贴授权命令并输入密码，完成后点击下方按钮") : t("CA 仅保存在本机，用于安全解析 Cursor 的 HTTPS 请求。")}</span>
+    <button className={controls.primary} disabled={busy} onClick={waitingForRefresh ? onRefresh : onInitialize}>{busy ? t("刷新中…") : waitingForRefresh ? t("我已初始化，刷新") : installedLocally ? t("打开终端安装 CA") : t("初始化 CA")}</button>
   </div>;
 }
 
@@ -29,12 +28,15 @@ export function CursorModelProvider({ children }: { children: ReactNode }) {
   return <ModelsReady.Provider value={models.length > 0}>{children}</ModelsReady.Provider>;
 }
 
-export function CursorModelGate({ onAdd, children }: { onAdd: () => void; children: ReactNode }) {
+export function CursorModelGate({ busy, previewingImport, onAdd, onImport, children }: { busy: boolean; previewingImport: boolean; onAdd: () => void; onImport: () => void; children: ReactNode }) {
   const ready = useContext(ModelsReady);
   if (ready) return children;
   return <div className={styles.gate}>
     <strong>{t("还没有可供 Cursor 使用的模型")}</strong>
-    <span>{t("Cursor 接管已生效；添加上游及其模型配置后即可使用 BYOK 模型。")}</span>
-    <button className={controls.primary} onClick={onAdd}>{t("添加模型")}</button>
+    <span>{t("Cursor 接管已生效；添加模型配置后即可使用 BYOK 模型。")}</span>
+    <div className={styles.gateActions}>
+      <button className={controls.primary} disabled={busy} onClick={onAdd}>{t("添加模型")}</button>
+      <button className={controls.secondary} disabled={busy} onClick={onImport}>{previewingImport ? t("读取中…") : t("导入旧版配置")}</button>
+    </div>
   </div>;
 }

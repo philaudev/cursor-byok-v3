@@ -2,6 +2,8 @@ use std::ops::AddAssign;
 
 use serde::{Deserialize, Serialize};
 
+use super::ProviderType;
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
     pub input_tokens: Option<u64>,
@@ -31,6 +33,17 @@ impl Usage {
             })
             .flatten()
     }
+
+    /// Returns the provider-visible input context without counting cached tokens twice.
+    pub(crate) fn context_input_tokens(self, provider: ProviderType) -> Option<u64> {
+        let input = self.input_tokens?;
+        match provider {
+            ProviderType::OpenAiChat | ProviderType::OpenAiResponses => Some(input),
+            ProviderType::Anthropic => input
+                .checked_add(self.cache_read_tokens.unwrap_or_default())?
+                .checked_add(self.cache_write_tokens.unwrap_or_default()),
+        }
+    }
 }
 
 impl AddAssign for Usage {
@@ -51,6 +64,41 @@ fn sum(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::Usage;
+    use crate::model::ProviderType;
+
+    #[test]
+    fn openai_context_input_does_not_double_count_cached_tokens() {
+        let usage = Usage {
+            input_tokens: Some(140_649),
+            cache_read_tokens: Some(120_000),
+            cache_write_tokens: Some(10_000),
+            ..Usage::default()
+        };
+
+        assert_eq!(
+            usage.context_input_tokens(ProviderType::OpenAiResponses),
+            Some(140_649)
+        );
+        assert_eq!(
+            usage.context_input_tokens(ProviderType::OpenAiChat),
+            Some(140_649)
+        );
+    }
+
+    #[test]
+    fn anthropic_context_input_includes_disjoint_cache_tokens() {
+        let usage = Usage {
+            input_tokens: Some(10_649),
+            cache_read_tokens: Some(120_000),
+            cache_write_tokens: Some(10_000),
+            ..Usage::default()
+        };
+
+        assert_eq!(
+            usage.context_input_tokens(ProviderType::Anthropic),
+            Some(140_649)
+        );
+    }
 
     #[test]
     fn context_tokens_include_cached_prompt_tokens() {
