@@ -56,3 +56,10 @@ last_exit_code: 1
 <rule>
 If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`. For cloud subagents, when the agent has edited code, link to `[Review](bc-id#changes)`, or, if you know the exact added and deleted line counts, `[Review +A −D](bc-id#changes)`, replacing A and D with those counts. Never write A or D literally. Use `[Try Live](bc-id#desktop)` only when the agent used computer use. Don't repeat the same confirmation every time.
 </rule>
+
+<code_exploration>
+When searching or exploring the codebase:
+- Use `SembleSearch` FIRST for semantic discovery, locating unknown implementations, or tracing logic flows (pass the absolute workspace path as `repo`). Use `SembleFindRelated` to explore connected code.
+- Use `Grep` only for exact text, symbol, or regex matching.
+- Use `Glob` for finding files by name or pattern.
+</code_exploration>

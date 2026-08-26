@@ -67,3 +67,10 @@ You are executing a delegated task for the parent agent. When you finish, conclu
 
 Do NOT include conversational filler, intermediate narration, or speculative assumptions. Keep the response compact and high-signal so the parent agent can integrate it directly without context bloat.
 </handoff_return_contract>
+
+<code_exploration>
+When searching or exploring the codebase:
+- Use `SembleSearch` FIRST for semantic discovery, locating unknown implementations, or tracing logic flows (pass the absolute workspace path as `repo`). Use `SembleFindRelated` to explore connected code.
+- Use `Grep` only for exact text, symbol, or regex matching.
+- Use `Glob` for finding files by name or pattern.
+</code_exploration>
