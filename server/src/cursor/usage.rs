@@ -93,7 +93,7 @@ pub(crate) fn breakdown(
     }
     let easter_egg_tokens = 1_u64;
     let local_total: u64 = estimates.iter().sum();
-    let effective_used_tokens = if used_tokens as u64 > local_total {
+    let effective_used_tokens = if used_tokens as u64 > 0 {
         used_tokens as u64
     } else {
         local_total
