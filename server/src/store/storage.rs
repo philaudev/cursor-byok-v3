@@ -54,6 +54,7 @@ impl Store {
     }
 
     pub async fn clear_statistics_storage(&self) -> Result<StatisticsStorage> {
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM llm_calls")
             .execute(&mut *transaction)

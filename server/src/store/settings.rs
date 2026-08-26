@@ -93,6 +93,7 @@ pub(crate) struct ProxySettingsSecret {
 impl Store {
     pub(crate) async fn installation_id(&self) -> Result<String> {
         let generated = uuid::Uuid::new_v4().to_string();
+        let _write = self.writes.lock().await;
         sqlx::query(
             "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO NOTHING",
         )
@@ -165,9 +166,11 @@ impl Store {
             username: input.username.trim().to_owned(),
             password,
         };
+        let value_json = serde_json::to_string(&settings)?;
+        let _write = self.writes.lock().await;
         sqlx::query("INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms")
             .bind(PROXY_SETTINGS_KEY)
-            .bind(serde_json::to_string(&settings)?)
+            .bind(value_json)
             .bind(now_ms())
             .execute(&self.pool)
             .await?;
@@ -206,9 +209,11 @@ impl Store {
                 ));
             }
         }
+        let value_json = serde_json::to_string(&settings)?;
+        let _write = self.writes.lock().await;
         sqlx::query("INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms")
             .bind(TAB_SETTINGS_KEY)
-            .bind(serde_json::to_string(&settings)?)
+            .bind(value_json)
             .bind(now_ms())
             .execute(&self.pool)
             .await?;
@@ -228,11 +233,13 @@ impl Store {
     }
 
     pub async fn set_port_settings(&self, settings: PortSettings) -> Result<()> {
+        let value_json = serde_json::to_string(&settings)?;
+        let _write = self.writes.lock().await;
         sqlx::query(
             "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms",
         )
         .bind(PORT_SETTINGS_KEY)
-        .bind(serde_json::to_string(&settings)?)
+        .bind(value_json)
         .bind(now_ms())
         .execute(&self.pool)
         .await?;
@@ -264,11 +271,13 @@ impl Store {
     }
 
     pub async fn set_desktop_settings(&self, settings: DesktopSettings) -> Result<()> {
+        let value_json = serde_json::to_string(&settings)?;
+        let _write = self.writes.lock().await;
         sqlx::query(
             "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms",
         )
         .bind(DESKTOP_SETTINGS_KEY)
-        .bind(serde_json::to_string(&settings)?)
+        .bind(value_json)
         .bind(now_ms())
         .execute(&self.pool)
         .await?;

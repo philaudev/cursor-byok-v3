@@ -60,6 +60,7 @@ impl Store {
             normalized.push((hash, input));
         }
         let now = now_ms();
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         for (hash, input) in &normalized {
             insert_model(&mut transaction, hash, input, now).await?;
@@ -87,6 +88,7 @@ impl Store {
             }
         }
         let now = now_ms();
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         let mut inserted = 0;
         for (hash, input) in &normalized {
@@ -110,6 +112,7 @@ impl Store {
         let input = normalize_model_input(input)?;
         let next_hash = model_hash(&input)?;
         let now = now_ms();
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         if next_hash != current.model_hash {
             sqlx::query("UPDATE llm_calls SET model_hash = NULL WHERE model_hash = ?")
@@ -165,6 +168,7 @@ impl Store {
     }
 
     pub async fn delete_model(&self, hash: &str) -> Result<()> {
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("UPDATE llm_calls SET model_hash = NULL WHERE model_hash = ?")
             .bind(hash)
@@ -201,6 +205,7 @@ impl Store {
         }
 
         let now = now_ms();
+        let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
         for (index, hash) in model_hashes.iter().enumerate() {
             sqlx::query(

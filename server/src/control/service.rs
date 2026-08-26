@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::StreamExt;
@@ -33,6 +37,7 @@ pub struct ControlService {
     store: Store,
     cursor_harness: CursorHarness,
     provider: Arc<dyn Provider>,
+    model_tests: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -142,6 +147,7 @@ impl ControlService {
             cursor_harness: CursorHarness::new(store.clone())?,
             store,
             provider,
+            model_tests: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -243,7 +249,49 @@ impl ControlService {
         self.store.update_model(model_hash, input).await
     }
 
-    pub async fn test_model(&self, model_hash: &str) -> Result<ModelConnectivityResult> {
+    pub async fn test_model(
+        &self,
+        model_hash: &str,
+        test_id: &str,
+    ) -> Result<ModelConnectivityResult> {
+        let cancellation = CancellationToken::new();
+        let cancellation = {
+            let mut tests = self
+                .model_tests
+                .lock()
+                .expect("model test registry mutex poisoned");
+            tests
+                .entry(test_id.to_owned())
+                .or_insert_with(|| cancellation.clone())
+                .clone()
+        };
+        let result = self.run_model_test(model_hash, cancellation).await;
+        self.model_tests
+            .lock()
+            .expect("model test registry mutex poisoned")
+            .remove(test_id);
+        result
+    }
+
+    pub fn cancel_model_test(&self, test_id: &str) {
+        let cancellation = {
+            let mut tests = self
+                .model_tests
+                .lock()
+                .expect("model test registry mutex poisoned");
+            tests
+                .entry(test_id.to_owned())
+                .or_insert_with(CancellationToken::new)
+                .clone()
+        };
+        cancellation.cancel();
+    }
+
+    async fn run_model_test(
+        &self,
+        model_hash: &str,
+        cancellation: CancellationToken,
+    ) -> Result<ModelConnectivityResult> {
         const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
         const TEST_PROMPT: &str = "Output the numbers 1 through 120 separated by a single space. No commas, no newlines, no explanation.";
 
@@ -255,12 +303,11 @@ impl ControlService {
         let mut model = ModelSpec::new(model_hash);
         configured.configure(&mut model);
         model.max_output_tokens = Some(configured.max_output_tokens().unwrap_or(65_536));
-        let test_id = format!("model-test-{}", uuid::Uuid::new_v4());
-        let call_id = test_id.clone();
+        let call_id = format!("model-test-{}", uuid::Uuid::new_v4());
         let invocation = ModelInvocation {
-            call_id: test_id.clone(),
-            run_id: test_id.clone(),
-            conversation_id: test_id,
+            call_id: call_id.clone(),
+            run_id: call_id.clone(),
+            conversation_id: call_id.clone(),
             provider_call_index: 0,
             request: ModelRequest {
                 prompt: PromptSpec {
@@ -277,7 +324,6 @@ impl ControlService {
                 }],
             },
         };
-        let cancellation = CancellationToken::new();
         let started = Instant::now();
         let mut first_text_at = None;
         let mut output_tokens = None;
@@ -304,6 +350,9 @@ impl ControlService {
                     ModelEvent::Done(_) => finished = true,
                     _ => {}
                 }
+            }
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
             }
             if !finished {
                 return Err(Error::Protocol(
@@ -792,7 +841,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::{
-        model::{ModelConfigInput, ModelInvocation, ModelType, ProjectedContent},
+        model::{ModelConfig, ModelConfigInput, ModelInvocation, ModelType, ProjectedContent},
         provider::{FinishReason, ModelEvent, Provider, ProviderStream},
         store::Store,
     };
@@ -801,6 +850,10 @@ mod tests {
 
     struct TestProvider {
         invocation: Arc<Mutex<Option<ModelInvocation>>>,
+    }
+
+    struct CancellationProvider {
+        started: Arc<tokio::sync::Notify>,
     }
 
     impl Provider for TestProvider {
@@ -826,17 +879,23 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn connectivity_test_uses_the_configured_llm_provider() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::connect(&format!(
-            "sqlite://{}",
-            directory.path().join("control.db").display()
-        ))
-        .await
-        .unwrap();
-        let invocation = Arc::new(Mutex::new(None));
-        let model = store
+    impl Provider for CancellationProvider {
+        fn stream(
+            &self,
+            _invocation: ModelInvocation,
+            cancellation: CancellationToken,
+        ) -> ProviderStream {
+            let started = self.started.clone();
+            Box::pin(async_stream::try_stream! {
+                started.notify_one();
+                cancellation.cancelled().await;
+                if false { yield ModelEvent::TextStart; }
+            })
+        }
+    }
+
+    async fn create_test_model(store: &Store) -> ModelConfig {
+        store
             .create_model(&ModelConfigInput {
                 model_id: "reasoning-model".into(),
                 display_name: "Reasoning Model".into(),
@@ -861,7 +920,20 @@ mod tests {
                 thinking_budget_tokens: None,
             })
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connectivity_test_uses_the_configured_llm_provider() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("control.db").display()
+        ))
+        .await
+        .unwrap();
+        let invocation = Arc::new(Mutex::new(None));
+        let model = create_test_model(&store).await;
         let service = ControlService::new(
             store,
             Arc::new(TestProvider {
@@ -870,7 +942,10 @@ mod tests {
         )
         .unwrap();
 
-        let result = service.test_model(&model.model_hash).await.unwrap();
+        let result = service
+            .test_model(&model.model_hash, "test-id")
+            .await
+            .unwrap();
 
         assert_eq!(result.output, "OK");
         assert_eq!(result.output_tokens, 2);
@@ -890,6 +965,42 @@ mod tests {
             ProjectedContent::Parts(parts)
                 if matches!(&parts[..], [crate::model::ContentPart::Text { text }] if text == "Output the numbers 1 through 120 separated by a single space. No commas, no newlines, no explanation.")
         ));
+    }
+
+    #[tokio::test]
+    async fn connectivity_test_can_be_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("cancel.db").display()
+        ))
+        .await
+        .unwrap();
+        let model = create_test_model(&store).await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let service = ControlService::new(
+            store,
+            Arc::new(CancellationProvider {
+                started: started.clone(),
+            }),
+        )
+        .unwrap();
+        let running_service = service.clone();
+        let model_hash = model.model_hash.clone();
+        let task =
+            tokio::spawn(
+                async move { running_service.test_model(&model_hash, "cancel-test").await },
+            );
+
+        started.notified().await;
+        service.cancel_model_test("cancel-test");
+
+        assert!(matches!(task.await.unwrap(), Err(crate::Error::Cancelled)));
+        assert!(!service
+            .model_tests
+            .lock()
+            .unwrap()
+            .contains_key("cancel-test"));
     }
 
     #[test]

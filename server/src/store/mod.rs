@@ -13,9 +13,11 @@ mod settings;
 mod sqlite;
 mod storage;
 mod tool_rounds;
+mod writer;
 
 pub use cas::*;
-pub use llm_calls::LlmChunkBatchItem;
+pub(crate) use cursor_traces::BufferedCursorTraceChunk;
+pub(crate) use llm_calls::BufferedLlmChunk;
 pub use runs::*;
 pub use settings::*;
 pub(crate) use sqlite::now_ms;

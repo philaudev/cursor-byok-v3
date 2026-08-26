@@ -213,6 +213,36 @@ jobs:
             --output legacy-update/update.json \
             --notes "Cursor BYOK v${VERSION}"
 
+      - name: Normalize Tauri updater download URLs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p tauri-update
+          release_id=$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"v${VERSION}\") | .id"
+          )
+          test -n "${release_id}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > tauri-update/release.json
+          asset_id=$(node -p 'require("./tauri-update/release.json").assets.find(({ name }) => name === "latest.json")?.id ?? ""')
+          test -n "${asset_id}"
+          gh api \
+            -H "Accept: application/octet-stream" \
+            "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+            > tauri-update/latest.json
+          node scripts/release/normalize-tauri-update.mjs \
+            --manifest tauri-update/latest.json \
+            --release tauri-update/release.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --version "${VERSION}"
+
+      - name: Upload normalized Tauri updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release upload "v${VERSION}" tauri-update/latest.json --clobber
+
       - name: Upload legacy updater assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

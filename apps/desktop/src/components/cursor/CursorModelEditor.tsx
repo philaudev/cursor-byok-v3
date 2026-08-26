@@ -24,7 +24,7 @@ export const emptyCursorModelDraft = (): CursorModelDraft => ({
     base_url: "",
     use_full_url: false,
     api_key: "",
-    tooltip_data: t("备注"),
+    tooltip_data: "",
     model_id: "",
     reasoning_effort: null,
     openai_endpoint: "/v1/responses",
@@ -88,17 +88,17 @@ export function CursorModelEditor({ draft, modelOptions, discovering, onChange, 
       <FormField label="API Key" hint={t("访问模型服务所需的密钥。")}> <SecretTextInput placeholder="sk-xxxxxx" autoComplete="off" value={draft.model.api_key} onChange={(event) => setModel({ api_key: event.target.value })} /></FormField>
 
       <FormField label={t("模型名称")} hint={t("可以直接输入模型标识，也可以读取接口返回的模型列表。")}> <Combobox value={draft.model.model_id} options={modelOptions} placeholder="gpt-5" append={<Button className={styles.discoverButton} disabled={discovering || !canDiscover} onClick={onDiscover}>{discovering ? t("获取中…") : t("获取模型")}</Button>} onChange={(model_id) => setModel({ model_id, display_name: draft.model.display_name || model_id })} /></FormField>
-      <FormField label={t("显示名称")} hint={t("仅用于界面展示，不会改变发送给模型服务的模型名称。")}> <TextInput value={draft.model.display_name} onChange={(event) => setModel({ display_name: event.target.value })} /></FormField>
-      <FormField className={styles.fullWidth} label={t("备注")} hint={t("显示在 Cursor 模型说明中。")}> <TextInput value={draft.model.tooltip_data} onChange={(event) => setModel({ tooltip_data: event.target.value })} /></FormField>
+      <FormField label={t("显示名称")} hint={t("仅用于界面展示，不会改变发送给模型服务的模型名称。")}> <TextInput placeholder={t("例如：主力模型")} value={draft.model.display_name} onChange={(event) => setModel({ display_name: event.target.value })} /></FormField>
+      <FormField className={styles.fullWidth} label={t("备注")} hint={t("显示在 Cursor 模型说明中。")}> <TextInput placeholder={t("请输入模型备注")} value={draft.model.tooltip_data} onChange={(event) => setModel({ tooltip_data: event.target.value })} /></FormField>
 
-      <FormField label={t("上下文窗口 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} value={draft.model.context_window_tokens ?? ""} onChange={(event) => setModel({ context_window_tokens: numberValue(event.target.value) })} /></FormField>
+      <FormField label={t("上下文窗口 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} placeholder={t("留空使用默认值")} value={draft.model.context_window_tokens ?? ""} onChange={(event) => setModel({ context_window_tokens: numberValue(event.target.value) })} /></FormField>
       {draft.model.type === "openai" ? <>
-        <FormField label={t("最大输出 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} value={draft.model.max_completion_tokens ?? ""} onChange={(event) => setModel({ max_completion_tokens: numberValue(event.target.value) })} /></FormField>
+        <FormField label={t("最大输出 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} placeholder={t("留空使用默认值")} value={draft.model.max_completion_tokens ?? ""} onChange={(event) => setModel({ max_completion_tokens: numberValue(event.target.value) })} /></FormField>
         <FormField label={t("推理强度")}> <Select ariaLabel={t("推理强度")} value={draft.model.reasoning_effort ?? ""} options={effortOptions(true)} onChange={(value) => setModel({ reasoning_effort: value || null })} /></FormField>
       </> : <>
-        <FormField label={t("最大输出 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} value={draft.model.anthropic_max_tokens ?? ""} onChange={(event) => setModel({ anthropic_max_tokens: numberValue(event.target.value) })} /></FormField>
+        <FormField label={t("最大输出 Token")} hint={t("留空时使用默认值。")}> <TextInput type="number" min={1} step={1} placeholder={t("留空使用默认值")} value={draft.model.anthropic_max_tokens ?? ""} onChange={(event) => setModel({ anthropic_max_tokens: numberValue(event.target.value) })} /></FormField>
         <FormField label={t("思考强度")}> <Select ariaLabel={t("思考强度")} value={draft.model.anthropic_thinking_effort ?? "xhigh"} options={effortOptions(false)} onChange={(anthropic_thinking_effort) => setModel({ anthropic_thinking_effort })} /></FormField>
-        <FormField label={t("思考预算 Token")} hint={t("留空时使用 adaptive thinking。")}> <TextInput type="number" min={1} step={1} value={draft.model.thinking_budget_tokens ?? ""} onChange={(event) => setModel({ thinking_budget_tokens: numberValue(event.target.value) })} /></FormField>
+        <FormField label={t("思考预算 Token")} hint={t("留空时使用 adaptive thinking。")}> <TextInput type="number" min={1} step={1} placeholder={t("留空使用 adaptive thinking")} value={draft.model.thinking_budget_tokens ?? ""} onChange={(event) => setModel({ thinking_budget_tokens: numberValue(event.target.value) })} /></FormField>
       </>}
 
       <ToggleJsonField

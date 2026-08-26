@@ -291,7 +291,8 @@ export const api = {
   importV0049Models: () => request<LegacyModelImportResult>("/models/import-v0049", { method: "POST" }),
   updateModel: (hash: string, model: ModelInput) => request<Model>(`/models/${hash}`, { method: "PUT", body: JSON.stringify(model) }),
   deleteModel: (hash: string) => request<void>(`/models/${hash}`, { method: "DELETE" }),
-  testModel: (hash: string) => request<ModelConnectivityResult>(`/models/${hash}/test`, { method: "POST" }),
+  testModel: (hash: string, testId: string, signal?: AbortSignal) => request<ModelConnectivityResult>(`/models/${hash}/test/${encodeURIComponent(testId)}`, { method: "POST", signal }),
+  cancelModelTest: (hash: string, testId: string) => request<void>(`/models/${hash}/test/${encodeURIComponent(testId)}`, { method: "DELETE" }),
   overview: (filter?: { startMs: number; endMs: number; modelHashes?: string[] }) => {
     const params = new URLSearchParams();
     if (filter) {

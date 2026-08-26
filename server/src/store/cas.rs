@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{Row, Sqlite, Transaction};
 
 use crate::{Error, Result};
 
@@ -44,13 +44,25 @@ pub struct BlobEdge {
 
 impl Store {
     pub async fn put_blob(&self, data: &[u8], edges: &[BlobEdge]) -> Result<BlobId> {
+        let _write = self.writes.lock().await;
         let blob_id = BlobId::digest(data);
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Self::put_blob_tx(&mut tx, &blob_id, data, edges).await?;
+        tx.commit().await?;
+        Ok(blob_id)
+    }
+
+    pub(crate) async fn put_blob_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        blob_id: &BlobId,
+        data: &[u8],
+        edges: &[BlobEdge],
+    ) -> Result<()> {
         sqlx::query("INSERT OR IGNORE INTO blobs(blob_id, data, created_at_ms) VALUES (?, ?, ?)")
             .bind(blob_id.as_bytes().as_slice())
             .bind(data)
             .bind(now_ms())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         for edge in edges {
             sqlx::query(
@@ -59,11 +71,10 @@ impl Store {
             .bind(blob_id.as_bytes().as_slice())
             .bind(edge.child.as_bytes().as_slice())
             .bind(&edge.field_name)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
-        tx.commit().await?;
-        Ok(blob_id)
+        Ok(())
     }
 
     pub async fn get_blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>> {

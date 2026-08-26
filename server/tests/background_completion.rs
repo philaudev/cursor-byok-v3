@@ -76,7 +76,7 @@ async fn background_subagent_completion_starts_a_simulated_parent_turn() {
         .unwrap();
     assert!(messages.iter().any(|message| {
         message.runtime_event_id.as_deref()
-            == Some("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id")
+            == Some("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id:task-call")
             && matches!(&message.content, MessageContent::Parts { parts } if !parts.is_empty())
     }));
 
@@ -131,9 +131,134 @@ async fn background_subagent_completion_starts_a_simulated_parent_turn() {
     assert_eq!(
         runtime_ids,
         [
-            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id",
-            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id-2"
+            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id:task-call",
+            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id-2:task-call"
         ]
+    );
+}
+
+#[tokio::test]
+async fn background_completion_joins_the_active_run_instead_of_replacing_it() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    let first_ready = provider.push_gated(stop_response("model-call-1", "first response"));
+    provider.push(stop_response("model-call-2", "processed both completions"));
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = CursorSessionRegistry::new(
+        store.clone(),
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+        Default::default(),
+    );
+    let first = registry.get_or_create("active-completion-1").await.unwrap();
+    let first_run = tokio::spawn(async move {
+        drive_completion(
+            &first,
+            completion_run(
+                "child-1",
+                "parent-run-1",
+                pb::ConversationStateStructure::default(),
+            ),
+        )
+        .await
+    });
+    while provider.requests().is_empty() {
+        tokio::task::yield_now().await;
+    }
+
+    let second = registry.get_or_create("active-completion-2").await.unwrap();
+    let second_run = tokio::spawn(async move {
+        drive_forwarded_completion(
+            &second,
+            completion_run(
+                "child-2",
+                "parent-run-2",
+                pb::ConversationStateStructure::default(),
+            ),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    first_ready.notify_one();
+
+    second_run.await.unwrap();
+    first_run.await.unwrap();
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    let history = serde_json::to_string(&requests[1].history).unwrap();
+    assert!(history.contains("child-1"));
+    assert!(history.contains("first response"));
+    assert!(history.contains("child-2"));
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM runs WHERE conversation_id = 'parent-conversation' ORDER BY created_at_ms",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(statuses, ["completed"]);
+}
+
+#[tokio::test]
+async fn retrying_one_background_completion_reuses_its_runtime_message() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(stop_response("model-call", "followed up"));
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = CursorSessionRegistry::new(
+        store.clone(),
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+        Default::default(),
+    );
+    let first = registry.get_or_create("completion-retry-1").await.unwrap();
+    let (checkpoint, _) = drive_completion(
+        &first,
+        completion_run(
+            "retry-child",
+            "completion-retry-run-1",
+            pb::ConversationStateStructure {
+                mode: Some(pb::AgentMode::Multitask as i32),
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+
+    provider.push(stop_response("model-call-2", "followed up again"));
+    let second = registry.get_or_create("completion-retry-2").await.unwrap();
+    drive_completion(
+        &second,
+        completion_run("retry-child", "completion-retry-run-2", checkpoint),
+    )
+    .await;
+
+    let messages = store
+        .load_current_messages(&cursor_server::model::ConversationId::new(
+            "parent-conversation",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                message.runtime_event_id.as_deref()
+                    == Some(
+                        "background-completed:BACKGROUND_TASK_KIND_SUBAGENT:retry-child:task-call",
+                    )
+            })
+            .count(),
+        1
     );
 }
 
@@ -335,10 +460,110 @@ async fn drive_completion(
     )
 }
 
+async fn drive_forwarded_completion(handle: &CursorSessionHandle, message: pb::AgentClientMessage) {
+    let mut output = handle.subscribe();
+    handle
+        .command(CursorCommand::Append {
+            seqno: 0,
+            message: Box::new(message),
+        })
+        .await
+        .unwrap();
+    let mut append_seqno = 1;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            assert_eq!(payload.as_ref(), b"{}");
+            return;
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        match server.message {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => {
+                assert_eq!(exec.id, 0);
+                handle
+                    .command(CursorCommand::Append {
+                        seqno: append_seqno,
+                        message: Box::new(pb::AgentClientMessage {
+                            message: Some(
+                                pb::agent_client_message::Message::ExecClientControlMessage(
+                                    pb::ExecClientControlMessage {
+                                        message: Some(
+                                            pb::exec_client_control_message::Message::StreamClose(
+                                                pb::ExecClientStreamClose { id: 0 },
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                        }),
+                    })
+                    .await
+                    .unwrap();
+                append_seqno += 1;
+                handle
+                    .command(CursorCommand::Append {
+                        seqno: append_seqno,
+                        message: Box::new(pb::AgentClientMessage {
+                            message: Some(pb::agent_client_message::Message::ExecClientMessage(
+                                pb::ExecClientMessage {
+                                    id: 0,
+                                    message: Some(
+                                        pb::exec_client_message::Message::RequestContextResult(
+                                            pb::RequestContextResult {
+                                                result: Some(
+                                                    pb::request_context_result::Result::Success(
+                                                        pb::RequestContextSuccess {
+                                                            request_context: Some(
+                                                                pb::RequestContext::default(),
+                                                            ),
+                                                            ..Default::default()
+                                                        },
+                                                    ),
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                    })
+                    .await
+                    .unwrap();
+                append_seqno += 1;
+            }
+            Some(pb::agent_server_message::Message::KvServerMessage(kv)) => {
+                handle
+                    .command(CursorCommand::Append {
+                        seqno: append_seqno,
+                        message: Box::new(kv_ack(kv.id)),
+                    })
+                    .await
+                    .unwrap();
+                append_seqno += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn completion_run(
     child_id: &str,
     run_id: &str,
     conversation_state: pb::ConversationStateStructure,
+) -> pb::AgentClientMessage {
+    completion_run_with_detail(child_id, run_id, conversation_state, "child result")
+}
+
+fn completion_run_with_detail(
+    child_id: &str,
+    run_id: &str,
+    conversation_state: pb::ConversationStateStructure,
+    detail: &str,
 ) -> pb::AgentClientMessage {
     pb::AgentClientMessage {
         message: Some(pb::agent_client_message::Message::RunRequest(
@@ -352,7 +577,7 @@ fn completion_run(
                                     kind: pb::BackgroundTaskKind::Subagent as i32,
                                     status: pb::BackgroundTaskStatus::Success as i32,
                                     title: "Inspect protocol".into(),
-                                    detail: Some("child result".into()),
+                                    detail: Some(detail.into()),
                                     output_path: Some("/tmp/child.jsonl".into()),
                                     reason: pb::BackgroundTaskCompletionReason::TaskFinished as i32,
                                     subagent_id: Some(child_id.into()),

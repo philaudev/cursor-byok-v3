@@ -1,4 +1,4 @@
-use sqlx::Row;
+use sqlx::{Row, Sqlite, Transaction};
 
 use crate::{
     model::{CursorRunTraceArtifact, CursorRunTraceSummary},
@@ -6,6 +6,21 @@ use crate::{
 };
 
 use super::{now_ms, BlobId, Store};
+
+#[derive(Clone, Debug)]
+pub(crate) struct BufferedCursorTraceChunk {
+    pub(crate) source: String,
+    pub(crate) data: Vec<u8>,
+}
+
+impl BufferedCursorTraceChunk {
+    pub(crate) fn new(source: &str, data: &[u8]) -> Self {
+        Self {
+            source: source.into(),
+            data: data.to_vec(),
+        }
+    }
+}
 
 impl Store {
     pub async fn start_cursor_trace_if_detailed(
@@ -21,6 +36,7 @@ impl Store {
         if !self.detailed_logging().await? {
             return Ok(false);
         }
+        let _write = self.writes.lock().await;
         sqlx::query(
             "INSERT OR IGNORE INTO cursor_run_traces(
                 request_id, conversation_id, route, model_id, status, received_at_ms
@@ -53,9 +69,22 @@ impl Store {
         data: &[u8],
         metadata: &serde_json::Value,
     ) -> Result<()> {
-        let blob_id = self.put_blob(data, &[]).await?;
-        self.link_cursor_trace_artifact(request_id, artifact_type, source, &blob_id, metadata)
-            .await
+        let metadata_json = serde_json::to_string(metadata)?;
+        let blob_id = BlobId::digest(data);
+        let _write = self.writes.lock().await;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Self::put_blob_tx(&mut tx, &blob_id, data, &[]).await?;
+        Self::link_cursor_trace_artifact_tx(
+            &mut tx,
+            request_id,
+            artifact_type,
+            source,
+            &blob_id,
+            &metadata_json,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn link_cursor_trace_artifact(
@@ -66,13 +95,36 @@ impl Store {
         blob_id: &BlobId,
         metadata: &serde_json::Value,
     ) -> Result<()> {
+        let metadata_json = serde_json::to_string(metadata)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Self::link_cursor_trace_artifact_tx(
+            &mut tx,
+            request_id,
+            artifact_type,
+            source,
+            blob_id,
+            &metadata_json,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn link_cursor_trace_artifact_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        request_id: &str,
+        artifact_type: &str,
+        source: &str,
+        blob_id: &BlobId,
+        metadata_json: &str,
+    ) -> Result<()> {
         let next: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq), -1) + 1
              FROM cursor_run_trace_artifacts WHERE request_id = ?",
         )
         .bind(request_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         sqlx::query(
             "INSERT INTO cursor_run_trace_artifacts(
@@ -84,11 +136,10 @@ impl Store {
         .bind(artifact_type)
         .bind(source)
         .bind(blob_id.as_bytes().as_slice())
-        .bind(serde_json::to_string(metadata)?)
+        .bind(metadata_json)
         .bind(now_ms())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -97,6 +148,7 @@ impl Store {
         request_id: &str,
         bytes: usize,
     ) -> Result<()> {
+        let _write = self.writes.lock().await;
         sqlx::query(
             "UPDATE cursor_run_traces
              SET request_bytes = request_bytes + ? WHERE request_id = ?",
@@ -110,6 +162,7 @@ impl Store {
 
     pub async fn start_cursor_trace_response(&self, request_id: &str, status: u16) -> Result<()> {
         let now = now_ms();
+        let _write = self.writes.lock().await;
         sqlx::query(
             "UPDATE cursor_run_traces
              SET status = 'running', http_status = ?,
@@ -131,30 +184,58 @@ impl Store {
         source: &str,
         data: &[u8],
     ) -> Result<()> {
-        self.append_cursor_trace_artifact(
+        self.add_cursor_trace_response_chunks(
             request_id,
-            "run_sse_chunk",
-            source,
-            data,
-            &serde_json::json!({"byte_count": data.len()}),
+            &[BufferedCursorTraceChunk::new(source, data)],
         )
-        .await?;
+        .await
+    }
+
+    pub(crate) async fn add_cursor_trace_response_chunks(
+        &self,
+        request_id: &str,
+        chunks: &[BufferedCursorTraceChunk],
+    ) -> Result<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let response_bytes = chunks.iter().map(|chunk| chunk.data.len()).sum::<usize>();
+        let _write = self.writes.lock().await;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        for chunk in chunks {
+            let metadata_json =
+                serde_json::to_string(&serde_json::json!({"byte_count": chunk.data.len()}))?;
+            let blob_id = BlobId::digest(&chunk.data);
+            Self::put_blob_tx(&mut tx, &blob_id, &chunk.data, &[]).await?;
+            Self::link_cursor_trace_artifact_tx(
+                &mut tx,
+                request_id,
+                "run_sse_chunk",
+                &chunk.source,
+                &blob_id,
+                &metadata_json,
+            )
+            .await?;
+        }
         sqlx::query(
             "UPDATE cursor_run_traces
              SET response_bytes = response_bytes + ?,
-                 response_event_count = response_event_count + 1,
+                 response_event_count = response_event_count + ?,
                  first_response_at_ms = COALESCE(first_response_at_ms, ?)
              WHERE request_id = ?",
         )
-        .bind(as_i64(data.len()))
+        .bind(as_i64(response_bytes))
+        .bind(chunks.len() as i64)
         .bind(now_ms())
         .bind(request_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     pub async fn finish_cursor_trace(&self, request_id: &str, error: Option<&str>) -> Result<()> {
+        let _write = self.writes.lock().await;
         sqlx::query(
             "UPDATE cursor_run_traces
              SET status = ?, finished_at_ms = ?, error_message = ?
@@ -243,4 +324,62 @@ fn trace_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CursorRunTraceSummary>
 
 fn as_i64(value: usize) -> i64 {
     value.min(i64::MAX as usize) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn records_a_batch_of_trace_chunks_with_one_summary_update() {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+        store.set_detailed_logging(true).await.unwrap();
+        store
+            .start_cursor_trace_if_detailed("trace", None, "cursor_official", None)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE trace_summary_updates(count INTEGER NOT NULL)")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO trace_summary_updates(count) VALUES (0)")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER count_trace_summary_updates
+             AFTER UPDATE OF response_bytes ON cursor_run_traces
+             BEGIN
+                 UPDATE trace_summary_updates SET count = count + 1;
+             END",
+        )
+        .execute(store.pool())
+        .await
+        .unwrap();
+
+        store
+            .add_cursor_trace_response_chunks(
+                "trace",
+                &[
+                    BufferedCursorTraceChunk::new("cursor_official", b"one"),
+                    BufferedCursorTraceChunk::new("cursor_official", b"two"),
+                    BufferedCursorTraceChunk::new("cursor_official", b"three"),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let trace = store.cursor_trace("trace").await.unwrap().unwrap();
+        assert_eq!(trace.response_bytes, 11);
+        assert_eq!(trace.response_event_count, 3);
+        assert_eq!(
+            store.cursor_trace_artifacts("trace").await.unwrap().len(),
+            3
+        );
+        let updates: i64 = sqlx::query_scalar("SELECT count FROM trace_summary_updates")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(updates, 1);
+    }
 }

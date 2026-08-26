@@ -103,6 +103,48 @@ async fn cursor_trace_links_detailed_artifacts_to_the_logical_run() {
 }
 
 #[tokio::test]
+async fn cursor_trace_artifact_and_blob_are_written_atomically() {
+    let (_directory, store) = test_store("cursor-trace-atomic.db").await;
+    store.set_detailed_logging(true).await.unwrap();
+    store
+        .start_cursor_trace_if_detailed(
+            "request-atomic",
+            Some("conversation"),
+            "cursor_official",
+            Some("model"),
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_trace_artifact
+         BEFORE INSERT ON cursor_run_trace_artifacts
+         BEGIN
+             SELECT RAISE(ABORT, 'rejected artifact');
+         END",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+
+    assert!(store
+        .append_cursor_trace_artifact(
+            "request-atomic",
+            "run_sse_chunk",
+            "cursor_official",
+            b"must-rollback",
+            &serde_json::json!({}),
+        )
+        .await
+        .is_err());
+
+    let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(blob_count, 0);
+}
+
+#[tokio::test]
 async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
     let app = Router::new().route(
         "/proxy/generate",

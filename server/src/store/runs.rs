@@ -36,6 +36,7 @@ pub struct ClaimedRun {
 
 impl Store {
     pub async fn claim_run(&self, prepared: &PreparedRun) -> Result<ClaimedRun> {
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = now_ms();
         Self::ensure_conversation_tx(&mut tx, &prepared.conversation_id).await?;
@@ -146,6 +147,7 @@ impl Store {
     }
 
     pub async fn begin_provider_call(&self, run_id: &RunId) -> Result<u64> {
+        let _write = self.writes.lock().await;
         let index: Option<i64> = sqlx::query_scalar(
             "UPDATE runs SET provider_call_index = provider_call_index + 1, updated_at_ms = ?
              WHERE run_id = ? AND status = 'running'
@@ -167,6 +169,8 @@ impl Store {
         usage: Option<Usage>,
         failure: Option<(&str, &str)>,
     ) -> Result<bool> {
+        let usage_json = serde_json::to_string(&usage)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
             "SELECT conversation_id, status, failure_category, failure_summary
@@ -200,7 +204,7 @@ impl Store {
              WHERE run_id = ? AND status = 'running'",
         )
         .bind(status.as_str())
-        .bind(serde_json::to_string(&usage)?)
+        .bind(usage_json)
         .bind(category)
         .bind(summary)
         .bind(now)

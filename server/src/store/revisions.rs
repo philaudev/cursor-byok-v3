@@ -13,6 +13,7 @@ impl Store {
         &self,
         conversation_id: &ConversationId,
     ) -> Result<RevisionId> {
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let revision = Self::ensure_conversation_tx(&mut tx, conversation_id).await?;
         tx.commit().await?;
@@ -57,14 +58,47 @@ impl Store {
         self.load_revision_messages(RevisionId(revision_id)).await
     }
 
+    pub async fn match_revision_prefix(
+        &self,
+        conversation_id: &ConversationId,
+        base_revision_id: RevisionId,
+        additions: &[CanonicalMessage],
+    ) -> Result<(RevisionId, usize)> {
+        let mut revision = base_revision_id;
+        let mut messages = self.load_revision_messages(revision).await?;
+        for (index, addition) in additions.iter().enumerate() {
+            messages.push(addition.clone());
+            let digest = message_digest(&messages)?;
+            let child = sqlx::query_scalar::<_, i64>(
+                "SELECT revision_id FROM conversation_revisions
+                 WHERE conversation_id = ? AND parent_revision_id = ? AND state_digest = ?",
+            )
+            .bind(conversation_id.as_str())
+            .bind(revision.0)
+            .bind(digest.as_slice())
+            .fetch_optional(&self.pool)
+            .await?
+            .map(RevisionId);
+            let Some(child) = child else {
+                return Ok((revision, index));
+            };
+            if self.load_revision_messages(child).await? != messages {
+                return Ok((revision, index));
+            }
+            revision = child;
+        }
+        Ok((revision, additions.len()))
+    }
+
     pub async fn import_revision(
         &self,
         conversation_id: &ConversationId,
         messages: &[CanonicalMessage],
     ) -> Result<RevisionId> {
+        let digest = message_digest(messages)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let current = Self::ensure_conversation_tx(&mut tx, conversation_id).await?;
-        let digest = message_digest(messages)?;
         if let Some(existing) = sqlx::query_scalar::<_, i64>(
             "SELECT revision_id FROM conversation_revisions
              WHERE conversation_id = ? AND state_digest = ?",
@@ -107,9 +141,20 @@ impl Store {
         if additions.is_empty() {
             return Ok(expected);
         }
+        let mut full = self.load_revision_messages(expected).await?;
+        full.extend_from_slice(additions);
+        let digest = message_digest(&full)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let revision =
-            Self::append_revision_tx(&mut tx, conversation_id, run_id, expected, additions).await?;
+        let revision = Self::append_revision_with_digest_tx(
+            &mut tx,
+            conversation_id,
+            run_id,
+            expected,
+            additions,
+            digest,
+        )
+        .await?;
         tx.commit().await?;
         Ok(revision)
     }
@@ -121,6 +166,8 @@ impl Store {
         expected: RevisionId,
         messages: &[CanonicalMessage],
     ) -> Result<RevisionId> {
+        let digest = message_digest(messages)?;
+        let _write = self.writes.lock().await;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         Self::require_active_head_tx(&mut tx, conversation_id, run_id, expected).await?;
         let root: i64 = sqlx::query_scalar(
@@ -130,7 +177,6 @@ impl Store {
         .bind(conversation_id.as_str())
         .fetch_one(&mut *tx)
         .await?;
-        let digest = message_digest(messages)?;
         let revision =
             Self::insert_revision_tx(&mut tx, conversation_id, RevisionId(root), messages, digest)
                 .await?;
@@ -202,10 +248,29 @@ impl Store {
         expected: RevisionId,
         additions: &[CanonicalMessage],
     ) -> Result<RevisionId> {
-        Self::require_active_head_tx(tx, conversation_id, run_id, expected).await?;
         let mut full = Self::load_revision_messages_tx(tx, expected.0).await?;
         full.extend_from_slice(additions);
         let digest = message_digest(&full)?;
+        Self::append_revision_with_digest_tx(
+            tx,
+            conversation_id,
+            run_id,
+            expected,
+            additions,
+            digest,
+        )
+        .await
+    }
+
+    async fn append_revision_with_digest_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        conversation_id: &ConversationId,
+        run_id: &RunId,
+        expected: RevisionId,
+        additions: &[CanonicalMessage],
+        digest: [u8; 32],
+    ) -> Result<RevisionId> {
+        Self::require_active_head_tx(tx, conversation_id, run_id, expected).await?;
         if sqlx::query_scalar::<_, i64>(
             "SELECT revision_id FROM conversation_revisions
              WHERE conversation_id = ? AND state_digest = ?",
