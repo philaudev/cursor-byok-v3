@@ -252,10 +252,10 @@ impl CursorSession {
                             }
                         }
                         if !self.context.compacting {
-                            context_tokens = usage
-                                .input_tokens
-                                .zip(usage.output_tokens)
-                                .and_then(|(input, output)| input.checked_add(output));
+                            // Context Usage is the prompt size sent to the model, so output
+                            // usage is irrelevant. A missing input count explicitly requests
+                            // a local prompt/history estimate for this completed provider call.
+                            context_tokens = Some(usage.input_tokens.unwrap_or_default());
                         }
                         match &mut turn_usage {
                             Some(total) => *total += usage,

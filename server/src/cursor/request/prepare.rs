@@ -167,23 +167,33 @@ pub(crate) async fn prepare(
     } else {
         checkpoint_prompt.clone()
     };
-    let proposed_base_revision_id = match base_messages.as_mut() {
-        Some(messages) if !messages.is_empty() => {
-            validate_prompt_root(messages)?;
-            messages.retain(|message| {
-                !(message.role == Role::System && message.origin == Origin::Prompt)
-            });
-            store.import_revision(&conversation_id, messages).await?
+    let base_revision_id = if compacting {
+        match base_messages.as_deref() {
+            Some(messages) if !messages.is_empty() => {
+                validate_prompt_root(messages)?;
+                store.import_revision(&conversation_id, messages).await?
+            }
+            Some(_) | None => store.ensure_conversation(&conversation_id).await?,
         }
-        Some(_) | None => store.ensure_conversation(&conversation_id).await?,
-    };
-    let base_revision_id = match input_id {
-        Some(input_id) => {
-            store
-                .anchor_input(&conversation_id, &input_id, proposed_base_revision_id)
-                .await?
+    } else {
+        let proposed_base_revision_id = match base_messages.as_mut() {
+            Some(messages) if !messages.is_empty() => {
+                validate_prompt_root(messages)?;
+                messages.retain(|message| {
+                    !(message.role == Role::System && message.origin == Origin::Prompt)
+                });
+                store.import_revision(&conversation_id, messages).await?
+            }
+            Some(_) | None => store.ensure_conversation(&conversation_id).await?,
+        };
+        match input_id {
+            Some(input_id) => {
+                store
+                    .anchor_input(&conversation_id, &input_id, proposed_base_revision_id)
+                    .await?
+            }
+            None => proposed_base_revision_id,
         }
-        None => proposed_base_revision_id,
     };
     let existing_runtime = match event_id.as_deref() {
         Some(event_id) if !background_completion => {

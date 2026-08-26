@@ -101,7 +101,7 @@ async fn summarize_replaces_model_history_and_preserves_cursor_history() {
     let compacted = run(
         &registry,
         "compact",
-        summary_request("conversation", &model.model_hash, first_state),
+        summary_action_request("conversation", &model.model_hash, first_state),
     )
     .await;
     assert_eq!(compacted.summary_started, 1);
@@ -118,7 +118,7 @@ async fn summarize_replaces_model_history_and_preserves_cursor_history() {
     let compacted_state = compacted.checkpoints.last().unwrap();
     assert_eq!(compacted_state.root_prompt_messages_json.len(), 2);
     assert!(compacted_state.turns.starts_with(&old_turns));
-    assert_eq!(compacted_state.turns.len(), old_turns.len() + 1);
+    assert_eq!(compacted_state.turns, old_turns);
     assert_eq!(compacted_state.self_summary_count, 1);
     let summary_id = compacted_state.summary.as_ref().unwrap();
     let summary = pb::ConversationSummary::decode(compacted.blobs[summary_id].as_slice()).unwrap();
@@ -310,26 +310,16 @@ fn user_request(
     )
 }
 
-fn summary_request(
+fn summary_action_request(
     conversation_id: &str,
     model_id: &str,
     state: pb::ConversationStateStructure,
 ) -> pb::AgentClientMessage {
-    let user = pb::UserMessage {
-        text: "/summarize".into(),
-        message_id: "summary-command".into(),
-        mode: pb::AgentMode::Agent as i32,
-        ..Default::default()
-    };
     request(
         conversation_id,
         model_id,
         Some(state),
-        pb::conversation_action::Action::UserMessageAction(pb::UserMessageAction {
-            user_message: Some(user),
-            request_context: Some(pb::RequestContext::default()),
-            ..Default::default()
-        }),
+        pb::conversation_action::Action::SummarizeAction(Default::default()),
     )
 }
 

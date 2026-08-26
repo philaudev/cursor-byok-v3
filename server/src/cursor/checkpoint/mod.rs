@@ -99,8 +99,6 @@ impl CheckpointBuilder {
         let details = self.base.token_details.get_or_insert_with(Default::default);
         if let Some(used_tokens) = used_tokens {
             details.used_tokens = used_tokens.min(u32::MAX as u64) as u32;
-        } else {
-            details.used_tokens = 0;
         }
         details.max_tokens = max_tokens.min(u32::MAX as u64) as u32;
         details.prompt_context_usage_tree = None;
