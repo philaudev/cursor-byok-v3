@@ -199,9 +199,16 @@ impl RunEngine {
                 revision_id = revision.0,
                 "starting model call"
             );
-            let mut history = match crate::model::project_messages(&messages) {
-                Ok(history) => history,
-                Err(error) => return (RunOutcome::Failed(error.into()), usage),
+            let mut history = if prepared.action == RunAction::Compact {
+                match crate::model::project_compaction_messages(&messages) {
+                    Ok(history) => history,
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                }
+            } else {
+                match crate::model::project_messages(&messages) {
+                    Ok(history) => history,
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                }
             };
             if let Err(error) = hydrate_tool_images(&self.store, &mut history).await {
                 return (RunOutcome::Failed(error.into()), usage);
@@ -473,7 +480,7 @@ impl RunEngine {
             .begin_provider_call(&prepared.run_id)
             .await
             .map_err(|error| RunOutcome::Failed(error.into()))?;
-        let history = crate::model::project_messages(&compactable)
+        let history = crate::model::project_compaction_messages(&compactable)
             .map_err(|error| RunOutcome::Failed(error.into()))?;
         let mut model = prepared.model.clone();
         model.max_output_tokens = Some(COMPACTION_OUTPUT_TOKENS);
