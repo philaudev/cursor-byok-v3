@@ -126,6 +126,15 @@ pub(crate) struct PendingInteraction {
 }
 
 impl CursorToolRuntime {
+    pub fn with_shared_ids(next_id: Arc<AtomicU32>) -> Self {
+        Self {
+            next_id,
+            execs: Arc::new(Mutex::new(HashMap::new())),
+            interactions: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     pub async fn reserve_exec(&self, call: &ToolCall, context: &ExecContext) -> Result<u32> {
         self.reserve_exec_stage(call, context, ExecStage::Direct, None)
             .await
@@ -366,6 +375,18 @@ mod tests {
             arguments_text: arguments.to_string(),
             arguments,
         }
+    }
+
+    #[tokio::test]
+    async fn shared_runtime_ids_are_unique_across_sessions() {
+        let next_id = Arc::new(AtomicU32::new(0));
+        let first = CursorToolRuntime::with_shared_ids(next_id.clone());
+        let second = CursorToolRuntime::with_shared_ids(next_id);
+        let call = task(serde_json::json!({"prompt":"inspect", "model":"child-model"}));
+        let context = ExecContext::default();
+
+        assert_eq!(first.reserve_exec(&call, &context).await.unwrap(), 1);
+        assert_eq!(second.reserve_interaction(&call).await.unwrap(), 2);
     }
 
     #[test]

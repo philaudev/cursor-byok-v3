@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock},
+    sync::{atomic::AtomicU32, Arc, OnceLock},
 };
 
 use bytes::Bytes;
@@ -11,6 +11,7 @@ use crate::{
     cursor::prompting::PromptCompiler,
     cursor::{
         blob_sync::BlobSynchronizer, observability::CursorTraceRecorder, proto::agent::v1 as pb,
+        tools::runtime::CursorToolRuntime,
     },
     provider::Provider,
     run::RunRegistry,
@@ -155,6 +156,7 @@ pub struct CursorSessionRegistry {
 struct RegistryInner {
     runs: Mutex<HashMap<String, CursorSessionHandle>>,
     upstream_runs: Mutex<HashMap<String, u64>>,
+    next_tool_message_id: Arc<AtomicU32>,
     route_changed: Notify,
     run_registry: RunRegistry,
     store: Store,
@@ -183,6 +185,7 @@ impl CursorSessionRegistry {
             inner: Arc::new(RegistryInner {
                 runs: Mutex::new(HashMap::new()),
                 upstream_runs: Mutex::new(HashMap::new()),
+                next_tool_message_id: Arc::new(AtomicU32::new(0)),
                 route_changed: Notify::new(),
                 run_registry,
                 store,
@@ -190,6 +193,10 @@ impl CursorSessionRegistry {
                 compiler,
             }),
         }
+    }
+
+    pub(crate) fn tool_runtime(&self) -> CursorToolRuntime {
+        CursorToolRuntime::with_shared_ids(self.inner.next_tool_message_id.clone())
     }
 
     pub async fn get_or_create(&self, request_id: &str) -> Result<CursorSessionHandle> {
@@ -227,6 +234,7 @@ impl CursorSessionRegistry {
                 run_registry: self.inner.run_registry.clone(),
             },
             blob_sync,
+            self.tool_runtime(),
             0,
         );
         let registry = Arc::downgrade(&self.inner);
