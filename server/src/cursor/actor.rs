@@ -10,7 +10,7 @@ use crate::{
         context_sync::RequestContextSynchronizer,
         proto::agent::v1 as pb,
         request,
-        session::CursorSession,
+        session::{CursorSession, RuntimeAction},
         tools::{
             codec, result::tool_result_channel, runtime::CursorToolRuntime, ClientToolEvent,
             ToolDispatcher,
@@ -358,9 +358,27 @@ impl CursorActor {
                                                 action,
                                             ),
                                         ) => {
-                                            if runtime_actions_tx.send(action).is_err() {
+                                            if runtime_actions_tx
+                                                .send(RuntimeAction::InjectContext(action))
+                                                .is_err()
+                                            {
                                                 results_tx.send_error(crate::Error::Protocol(
                                                     "InjectContextAction arrived without an active Run"
+                                                        .into(),
+                                                ));
+                                            }
+                                        }
+                                        Some(
+                                            pb::conversation_action::Action::BackgroundTaskCompletionAction(
+                                                action,
+                                            ),
+                                        ) => {
+                                            if runtime_actions_tx
+                                                .send(RuntimeAction::BackgroundTaskCompletion(action))
+                                                .is_err()
+                                            {
+                                                results_tx.send_error(crate::Error::Protocol(
+                                                    "BackgroundTaskCompletionAction arrived without an active Run"
                                                         .into(),
                                                 ));
                                             }

@@ -20,12 +20,12 @@ pub(super) const SHELL_FOLLOW_UP: &str = concat!(
 );
 
 #[derive(Debug)]
-pub(super) struct Projection {
+pub(crate) struct Projection {
     pub context: String,
     pub turn_user: pb::UserMessage,
 }
 
-pub(super) fn project(
+pub(crate) fn project_background_completion(
     action: &pb::BackgroundTaskCompletionAction,
     mode: i32,
 ) -> Result<Projection> {
@@ -219,7 +219,7 @@ mod tests {
         let action = pb::BackgroundTaskCompletionAction {
             completions: vec![completion()],
         };
-        let projection = project(&action, pb::AgentMode::Multitask as i32).unwrap();
+        let projection = project_background_completion(&action, pb::AgentMode::Multitask as i32).unwrap();
 
         assert!(projection.context.contains("kind: subagent"));
         assert!(projection.context.contains("agent_id: child-id"));
@@ -238,7 +238,7 @@ mod tests {
         let action = pb::BackgroundTaskCompletionAction {
             completions: vec![shell_completion()],
         };
-        let projection = project(&action, pb::AgentMode::Agent as i32).unwrap();
+        let projection = project_background_completion(&action, pb::AgentMode::Agent as i32).unwrap();
 
         assert_eq!(projection.turn_user.text, SHELL_FOLLOW_UP);
         assert_eq!(
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn shell_and_subagent_completions_keep_both_follow_up_contracts() {
-        let projection = project(
+        let projection = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![shell_completion(), completion()],
             },
@@ -295,14 +295,14 @@ mod tests {
         second.task_id = "child-id-2".into();
         second.subagent_id = Some("child-id-2".into());
         second.tool_call_id = Some("task-call-2".into());
-        let forward = project(
+        let forward = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![first.clone(), second.clone()],
             },
             pb::AgentMode::Multitask as i32,
         )
         .unwrap();
-        let reversed = project(
+        let reversed = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![second, first],
             },
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn resumed_subagent_completions_use_the_task_call_as_part_of_their_identity() {
-        let first = project(
+        let first = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![completion()],
             },
@@ -325,7 +325,7 @@ mod tests {
         .unwrap();
         let mut resumed = completion();
         resumed.tool_call_id = Some("task-call-2".into());
-        let second = project(
+        let second = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![resumed],
             },
@@ -342,7 +342,7 @@ mod tests {
     fn completion_requires_the_captured_subagent_identity_and_terminal_reason() {
         let mut value = completion();
         value.subagent_id = None;
-        assert!(project(
+        assert!(project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![value]
             },
@@ -354,7 +354,7 @@ mod tests {
 
         let mut value = completion();
         value.reason = pb::BackgroundTaskCompletionReason::TaskProgress as i32;
-        assert!(project(
+        assert!(project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![value]
             },

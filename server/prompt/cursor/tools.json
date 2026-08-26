@@ -750,7 +750,7 @@
             },
             "run_in_background": {
               "default": false,
-              "description": "Run the agent in the background only when the user explicitly requests it or when independent work can proceed without this result. Otherwise, omit this parameter or set it to false: the parent waits for the subagent to finish and integrates its result before continuing. When true, the background subagent sends a completion notification after the current response ends.",
+              "description": "Background subagent completion delivery is under development and is not reliable yet. Always omit this parameter or set it to false so the parent waits for, receives, and integrates the result in the current turn. Do not set this to true.",
               "type": "boolean"
             },
             "subagent_type": {
