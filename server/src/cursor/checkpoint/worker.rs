@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     cursor::{presentation::PresentationDelta, proto::agent::v1 as pb, CursorSessionHandle},
-    model::{RevisionId, ToolRoundId},
+    model::{RevisionId, ToolCall, ToolRoundAssistant},
     store::Store,
     Error, Result,
 };
@@ -19,8 +19,9 @@ pub(crate) struct CheckpointJob {
 pub(crate) enum CheckpointKind {
     Settled(RevisionId),
     ToolStarted {
-        round_id: ToolRoundId,
         stable_revision_id: RevisionId,
+        assistant: ToolRoundAssistant,
+        calls: Vec<ToolCall>,
     },
     ToolSettled(RevisionId),
     Final {
@@ -73,16 +74,18 @@ impl CheckpointWorker {
                         .await
                     }
                     CheckpointKind::ToolStarted {
-                        round_id,
                         stable_revision_id,
+                        assistant,
+                        calls,
                     } => {
                         publish_started(
                             &store,
                             &mut builder,
                             &handle,
                             mode,
-                            round_id,
                             stable_revision_id,
+                            &assistant,
+                            &calls,
                             &presentation,
                         )
                         .await
@@ -159,22 +162,20 @@ async fn publish_started(
     builder: &mut CheckpointBuilder,
     handle: &CursorSessionHandle,
     mode: i32,
-    round_id: ToolRoundId,
     stable_revision_id: RevisionId,
+    assistant: &crate::model::ToolRoundAssistant,
+    calls: &[crate::model::ToolCall],
     presentation: &PresentationDelta,
 ) -> Result<()> {
-    let round = store
-        .tool_round(&round_id)
-        .await?
-        .ok_or_else(|| Error::Store(format!("checkpoint tool round not found: {round_id}")))?;
     let messages = store.load_revision_messages(stable_revision_id).await?;
+    let created_at_ms = crate::cursor::tools::runtime::now_ms();
     let checkpoint = builder
         .staged_tool_round(
             &messages,
             mode,
-            &round.assistant,
-            &round.calls,
-            round.created_at_ms,
+            assistant,
+            calls,
+            created_at_ms,
             presentation,
         )
         .await?;

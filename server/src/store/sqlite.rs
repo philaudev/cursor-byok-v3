@@ -18,10 +18,10 @@ impl Store {
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Full)
-            .busy_timeout(Duration::from_secs(5));
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(15));
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            .max_connections(32)
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;

@@ -51,7 +51,7 @@ impl App {
             CursorSessionRegistry::new(store.clone(), provider.clone(), compiler, run_registry);
         let control = control::ControlService::new(store.clone(), provider)?;
         let harness = control.cursor_harness().clone();
-        let mut router = handlers::router(registry.clone())?;
+        let mut router = handlers::router(registry.clone()).await?;
         router = match &config.console {
             Some(ConsoleSource::Directory(directory)) => {
                 router.merge(control::web_router(control.clone(), directory))

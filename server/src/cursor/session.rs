@@ -252,10 +252,10 @@ impl CursorSession {
                             }
                         }
                         if !self.context.compacting {
-                            // Context Usage is the prompt size sent to the model, so output
-                            // usage is irrelevant. A missing input count explicitly requests
-                            // a local prompt/history estimate for this completed provider call.
-                            context_tokens = Some(usage.input_tokens.unwrap_or_default());
+                            // Context Usage is the total prompt size sent to the model, including
+                            // provider-reported cache reads and writes. A missing count explicitly
+                            // requests a local prompt/history estimate for this completed provider call.
+                            context_tokens = usage.context_tokens();
                         }
                         match &mut turn_usage {
                             Some(total) => *total += usage,
@@ -327,7 +327,7 @@ impl CursorSession {
                                 }
                             }
                         }
-                        if let CommitCause::ToolRoundStarted(round_id) = &state.cause {
+                        if let CommitCause::ToolRoundStarted { round_id, .. } = &state.cause {
                             active_round = Some(round_id.clone());
                         }
                         let mut tool_round_settled = false;
@@ -431,20 +431,36 @@ impl CursorSession {
                                     return Err(error);
                                 }
                             }
-                        } else if let CommitCause::ToolRoundStarted(round_id) = &state.cause {
+                        } else if let CommitCause::ToolRoundStarted {
+                            assistant, calls, ..
+                        } = &state.cause
+                        {
+                            let (ready, published) = oneshot::channel();
                             worker
                                 .jobs
                                 .send(CheckpointJob {
                                     kind: CheckpointKind::ToolStarted {
-                                        round_id: round_id.clone(),
                                         stable_revision_id: state.revision_id,
+                                        assistant: assistant.clone(),
+                                        calls: calls.clone(),
                                     },
                                     presentation: presentation.take(),
                                     context_tokens,
-                                    ready: None,
+                                    ready: Some(ready),
                                 })
                                 .await
                                 .map_err(|_| Error::Protocol("checkpoint worker closed".into()))?;
+                            let result = published
+                                .await
+                                .map_err(|_| Error::Protocol("checkpoint worker stopped".into()))?
+                                .map_err(Error::Protocol);
+                            match result {
+                                Ok(()) => state.barrier.complete(Ok(())),
+                                Err(error) => {
+                                    state.barrier.complete(Err(error.to_string()));
+                                    return Err(error);
+                                }
+                            }
                         } else if tool_round_settled {
                             if !state.barrier.is_required() {
                                 return Err(Error::Protocol(
@@ -475,25 +491,6 @@ impl CursorSession {
                             }
                             active_round = None;
                             self.tool_runtime.clear_completed().await;
-                        } else if !matches!(&state.cause, CommitCause::ToolResult { .. })
-                            && active_round.is_some()
-                        {
-                            let round_id = active_round.clone().ok_or_else(|| {
-                                Error::Protocol("active tool round disappeared".into())
-                            })?;
-                            worker
-                                .jobs
-                                .send(CheckpointJob {
-                                    kind: CheckpointKind::ToolStarted {
-                                        round_id,
-                                        stable_revision_id: state.revision_id,
-                                    },
-                                    presentation: presentation.take(),
-                                    context_tokens,
-                                    ready: None,
-                                })
-                                .await
-                                .map_err(|_| Error::Protocol("checkpoint worker closed".into()))?;
                         } else if !matches!(&state.cause, CommitCause::ToolResult { .. }) {
                             let requires_ready = state.barrier.is_required();
                             let (ready, published) = oneshot::channel();
