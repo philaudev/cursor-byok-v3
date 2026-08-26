@@ -12,6 +12,7 @@ fn prepared(
 ) -> PreparedRun {
     PreparedRun {
         run_id: RunId::new(run_id),
+        cursor_request_id: None,
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("test-model"),
@@ -91,6 +92,35 @@ async fn selecting_an_old_revision_creates_a_branch_without_old_suffixes() {
         )
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn reused_cursor_request_id_maps_to_the_current_distinct_execution() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let conversation_id = ConversationId::new("queued-conversation");
+    let root = store.ensure_conversation(&conversation_id).await.unwrap();
+
+    let mut first = prepared("reused-request:11111111", &conversation_id, root);
+    first.cursor_request_id = Some("reused-request".into());
+    store.claim_run(&first).await.unwrap();
+    assert_eq!(
+        store
+            .active_run_for_cursor_request("reused-request")
+            .await
+            .unwrap(),
+        Some(first.run_id.clone())
+    );
+
+    let mut second = prepared("reused-request:22222222", &conversation_id, root);
+    second.cursor_request_id = Some("reused-request".into());
+    store.claim_run(&second).await.unwrap();
+    assert_eq!(
+        store
+            .active_run_for_cursor_request("reused-request")
+            .await
+            .unwrap(),
+        Some(second.run_id)
+    );
 }
 
 #[tokio::test]

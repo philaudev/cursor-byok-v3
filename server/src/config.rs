@@ -10,6 +10,8 @@ const DATABASE_FILE_NAME: &str = "cursor-byok.db";
 const RULES_DIR_NAME: &str = "rules";
 const COMPACTION_PROMPT_FILE_NAME: &str = "compaction.md";
 const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompt/cursor/compaction/prompt.md");
+const V0049_DATA_DIR_NAME: &str = ".cursor-local-assistant-v2";
+const V0049_CONFIG_FILE_NAME: &str = "config.yaml";
 
 pub fn managed_data_dir() -> Result<PathBuf> {
     let home_dir = dirs::home_dir()
@@ -42,6 +44,14 @@ fn compaction_prompt_path_in(data_dir: &std::path::Path) -> Result<PathBuf> {
         fs::write(&path, DEFAULT_COMPACTION_PROMPT)?;
     }
     Ok(path)
+}
+
+pub fn v0049_config_path() -> Result<PathBuf> {
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| Error::Config("cannot resolve user home directory".into()))?;
+    Ok(home_dir
+        .join(V0049_DATA_DIR_NAME)
+        .join(V0049_CONFIG_FILE_NAME))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

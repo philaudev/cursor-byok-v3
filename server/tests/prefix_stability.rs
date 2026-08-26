@@ -172,7 +172,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "cefa1800d7440611b6c3e922fa59f1fe262eca4cee52ea71043fe1f29e52c659",
+        "ec10becac85819cda321298762892852194c78601db66cc0b4ce74bc1213e29e",
     );
     assert_mode(
         &assets,
@@ -194,7 +194,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "235a2a9a7785844eb5186f1c8f2294a36a04bbf103887d05ec386f8c7cc52abc",
+        "e2eb8a1ebd70d53b1b2eb6bedabdce62ff070a05a6168216013d0a1144ed8bb5",
     );
     assert_mode(
         &assets,
@@ -218,7 +218,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "cefa1800d7440611b6c3e922fa59f1fe262eca4cee52ea71043fe1f29e52c659",
+        "ec10becac85819cda321298762892852194c78601db66cc0b4ce74bc1213e29e",
     );
     assert_mode(
         &assets,
@@ -244,7 +244,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "04c5fb238eb3695936ceed610b481caf7507f934efb88cb7130a8756e12959e3",
+        "25f7b559941baabfc9b1046455b04ca812fc41a6878ad55a43d83f0bd18cd92f",
     );
     assert_mode(
         &assets,
@@ -272,7 +272,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "f88c55fdbb53be377e64cc6280ebb23c75e2d244b5c3463ed18e90752c3b7ff5",
+        "48c8e0fe825f9c2450307ca5e70cde7077c4282c135b2cd15338bd4bd0c43636",
     );
     assert_mode(
         &assets,
@@ -282,8 +282,24 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "4324c36fa047fbe4c93a5d5f0b736c559a942e097266c5bae057804289f8b359"
+        "e53a72c1d131ff3f65c619799232440b064e90e99f5d3fcceb63e32598d3a0fc"
     );
+    let task = assets
+        .mode(Mode::Agent)
+        .tools
+        .iter()
+        .find(|tool| tool.name == "Task")
+        .unwrap();
+    assert!(task.description.contains(
+        "When the user does not specify a number, launch at most three subagents in a single response. If the user explicitly requests more, you may launch the requested number."
+    ));
+    assert!(task.description.contains(
+        "If the user explicitly requests parallel subagents, follow the number requested by the user."
+    ));
+    assert!(!task
+        .description
+        .chars()
+        .any(|character| ('\u{4e00}'..='\u{9fff}').contains(&character)));
     let shell = assets
         .mode(Mode::Agent)
         .tools

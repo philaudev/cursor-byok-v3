@@ -1,11 +1,8 @@
 import { useSyncExternalStore } from "react";
-import { api, type CursorHarnessStatus, type LlmCall, type Model, type ModelInput, type Overview, type PortSettings, type Provider, type ProviderInput, type ProviderSelection } from "../api";
+import { api, type CursorHarnessStatus, type LlmCall, type Model, type ModelInput, type Overview, type PortSettings } from "../api";
 import { applyTheme, isThemeId, type ThemeId } from "../theme/theme";
 
-type Discovery = { provider: Provider; modelIds: string[] };
-
 export type AppSnapshot = {
-  providers: Provider[];
   models: Model[];
   calls: LlmCall[];
   overview: Overview;
@@ -13,8 +10,6 @@ export type AppSnapshot = {
   ports: PortSettings;
   busy: boolean;
   error: string | null;
-  discoveringProviderId: number | null;
-  discovery: Discovery | null;
   theme: ThemeId;
   cursorHarness: CursorHarnessStatus | null;
   cursorBusy: boolean;
@@ -26,7 +21,6 @@ const savedTheme = (): ThemeId => {
 };
 
 let snapshot: AppSnapshot = {
-  providers: [],
   models: [],
   calls: [],
   overview: {
@@ -48,8 +42,6 @@ let snapshot: AppSnapshot = {
   ports: { proxy_port: 0, service_port: 0 },
   busy: false,
   error: null,
-  discoveringProviderId: null,
-  discovery: null,
   theme: savedTheme(),
   cursorHarness: null,
   cursorBusy: false,
@@ -81,8 +73,7 @@ export const appStore = {
   async refresh() {
     update({ busy: true, error: null });
     try {
-      const [providers, models, calls, overview, settings, ports, cursorHarness] = await Promise.all([
-        api.providers(),
+      const [models, calls, overview, settings, ports, cursorHarness] = await Promise.all([
         api.models(),
         api.calls(),
         api.overview(),
@@ -90,7 +81,7 @@ export const appStore = {
         api.ports(),
         api.cursorHarness(),
       ]);
-      update({ providers, models, calls, overview, detailed: settings.detailed, ports, cursorHarness });
+      update({ models, calls, overview, detailed: settings.detailed, ports, cursorHarness });
     } catch (cause) {
       update({ error: cause instanceof Error ? cause.message : String(cause) });
     } finally {
@@ -98,68 +89,6 @@ export const appStore = {
     }
   },
 
-  async createProvider(input: ProviderInput) {
-    try {
-      update({ error: null });
-      await api.createProvider(input);
-      await appStore.refresh();
-      return true;
-    } catch (cause) {
-      update({ error: cause instanceof Error ? cause.message : String(cause) });
-      return false;
-    }
-  },
-  async updateProvider(providerId: number, input: ProviderInput) {
-    try {
-      update({ error: null });
-      await api.updateProvider(providerId, input);
-      await appStore.refresh();
-      return true;
-    } catch (cause) {
-      update({ error: cause instanceof Error ? cause.message : String(cause) });
-      return false;
-    }
-  },
-  async deleteProvider(providerId: number) {
-    await perform(async () => {
-      await api.deleteProvider(providerId);
-      await appStore.refresh();
-    });
-  },
-
-  async discoverModels(provider: Provider) {
-    update({ discoveringProviderId: provider.provider_id, error: null });
-    try {
-      const result = await api.discoverModels(provider.provider_id);
-      const existing = new Set(snapshot.models.filter((model) => model.provider_id === provider.provider_id).map((model) => model.model_id));
-      update({ discovery: { provider, modelIds: result.models.filter((id) => !existing.has(id)) } });
-    } catch (cause) {
-      update({ error: cause instanceof Error ? cause.message : String(cause) });
-    } finally {
-      update({ discoveringProviderId: null });
-    }
-  },
-  async addModel(modelId: string) {
-    const discovery = snapshot.discovery;
-    if (!discovery) return;
-    await perform(async () => {
-      await api.saveModels(discovery.provider.provider_id, [{
-        model_id: modelId,
-        display_name: modelId,
-        endpoint_type: discovery.provider.provider_type,
-        request_url: "",
-        enabled: true,
-        sort_order: snapshot.models.length,
-        context_window_tokens: null,
-        max_output_tokens: null,
-        reasoning_enabled: false,
-        reasoning_effort: null,
-        supports_image_generation: false,
-      }]);
-      update({ discovery: { ...discovery, modelIds: discovery.modelIds.filter((id) => id !== modelId) } });
-      await appStore.refresh();
-    });
-  },
   async deleteModel(modelHash: string) {
     await perform(async () => {
       await api.deleteModel(modelHash);
@@ -184,15 +113,26 @@ export const appStore = {
     catch (cause) { update({ error: cause instanceof Error ? cause.message : String(cause) }); }
     finally { update({ cursorBusy: false }); }
   },
-  async createCursorModels(provider: ProviderSelection, models: ModelInput[]) {
+  async createModels(models: ModelInput[]) {
     update({ cursorBusy: true, error: null });
     try {
-      await api.createCursorModels(provider, models);
+      const created = await api.createModels(models);
       await appStore.refresh();
-      return true;
+      return created;
     } catch (cause) {
       update({ error: cause instanceof Error ? cause.message : String(cause) });
-      return false;
+      return null;
+    } finally { update({ cursorBusy: false }); }
+  },
+  async importV0049Models() {
+    update({ cursorBusy: true, error: null });
+    try {
+      const result = await api.importV0049Models();
+      await appStore.refresh();
+      return result;
+    } catch (cause) {
+      update({ error: cause instanceof Error ? cause.message : String(cause) });
+      return null;
     } finally { update({ cursorBusy: false }); }
   },
   async updateCursorModel(hash: string, model: ModelInput) {
@@ -205,6 +145,36 @@ export const appStore = {
       update({ error: cause instanceof Error ? cause.message : String(cause) });
       return null;
     } finally { update({ cursorBusy: false }); }
+  },
+  async reorderCursorModels(modelHashes: string[]) {
+    const previous = snapshot.models;
+    const byHash = new Map(previous.map((model) => [model.model_hash, model]));
+    if (modelHashes.length !== previous.length || new Set(modelHashes).size !== previous.length) {
+      update({ error: t("模型配置已发生变化，请刷新后重试") });
+      return false;
+    }
+    const reordered: Model[] = [];
+    for (const [index, hash] of modelHashes.entries()) {
+      const model = byHash.get(hash);
+      if (!model) {
+        update({ error: t("模型配置已发生变化，请刷新后重试") });
+        return false;
+      }
+      reordered.push({ ...model, sort_order: index + 1 });
+    }
+    update({ models: reordered, cursorBusy: true, error: null });
+    try {
+      update({ models: await api.reorderModels(modelHashes) });
+      return true;
+    } catch (cause) {
+      update({
+        models: previous,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+      return false;
+    } finally {
+      update({ cursorBusy: false });
+    }
   },
 
   async openCallDetails(callId: string) {

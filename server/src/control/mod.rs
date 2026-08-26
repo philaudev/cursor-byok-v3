@@ -1,10 +1,8 @@
 mod ads;
 mod calls;
-mod cursor_models;
 mod harness;
 mod models;
 mod overview;
-mod providers;
 mod service;
 mod settings;
 
@@ -22,8 +20,8 @@ use tower_http::{
 use url::{Host, Url};
 
 pub use service::{
-    CallDetail, CallSummary, ControlService, DiscoveredModels, ModelConnectivityResult,
-    ObservabilitySettings,
+    CallDetail, CallSummary, ControlService, DiscoveredModels, LegacyModelImportPreview,
+    LegacyModelImportResult, ModelConnectivityResult, ModelDiscoveryInput, ObservabilitySettings,
 };
 
 pub fn web_router(service: ControlService, assets: impl AsRef<std::path::Path>) -> Router {
@@ -117,22 +115,15 @@ pub fn api_router(service: ControlService) -> Router {
             post(ads::dismiss),
         )
         .route(
-            "/__byok-api__/api/providers",
-            get(providers::list).post(providers::create),
+            "/__byok-api__/api/models",
+            get(models::list).post(models::create),
         )
+        .route("/__byok-api__/api/models/discover", post(models::discover))
         .route(
-            "/__byok-api__/api/providers/{provider_id}",
-            put(providers::update).delete(providers::remove),
+            "/__byok-api__/api/models/import-v0049",
+            get(models::preview_v0049).post(models::import_v0049),
         )
-        .route(
-            "/__byok-api__/api/providers/{provider_id}/models/discover",
-            post(models::discover),
-        )
-        .route(
-            "/__byok-api__/api/providers/{provider_id}/models",
-            post(models::save),
-        )
-        .route("/__byok-api__/api/models", get(models::list))
+        .route("/__byok-api__/api/models/order", put(models::reorder))
         .route("/__byok-api__/api/overview", get(overview::get))
         .route(
             "/__byok-api__/api/models/{model_hash}",
@@ -165,6 +156,10 @@ pub fn api_router(service: ControlService) -> Router {
             get(settings::get_tab).put(settings::update_tab),
         )
         .route(
+            "/__byok-api__/api/settings/desktop",
+            get(settings::get_desktop).put(settings::update_desktop),
+        )
+        .route(
             "/__byok-api__/api/harness/cursor/status",
             get(harness::status),
         )
@@ -175,14 +170,6 @@ pub fn api_router(service: ControlService) -> Router {
         .route(
             "/__byok-api__/api/harness/cursor/enabled",
             put(harness::set_enabled),
-        )
-        .route(
-            "/__byok-api__/api/harness/cursor/models",
-            post(cursor_models::create),
-        )
-        .route(
-            "/__byok-api__/api/harness/cursor/models/discover",
-            post(cursor_models::discover),
         )
         .with_state(service)
         .layer(desktop_cors())
@@ -261,7 +248,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/__byok-api__/api/providers")
+                    .uri("/__byok-api__/api/models")
                     .header(header::ORIGIN, "tauri://localhost")
                     .body(Body::empty())
                     .unwrap(),
@@ -289,7 +276,7 @@ mod tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/providers")
+                    .uri("/api/models")
                     .body(Body::empty())
                     .unwrap(),
             )

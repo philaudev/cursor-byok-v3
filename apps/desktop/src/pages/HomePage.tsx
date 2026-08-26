@@ -30,16 +30,14 @@ function presetRange(preset: Exclude<OverviewRangePreset, "custom">, now = new D
 }
 
 export function HomePage() {
-  const { overview, busy, models, providers } = useAppStore();
+  const { overview, busy, models } = useAppStore();
   const [preset, setPreset] = useState<OverviewRangePreset>("month");
   const [customRange, setCustomRange] = useState<TimeRange | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
-  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [appliedModels, setAppliedModels] = useState<string[]>([]);
-  const [appliedProviders, setAppliedProviders] = useState<string[]>([]);
   const [rangeOverview, setRangeOverview] = useState<Overview | null>(null);
   const [rangeBusy, setRangeBusy] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -52,14 +50,13 @@ export function HomePage() {
     void api.overview({
       ...selectedRange,
       modelHashes: appliedModels,
-      providerIds: appliedProviders.map(Number),
     }).then((next) => {
       if (active) setRangeOverview(next);
     }).finally(() => {
       if (active) setRangeBusy(false);
     });
     return () => { active = false; };
-  }, [preset, customRange, overview, refreshVersion, appliedModels, appliedProviders]);
+  }, [preset, customRange, overview, refreshVersion, appliedModels]);
 
   const filteredOverview = rangeOverview ?? overview;
   const dailyTokenUsage = filteredOverview.token_usage_series.map((bucket) => ({
@@ -96,7 +93,6 @@ export function HomePage() {
     if (startMs === null || endMs === null || startMs >= endMs) return;
     setCustomRange({ startMs, endMs });
     setAppliedModels(selectedModels);
-    setAppliedProviders(selectedProviders);
     setPreset("custom");
     setCustomOpen(false);
   };
@@ -108,12 +104,7 @@ export function HomePage() {
   const modelOptions = models.map((model) => ({
     value: model.model_hash,
     label: model.display_name,
-    icon: iconFor(model.endpoint_type),
-  }));
-  const providerOptions = providers.map((provider) => ({
-    value: String(provider.provider_id),
-    label: provider.name,
-    icon: iconFor(provider.provider_type),
+    icon: iconFor(model.type),
   }));
   const sections: VirtualPageSection[] = [
     {
@@ -144,16 +135,13 @@ export function HomePage() {
       customStart={customStart}
       customEnd={customEnd}
       modelOptions={modelOptions}
-      providerOptions={providerOptions}
       selectedModels={selectedModels}
-      selectedProviders={selectedProviders}
       busy={busy || rangeBusy}
       onSelect={(value) => { setPreset(value); setCustomOpen(false); }}
       onCustomOpenChange={openCustom}
       onCustomStartChange={setCustomStart}
       onCustomEndChange={setCustomEnd}
       onSelectedModelsChange={setSelectedModels}
-      onSelectedProvidersChange={setSelectedProviders}
       onCustomApply={applyCustom}
       onRefresh={() => void refresh()}
     /></PageActions>

@@ -174,7 +174,22 @@ impl RunEngine {
                 Ok(messages) => messages,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            if !auto_compacted && should_auto_compact(prepared, &messages) {
+            let context_anchor = if !auto_compacted && prepared.action == RunAction::Start {
+                match self
+                    .store
+                    .latest_llm_call_usage_anchor(
+                        &prepared.conversation_id,
+                        &prepared.model.model_id,
+                    )
+                    .await
+                {
+                    Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                }
+            } else {
+                None
+            };
+            if !auto_compacted && should_auto_compact(prepared, &messages, context_anchor) {
                 auto_compacted = true;
                 match self
                     .auto_compact(prepared, revision, &messages, client, cancellation)
@@ -592,7 +607,28 @@ fn auto_compaction_partition(
     (compactable, retained)
 }
 
-fn should_auto_compact(prepared: &PreparedRun, messages: &[CanonicalMessage]) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContextUsageAnchor {
+    input_tokens: u64,
+    message_count: usize,
+    tool_count: usize,
+}
+
+impl ContextUsageAnchor {
+    fn from_llm_call(anchor: crate::model::LlmCallUsageAnchor) -> Option<Self> {
+        Some(Self {
+            input_tokens: anchor.usage.context_input_tokens(anchor.request_type)?,
+            message_count: anchor.message_count,
+            tool_count: anchor.tool_count,
+        })
+    }
+}
+
+fn should_auto_compact(
+    prepared: &PreparedRun,
+    messages: &[CanonicalMessage],
+    anchor: Option<ContextUsageAnchor>,
+) -> bool {
     if prepared.action != RunAction::Start {
         return false;
     }
@@ -604,8 +640,18 @@ fn should_auto_compact(prepared: &PreparedRun, messages: &[CanonicalMessage]) ->
     {
         return false;
     }
-    estimate_context_tokens(&prepared.prompt, messages)
-        > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
+    let estimated_input = anchor
+        .filter(|anchor| {
+            anchor.message_count <= messages.len()
+                && anchor.tool_count == prepared.prompt.tools.len()
+        })
+        .map(|anchor| {
+            anchor
+                .input_tokens
+                .saturating_add(estimate_message_tokens(&messages[anchor.message_count..]))
+        })
+        .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, messages));
+    estimated_input > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
 }
 
 fn estimate_context_tokens(
@@ -613,15 +659,21 @@ fn estimate_context_tokens(
     messages: &[CanonicalMessage],
 ) -> u64 {
     let serialized = serde_json::to_string(&(prompt, messages)).unwrap_or_default();
-    let trimmed = serialized.trim();
-    if trimmed.is_empty() {
-        return 0;
-    }
-    let rune_count = trimmed.chars().count() as u64;
-    let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
-    let base = (rune_count + 3) / 4 + newlines;
-    let overhead = messages.len() as u64 * 8;
-    base + overhead
+    estimate_serialized_tokens(&serialized)
+}
+
+fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u64 {
+    let serialized = serde_json::to_string(messages).unwrap_or_default();
+    estimate_serialized_tokens(&serialized)
+}
+
+fn estimate_serialized_tokens(serialized: &str) -> u64 {
+    serialized
+        .chars()
+        .fold(0_u64, |units, character| {
+            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
+        })
+        .div_ceil(1_000)
 }
 
 fn fallback_summary(messages: &[CanonicalMessage]) -> String {
@@ -754,11 +806,15 @@ fn failure_message(failure: &RunFailure) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{auto_compaction_partition, estimate_context_tokens, hydrate_tool_images};
+    use super::{
+        auto_compaction_partition, estimate_context_tokens, hydrate_tool_images,
+        should_auto_compact, ContextUsageAnchor,
+    };
     use crate::{
         model::{
-            CanonicalMessage, ContentPart, Origin, ProjectedContent, ProjectedMessage, PromptSpec,
-            Role, ToolImageReference, ToolResultContent,
+            CanonicalMessage, ContentPart, ConversationId, ModelSpec, Origin, PreparedRun,
+            ProjectedContent, ProjectedMessage, PromptSpec, RevisionId, Role, RunAction, RunId,
+            RunKind, ToolImageReference, ToolResultContent,
         },
         store::Store,
     };
@@ -785,6 +841,84 @@ mod tests {
 
         assert!(estimate_context_tokens(&prompt, &long) > 25_000);
         assert!(estimate_context_tokens(&prompt, &long) > estimate_context_tokens(&prompt, &short));
+    }
+
+    #[test]
+    fn real_previous_input_only_estimates_messages_added_after_the_anchor() {
+        let old_history =
+            CanonicalMessage::text("old-history", Role::User, Origin::User, "x".repeat(698_641));
+        let current_runtime = CanonicalMessage::text(
+            "runtime:current",
+            Role::User,
+            Origin::Runtime,
+            "current request",
+        );
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(200_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert_eq!(
+            estimate_context_tokens(&prepared.prompt, &messages),
+            190_813
+        );
+        assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
+    }
+
+    #[test]
+    fn real_previous_input_compacts_after_the_new_message_crosses_the_reserve() {
+        let old_history =
+            CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text(
+            "runtime:current",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(190_000),
+        );
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(200_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
     }
 
     #[test]

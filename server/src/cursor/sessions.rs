@@ -36,7 +36,7 @@ pub struct CursorSessionHandle {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorParent {
-    pub run_id: String,
+    pub request_id: String,
     pub tool_call_id: String,
 }
 
@@ -70,9 +70,9 @@ impl CursorSessionHandle {
         self.cancellation.clone()
     }
     pub fn set_parent(&self, parent: CursorParent) -> Result<()> {
-        if parent.run_id.is_empty() || parent.tool_call_id.is_empty() {
+        if parent.request_id.is_empty() || parent.tool_call_id.is_empty() {
             return Err(crate::Error::Protocol(
-                "Cursor parent run and tool call ids are required".into(),
+                "Cursor parent request and tool call ids are required".into(),
             ));
         }
         if self.parent.get().is_some_and(|current| current != &parent) {

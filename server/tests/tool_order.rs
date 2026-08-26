@@ -16,6 +16,7 @@ async fn results_commit_adjacent_pairs_in_arrival_order() {
     let root = store.ensure_conversation(&conversation_id).await.unwrap();
     let run = PreparedRun {
         run_id: RunId::new("run"),
+        cursor_request_id: None,
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("model"),

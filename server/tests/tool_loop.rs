@@ -965,7 +965,7 @@ async fn provider_tool_use_waits_for_client_result_then_calls_provider_again() {
     .await
     .unwrap();
     let provider_call_index: i64 =
-        sqlx::query_scalar("SELECT provider_call_index FROM runs WHERE run_id = ?")
+        sqlx::query_scalar("SELECT provider_call_index FROM runs WHERE cursor_request_id = ?")
             .bind("tool-request")
             .fetch_one(&database)
             .await

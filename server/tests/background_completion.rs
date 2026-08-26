@@ -75,7 +75,8 @@ async fn background_subagent_completion_starts_a_simulated_parent_turn() {
         .await
         .unwrap();
     assert!(messages.iter().any(|message| {
-        message.runtime_event_id.as_deref() == Some("run-request:completion-request")
+        message.runtime_event_id.as_deref()
+            == Some("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id")
             && matches!(&message.content, MessageContent::Parts { parts } if !parts.is_empty())
     }));
 
@@ -130,8 +131,8 @@ async fn background_subagent_completion_starts_a_simulated_parent_turn() {
     assert_eq!(
         runtime_ids,
         [
-            "runtime:run-request:completion-request",
-            "runtime:run-request:completion-request-2"
+            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id",
+            "runtime:background-completed:BACKGROUND_TASK_KIND_SUBAGENT:child-id-2"
         ]
     );
 }

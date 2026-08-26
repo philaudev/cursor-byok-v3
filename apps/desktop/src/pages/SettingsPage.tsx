@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { api, type ProxySettings, type ProxySettingsInput, type StatisticsStorage } from "../api";
+import { api, type ProxySettings, type ProxySettingsInput, type StatisticsStorage, type TabSettings } from "../api";
 import { PageContent } from "../components/layout/PageContent";
+import { LegacyModelImport } from "../components/models/LegacyModelImport";
 import { AppLifecycleSettingsCard } from "../components/settings/AppLifecycleSettingsCard";
 import { ProxySettingsCard } from "../components/settings/ProxySettingsCard";
+import { TabSettingsCard } from "../components/settings/TabSettingsCard";
 import { Button } from "../components/ui/Button";
 import { Checkbox } from "../components/ui/Checkbox";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { FormField, TextInput } from "../components/ui/FormControls";
-import { Modal } from "../components/ui/Modal";
 import { Select } from "../components/ui/Select";
 import { TitledCard } from "../components/ui/TitledCard";
 import { setLocalePreference, useI18n, type LocalePreference } from "../i18n/store";
@@ -30,11 +32,17 @@ export function SettingsPage() {
   const [proxyDraft, setProxyDraft] = useState<ProxySettingsInput>({ mode: "system", address: "", auth_enabled: false, username: "", password: "" });
   const [editingProxy, setEditingProxy] = useState(false);
   const [savingProxy, setSavingProxy] = useState(false);
+  const [tabSettings, setTabSettings] = useState<TabSettings | null>(null);
+  const [tabDraft, setTabDraft] = useState<TabSettings>({ mode: "public", address: "" });
+  const [editingTab, setEditingTab] = useState(false);
+  const [savingTab, setSavingTab] = useState(false);
   useEffect(() => {
-    void Promise.all([api.statisticsStorage(), api.proxySettings()]).then(([nextStorage, nextProxy]) => {
+    void Promise.all([api.statisticsStorage(), api.proxySettings(), api.tabSettings()]).then(([nextStorage, nextProxy, nextTab]) => {
       setStorage(nextStorage);
       setOutboundProxy(nextProxy);
       setProxyDraft({ mode: nextProxy.mode, address: nextProxy.address, auth_enabled: nextProxy.auth_enabled, username: nextProxy.username, password: "" });
+      setTabSettings(nextTab);
+      setTabDraft(nextTab);
     }).catch((cause) => message(cause instanceof Error ? cause.message : String(cause)));
   }, [message]);
   useEffect(() => {
@@ -114,6 +122,30 @@ export function SettingsPage() {
       setSavingProxy(false);
     }
   };
+  const editTab = () => {
+    if (!tabSettings) return;
+    setTabDraft(tabSettings);
+    setEditingTab(true);
+  };
+  const cancelTabEdit = () => {
+    if (tabSettings) setTabDraft(tabSettings);
+    setEditingTab(false);
+  };
+  const saveTab = async () => {
+    try {
+      if (tabDraft.mode === "custom" && !tabDraft.address.trim()) throw new Error(t("TAB 服务地址不能为空"));
+      setSavingTab(true);
+      const saved = await api.setTabSettings({ ...tabDraft, address: tabDraft.address.trim() });
+      setTabSettings(saved);
+      setTabDraft(saved);
+      setEditingTab(false);
+      message(t("TAB 设置已保存"));
+    } catch (cause) {
+      message(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSavingTab(false);
+    }
+  };
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     const units = ["KB", "MB", "GB", "TB"];
@@ -191,7 +223,19 @@ export function SettingsPage() {
         </div>
       </TitledCard>
       <ProxySettingsCard settings={outboundProxy} draft={proxyDraft} editing={editingProxy} saving={savingProxy} onDraftChange={setProxyDraft} onEdit={editProxy} onCancel={cancelProxyEdit} onSave={() => void saveProxy()} />
+      <TabSettingsCard settings={tabSettings} draft={tabDraft} editing={editingTab} saving={savingTab} onDraftChange={setTabDraft} onEdit={editTab} onCancel={cancelTabEdit} onSave={() => void saveTab()} />
       <AppLifecycleSettingsCard />
+      <LegacyModelImport>{({ busy, previewing, open }) => <TitledCard title={t("导入")}>
+        <div className={styles.importRow}>
+          <div>
+            <strong>{t("旧版配置")}</strong>
+            <small>{t("从本机旧版配置读取模型；确认前会显示新增和已存在的模型。")}</small>
+          </div>
+          <Button size="small" disabled={busy} onClick={open}>
+            {previewing ? t("读取中…") : t("查看并导入")}
+          </Button>
+        </div>
+      </TitledCard>}</LegacyModelImport>
       <TitledCard title={t("语言")}>
         <div className={styles.settingRow}>
           <div>
@@ -240,24 +284,24 @@ export function SettingsPage() {
           </button>
         </div>
       </TitledCard>
-      <Modal
+      <ConfirmDialog
         open={confirmClear}
         title={t("确定要清理所有统计数据吗？")}
         busy={clearing}
-        closeLabel={t("取消")}
-        submitLabel={t("确认清理")}
-        onClose={() => setConfirmClear(false)}
-        onSubmit={() => void clearStorage()}
+        cancelLabel={t("取消")}
+        confirmLabel={t("确认清理")}
+        onCancel={() => setConfirmClear(false)}
+        onConfirm={() => void clearStorage()}
       >
         <div className={styles.confirmContent}>
           <small>
             {t(
-              "所有调用记录和详细追踪数据都会被删除。供应商、模型、CA 和应用设置不会受到影响，此操作无法撤销。",
+              "所有调用记录和详细追踪数据都会被删除。模型配置、CA 和应用设置不会受到影响，此操作无法撤销。",
             )}
           </small>
         </div>
-      </Modal>
+      </ConfirmDialog>
     </div>
   );
-  return <PageContent title={t("设置")} sections={[{ key: "settings", estimatedHeight: 900, content }]} />;
+  return <PageContent title={t("设置")} sections={[{ key: "settings", estimatedHeight: 1200, content }]} />;
 }

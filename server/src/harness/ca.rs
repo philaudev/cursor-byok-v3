@@ -46,9 +46,6 @@ impl CaManager {
     }
 
     pub fn state(&self) -> Result<CaState> {
-        if !matches!(std::env::consts::OS, "macos" | "windows") {
-            return Ok(CaState::Unsupported);
-        }
         let cert = fs::read_to_string(self.cert_path());
         let key = fs::read_to_string(self.key_path());
         match (cert, key) {
@@ -93,18 +90,21 @@ impl CaManager {
                 "certutil -addstore -f Root \"{}\"",
                 self.cert_path().display()
             )),
+            "linux" => {
+                let anchor = linux_anchor_file();
+                Some(format!(
+                    "sudo cp '{}' '{}' && sudo {}",
+                    path,
+                    anchor.display(),
+                    linux_refresh_command()
+                ))
+            }
             _ => None,
         }
     }
 
     pub fn initialize_local(&self) -> Result<()> {
         match self.state()? {
-            CaState::Unsupported => {
-                return Err(Error::Config(format!(
-                    "CA installation is not supported on {}",
-                    std::env::consts::OS
-                )))
-            }
             CaState::Invalid => {
                 return Err(Error::Config("CA files are incomplete or invalid".into()))
             }
@@ -210,8 +210,31 @@ fn is_installed(cert: &str) -> Result<bool> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn is_installed(_cert: &str) -> Result<bool> {
-    Ok(false)
+fn is_installed(cert: &str) -> Result<bool> {
+    match fs::read_to_string(linux_anchor_file()) {
+        Ok(installed) => Ok(installed.trim() == cert.trim()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+const LINUX_ANCHOR_NAME: &str = "cursor-byok-local-ca.crt";
+
+fn linux_anchor_file() -> PathBuf {
+    if PathBuf::from("/etc/pki/ca-trust/source/anchors").is_dir() {
+        PathBuf::from("/etc/pki/ca-trust/source/anchors").join(LINUX_ANCHOR_NAME)
+    } else if PathBuf::from("/etc/ca-certificates/trust-source/anchors").is_dir() {
+        PathBuf::from("/etc/ca-certificates/trust-source/anchors").join(LINUX_ANCHOR_NAME)
+    } else {
+        PathBuf::from("/usr/local/share/ca-certificates").join(LINUX_ANCHOR_NAME)
+    }
+}
+
+fn linux_refresh_command() -> &'static str {
+    match linux_anchor_file().parent().and_then(|dir| dir.to_str()) {
+        Some("/usr/local/share/ca-certificates") => "update-ca-certificates",
+        _ => "update-ca-trust extract",
+    }
 }
 
 #[cfg(test)]

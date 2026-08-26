@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::{
     body::{Body, Bytes},
     extract::{Extension, State},
@@ -14,7 +12,7 @@ use crate::{
         proxy::{self, CursorProxy},
         CursorSessionRegistry,
     },
-    model::{format_token_count, parse_token_count, ProviderModel},
+    model::{format_token_count, parse_token_count, ModelConfig, ModelType},
     Error, Result,
 };
 
@@ -205,7 +203,7 @@ const EFFORTS: [(&str, &str); 5] = [
 ];
 const DEFAULT_CONTEXT: &str = "200k";
 
-fn context_options(model: &ProviderModel) -> Vec<(String, String)> {
+fn context_options(model: &ModelConfig) -> Vec<(String, String)> {
     let mut contexts = CONTEXTS
         .into_iter()
         .map(|(value, display_name)| (value.to_owned(), display_name.to_owned()))
@@ -227,30 +225,12 @@ pub async fn available_models(
     Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let models = registry.store().provider_models(true).await?;
-    let provider_names = registry
-        .store()
-        .providers()
-        .await?
-        .into_iter()
-        .map(|provider| (provider.provider_id, provider.name))
-        .collect::<HashMap<_, _>>();
+    let models = registry.store().models().await?;
     tracing::info!(
         model_count = models.len(),
         "appending BYOK models to Cursor AvailableModels"
     );
-    let available_models = models
-        .iter()
-        .map(|model| {
-            let provider_name = provider_names.get(&model.provider_id).ok_or_else(|| {
-                Error::Config(format!(
-                    "provider {} for model {} does not exist",
-                    model.provider_id, model.model_hash
-                ))
-            })?;
-            Ok(available_model(model, provider_name))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let available_models = models.iter().map(available_model).collect::<Vec<_>>();
     let local = AvailableModelsAddition {
         model_names: models
             .iter()
@@ -273,7 +253,7 @@ pub async fn usable_models(
     Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let models = registry.store().provider_models(true).await?;
+    let models = registry.store().models().await?;
     tracing::info!(
         model_count = models.len(),
         "appending BYOK models to Cursor GetUsableModels"
@@ -340,14 +320,14 @@ fn unary_payload(body: &Bytes) -> Result<(bool, &[u8])> {
     Ok((true, &body[5..]))
 }
 
-fn available_model(model: &ProviderModel, provider_name: &str) -> AvailableModel {
+fn available_model(model: &ModelConfig) -> AvailableModel {
     let contexts = context_options(model);
     let variants = model_variants(model, &contexts);
     let legacy_slugs = variants
         .iter()
         .filter_map(|variant| variant.legacy_slug.clone())
         .collect();
-    let tooltip = model_tooltip(model, "200K", "high", false);
+    let tooltip = model_tooltip(model);
     AvailableModel {
         name: model.model_hash.clone(),
         default_on: true,
@@ -376,7 +356,10 @@ fn available_model(model: &ProviderModel, provider_name: &str) -> AvailableModel
             display_name: "Cursor".into(),
         }),
         model_picker_badges: vec![ModelPickerBadge {
-            label: provider_name.into(),
+            label: match model.model_type {
+                ModelType::OpenAi => "OpenAI".into(),
+                ModelType::Anthropic => "Anthropic".into(),
+            },
             variant: 1,
             dismiss_on_selection: false,
         }],
@@ -447,7 +430,7 @@ fn model_parameters(contexts: &[(String, String)]) -> Vec<ModelParameterDefiniti
     ]
 }
 
-fn model_variants(model: &ProviderModel, contexts: &[(String, String)]) -> Vec<ModelVariant> {
+fn model_variants(model: &ModelConfig, contexts: &[(String, String)]) -> Vec<ModelVariant> {
     let mut variants = Vec::with_capacity(contexts.len() * EFFORTS.len() * 2);
     for (context, context_name) in contexts {
         for (effort, effort_name) in EFFORTS {
@@ -467,7 +450,7 @@ fn model_variants(model: &ProviderModel, contexts: &[(String, String)]) -> Vec<M
 }
 
 fn model_variant(
-    model: &ProviderModel,
+    model: &ModelConfig,
     context: &str,
     context_name: &str,
     effort: &str,
@@ -507,7 +490,7 @@ fn model_variant(
         is_max_mode: false,
         is_default_max_config: is_default.then_some(true),
         is_default_non_max_config: is_default.then_some(true),
-        tooltip_data: Some(model_tooltip(model, context_name, effort, fast)),
+        tooltip_data: Some(model_tooltip(model)),
         display_name_outside_picker: Some(display_name),
         variant_string_representation: Some(format!(
             "{}[context={context},effort={effort},fast={fast}]",
@@ -521,22 +504,13 @@ fn model_variant(
     }
 }
 
-fn model_tooltip(
-    model: &ProviderModel,
-    context_name: &str,
-    effort: &str,
-    fast: bool,
-) -> TooltipData {
-    let fast_label = if fast { " (Fast)" } else { "" };
+fn model_tooltip(model: &ModelConfig) -> TooltipData {
     TooltipData {
-        markdown_content: Some(format!(
-            "**{}{fast_label}**<br /><br />{context_name} context window<br /><br />*Version: {effort} effort*",
-            model.display_name
-        )),
+        markdown_content: Some(model.tooltip_data.clone()),
     }
 }
 
-fn usable_model(model: &ProviderModel) -> agent::ModelDetails {
+fn usable_model(model: &ModelConfig) -> agent::ModelDetails {
     agent::ModelDetails {
         model_id: model.model_hash.clone(),
         display_model_id: model.model_hash.clone(),
@@ -555,25 +529,34 @@ mod tests {
 
     #[test]
     fn maps_byok_model_to_cursor_catalog_fields() {
-        let model = ProviderModel {
+        let model = ModelConfig {
             model_hash: "33ceed20".into(),
-            provider_id: 1,
-            model_id: "deepseek-v4-flash".into(),
-            display_name: "DeepSeek V4 Flash".into(),
-            endpoint_type: crate::model::ProviderType::OpenAiResponses,
-            request_url: String::new(),
-            enabled: true,
             sort_order: 0,
-            context_window_tokens: Some(272_000),
-            max_output_tokens: None,
-            reasoning_enabled: false,
+            display_name: "DeepSeek V4 Flash".into(),
+            model_type: ModelType::OpenAi,
+            base_url: "https://example.com/v1/responses".into(),
+            use_full_url: true,
+            api_key: "secret".into(),
+            tooltip_data: "DeepSeek V4 Flash".into(),
+            model_id: "deepseek-v4-flash".into(),
             reasoning_effort: None,
-            supports_image_generation: false,
+            openai_endpoint: "/v1/responses".into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: serde_json::json!({}),
+            custom_headers_enabled: false,
+            custom_headers: serde_json::json!({}),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: serde_json::json!({}),
+            context_window_tokens: Some(272_000),
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
             created_at_ms: 0,
             updated_at_ms: 0,
         };
 
-        let mapped = available_model(&model, "OpenRouter");
+        let mapped = available_model(&model);
         assert_eq!(mapped.name, "33ceed20");
         assert!(mapped.default_on);
         assert_eq!(mapped.supports_agent, Some(true));
@@ -591,6 +574,13 @@ mod tests {
         );
         assert_eq!(mapped.server_model_name.as_deref(), Some("33ceed20"));
         assert_eq!(mapped.named_model_section_index, Some(1));
+        assert_eq!(
+            mapped
+                .tooltip_data
+                .as_ref()
+                .and_then(|tooltip| tooltip.markdown_content.as_deref()),
+            Some("DeepSeek V4 Flash")
+        );
         assert_eq!(mapped.vendor_name.as_deref(), Some("cursor"));
         assert_eq!(mapped.parameter_definitions.len(), 3);
         let context = mapped
@@ -643,7 +633,7 @@ mod tests {
         assert_eq!(mapped.variants.len(), 50);
         assert_eq!(mapped.legacy_slugs.len(), 50);
         assert_eq!(mapped.model_picker_badges.len(), 1);
-        assert_eq!(mapped.model_picker_badges[0].label, "OpenRouter");
+        assert_eq!(mapped.model_picker_badges[0].label, "OpenAI");
         assert!(!mapped.model_picker_badges[0].dismiss_on_selection);
         let default = mapped
             .variants

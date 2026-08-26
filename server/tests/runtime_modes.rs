@@ -117,7 +117,7 @@ async fn unchanged_request_context_is_not_repeated_and_preserves_the_provider_pr
     };
     assert_eq!(
         request.history[1].message_id,
-        "runtime:run-request:ask-request"
+        "runtime:cursor:user:wire-user"
     );
     assert!(!request.prompt.instructions.contains("workspace rule"));
     assert!(!request.prompt.instructions.contains("<mcp_meta_tools>"));

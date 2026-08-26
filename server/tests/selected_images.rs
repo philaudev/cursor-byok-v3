@@ -89,7 +89,7 @@ async fn selected_image_bytes_flow_from_run_request_to_history_providers_and_che
     let user = requests[0]
         .history
         .iter()
-        .find(|message| message.message_id == "runtime:run-request:image-run")
+        .find(|message| message.message_id == "runtime:cursor:user:image-user")
         .unwrap();
     let ProjectedContent::Parts(parts) = &user.content else {
         panic!("runtime user message must retain typed parts")
@@ -128,7 +128,7 @@ async fn selected_image_bytes_flow_from_run_request_to_history_providers_and_che
         let id = BlobId::from_bytes(raw_id).unwrap();
         let bytes = store.get_blob(&id).await.unwrap().unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        if value["id"] == "runtime:run-request:image-run" {
+        if value["id"] == "runtime:cursor:user:image-user" {
             user_root = Some(value);
             break;
         }

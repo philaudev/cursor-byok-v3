@@ -169,8 +169,16 @@ async fn eligible_pending_checkpoint_resumes_tools_before_the_next_model_call() 
         1,
         "resume must execute the pending batch before calling the model"
     );
+    let resumed_run_id = store
+        .active_run_for_cursor_request("resumed-run")
+        .await
+        .unwrap()
+        .unwrap();
     let resumed_round = store
-        .tool_round(&ToolRoundId::new("resumed-run:round:resume"))
+        .tool_round(&ToolRoundId::new(format!(
+            "{}:round:resume",
+            resumed_run_id.as_str()
+        )))
         .await
         .unwrap()
         .unwrap();

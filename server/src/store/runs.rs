@@ -88,12 +88,13 @@ impl Store {
             run_kind_columns(&prepared.kind);
         sqlx::query(
             "INSERT INTO runs
-             (run_id, conversation_id, base_revision_id, head_revision_id,
+             (run_id, cursor_request_id, conversation_id, base_revision_id, head_revision_id,
               parent_run_id, parent_tool_call_id, run_kind, subagent_kind,
               status, created_at_ms, updated_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
         )
         .bind(prepared.run_id.as_str())
+        .bind(prepared.cursor_request_id.as_deref())
         .bind(prepared.conversation_id.as_str())
         .bind(prepared.base_revision_id.0)
         .bind(prepared.base_revision_id.0)
@@ -126,6 +127,22 @@ impl Store {
                 .filter(|run| run != prepared.run_id.as_str())
                 .map(RunId),
         })
+    }
+
+    pub async fn active_run_for_cursor_request(
+        &self,
+        cursor_request_id: &str,
+    ) -> Result<Option<RunId>> {
+        let run_id: Option<String> = sqlx::query_scalar(
+            "SELECT run_id FROM runs
+             WHERE cursor_request_id = ? AND status = 'running'
+             ORDER BY created_at_ms DESC
+             LIMIT 1",
+        )
+        .bind(cursor_request_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(run_id.map(RunId))
     }
 
     pub async fn begin_provider_call(&self, run_id: &RunId) -> Result<u64> {

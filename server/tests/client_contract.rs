@@ -200,6 +200,7 @@ async fn prepared(store: &cursor_server::store::Store) -> PreparedRun {
     let root = store.ensure_conversation(&conversation_id).await.unwrap();
     PreparedRun {
         run_id: RunId::new("run"),
+        cursor_request_id: None,
         conversation_id,
         kind: RunKind::Root,
         model: ModelSpec::new("model"),

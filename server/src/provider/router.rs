@@ -6,14 +6,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::{ProviderConfig, ProviderKind},
-    model::{resolve_request_url, ModelInvocation, ModelLatency, NewLlmCall, ProviderType},
+    model::{ModelInvocation, ModelLatency, NewLlmCall, ProviderType},
     store::Store,
     Error, Result,
 };
 
 use super::{
-    AnthropicProvider, CallRecorder, OpenAiChatProvider, OpenAiResponsesProvider, Provider,
-    ProviderStream,
+    normalize::NormalizedProvider, AnthropicProvider, CallRecorder, OpenAiChatProvider,
+    OpenAiResponsesProvider, Provider, ProviderStream,
 };
 
 pub struct ProviderRouter {
@@ -41,21 +41,13 @@ impl Provider for ProviderRouter {
         Box::pin(try_stream! {
             let selected = invocation.request.model.model_id.clone();
             let model = store
-                .provider_model(&selected)
+                .model(&selected)
                 .await?
-                .filter(|model| model.enabled)
-                .ok_or_else(|| Error::Provider(format!("unknown or disabled model: {selected}")))?;
-            let endpoint = store
-                .provider(model.provider_id)
-                .await?
-                .ok_or_else(|| Error::Provider(format!("provider {} no longer exists", model.provider_id)))?;
-            let request_url = resolve_request_url(
-                &endpoint.endpoint.base_url,
-                model.endpoint_type,
-                &model.request_url,
-            )?;
+                .ok_or_else(|| Error::Provider(format!("unknown model: {selected}")))?;
+            let provider_type = model.provider_type();
+            let request_url = model.request_url()?;
             model.configure(&mut invocation.request.model);
-            invocation.request.model.extra_params = endpoint.endpoint.extra_params.clone();
+            invocation.request.model.extra_params = model.extra_params().clone();
             invocation.request.model.model_id = model.model_id.clone();
             let recorder = CallRecorder::start(store.clone(), NewLlmCall {
                 call_id: invocation.call_id.clone(),
@@ -63,9 +55,9 @@ impl Provider for ProviderRouter {
                 conversation_id: invocation.conversation_id.clone(),
                 provider_call_index: invocation.provider_call_index.min(i64::MAX as u64) as i64,
                 model_hash: model.model_hash.clone(),
-                provider_type: endpoint.endpoint.provider_type,
-                provider_url: endpoint.endpoint.base_url.clone(),
-                request_type: model.endpoint_type,
+                provider_type,
+                provider_url: model.base_url.clone(),
+                request_type: provider_type,
                 request_url: request_url.clone(),
                 model_id: model.model_id.clone(),
                 display_name: model.display_name.clone(),
@@ -76,15 +68,19 @@ impl Provider for ProviderRouter {
                 detailed: false,
             }).await?;
             let config = ProviderConfig {
-                kind: match model.endpoint_type {
+                kind: match provider_type {
                     ProviderType::OpenAiChat => ProviderKind::OpenAiChat,
                     ProviderType::OpenAiResponses => ProviderKind::OpenAiResponses,
                     ProviderType::Anthropic => ProviderKind::Anthropic,
                 },
                 request_url,
-                api_key: endpoint.endpoint.api_key.clone().unwrap_or_default(),
-                custom_headers: custom_headers(&endpoint.custom_headers)?,
-                max_output_tokens: model.max_output_tokens,
+                api_key: model.api_key.clone(),
+                custom_headers: if model.custom_headers_enabled {
+                    custom_headers(&model.custom_headers)?
+                } else {
+                    reqwest::header::HeaderMap::new()
+                },
+                max_output_tokens: model.max_output_tokens(),
                 request_timeout,
             };
             let client = crate::network::client_builder(&store)
@@ -160,7 +156,7 @@ fn build_inner(
             .timeout(config.request_timeout)
             .build()?,
     };
-    Ok(match config.kind {
+    let provider: Arc<dyn Provider> = match config.kind {
         ProviderKind::OpenAiChat => {
             Arc::new(OpenAiChatProvider::new(client, config.clone()).with_recorder(recorder))
         }
@@ -170,5 +166,6 @@ fn build_inner(
         ProviderKind::Anthropic => {
             Arc::new(AnthropicProvider::new(client, config.clone()).with_recorder(recorder))
         }
-    })
+    };
+    Ok(Arc::new(NormalizedProvider::new(provider)))
 }

@@ -48,6 +48,7 @@ pub struct RecoveredToolRound {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PreparedRun {
     pub run_id: RunId,
+    pub cursor_request_id: Option<String>,
     pub conversation_id: ConversationId,
     pub kind: RunKind,
     pub model: ModelSpec,

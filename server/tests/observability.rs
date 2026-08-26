@@ -3,8 +3,8 @@ use std::time::Duration;
 use axum::{http::header, response::IntoResponse, routing::post, Router};
 use cursor_server::{
     model::{
-        ModelInvocation, ModelRequest, ModelSpec, PromptSpec, ProviderEndpointInput,
-        ProviderModelInput, ProviderType,
+        ModelConfigInput, ModelInvocation, ModelRequest, ModelSpec, ModelType, PromptSpec,
+        OPENAI_CHAT_ENDPOINT,
     },
     provider::{ModelEvent, Provider, ProviderRouter},
     store::Store,
@@ -105,7 +105,7 @@ async fn cursor_trace_links_detailed_artifacts_to_the_logical_run() {
 #[tokio::test]
 async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
     let app = Router::new().route(
-        "/v1/chat/completions",
+        "/proxy/generate",
         post(|| async {
             (
                 [(header::CONTENT_TYPE, "text/event-stream")],
@@ -124,34 +124,30 @@ async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
 
     let (_directory, store) = test_store("observability.db").await;
     store.set_detailed_logging(true).await.unwrap();
-    let endpoint = store
-        .create_provider(&ProviderEndpointInput {
-            name: "test".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: format!("http://{address}/v1"),
-            api_key: Some("not-recorded".into()),
-            custom_headers: serde_json::json!({"x-safe":"visible","authorization":"hidden"}),
-            extra_params: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
     let model = store
-        .save_provider_model(
-            endpoint.provider_id,
-            &ProviderModelInput {
-                model_id: "actual-model".into(),
-                display_name: "Display Model".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: false,
-            },
-        )
+        .create_model(&ModelConfigInput {
+            sort_order: 0,
+            display_name: "Display Model".into(),
+            model_type: ModelType::OpenAi,
+            base_url: format!("http://{address}/proxy/generate"),
+            use_full_url: true,
+            api_key: "not-recorded".into(),
+            tooltip_data: "Display Model".into(),
+            model_id: "actual-model".into(),
+            reasoning_effort: None,
+            openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+            openai_extra_params_enabled: false,
+            openai_extra_params: serde_json::json!({}),
+            custom_headers_enabled: true,
+            custom_headers: serde_json::json!({"x-safe":"visible","authorization":"hidden"}),
+            anthropic_extra_params_enabled: false,
+            anthropic_extra_params: serde_json::json!({}),
+            context_window_tokens: None,
+            max_completion_tokens: None,
+            anthropic_max_tokens: None,
+            anthropic_thinking_effort: None,
+            thinking_budget_tokens: None,
+        })
         .await
         .unwrap();
     let provider = ProviderRouter::new(store.clone(), Duration::from_secs(5));
@@ -183,7 +179,7 @@ async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
     let call = store.llm_call("call-1").await.unwrap().unwrap();
     assert_eq!(call.status, "completed");
     assert_eq!(call.request_type, "openai-chat");
-    assert!(call.request_url.ends_with("/v1/chat/completions"));
+    assert_eq!(call.request_url, format!("http://{address}/proxy/generate"));
     assert_eq!(call.total_tokens, Some(12));
     assert!(call.ttfb_ms.is_some());
     assert!(call.ttft_ms.is_some());

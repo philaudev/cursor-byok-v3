@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use super::ProviderType;
+use super::{ProviderType, Usage};
 
 #[derive(Clone, Debug)]
 pub struct NewLlmCall {
@@ -20,6 +20,14 @@ pub struct NewLlmCall {
     pub message_count: usize,
     pub tool_count: usize,
     pub detailed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LlmCallUsageAnchor {
+    pub request_type: ProviderType,
+    pub usage: Usage,
+    pub message_count: usize,
+    pub tool_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]

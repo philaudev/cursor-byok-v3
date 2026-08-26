@@ -52,6 +52,12 @@
   width: min(1080px, calc(100vw - 48px));
 }
 
+.banner {
+  flex: 0 0 auto;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
 .body {
   flex: 0 1 auto;
   min-height: 0;

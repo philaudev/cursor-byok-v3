@@ -1,7 +1,7 @@
 use cursor_server::{
     model::{
-        ConversationId, ModelSpec, NewLlmCall, PreparedRun, PromptSpec, ProviderEndpointInput,
-        ProviderModelInput, ProviderType, RunAction, RunId, RunKind, Usage,
+        ConversationId, ModelConfigInput, ModelSpec, ModelType, NewLlmCall, PreparedRun,
+        PromptSpec, ProviderType, RunAction, RunId, RunKind, Usage, OPENAI_CHAT_ENDPOINT,
     },
     store::{RunStatus, Store},
 };
@@ -13,107 +13,91 @@ async fn store() -> (tempfile::TempDir, Store) {
     (directory, store)
 }
 
-#[tokio::test]
-async fn provider_secret_is_write_only_and_model_hash_is_stable() {
-    let (_directory, store) = store().await;
-    let provider = store
-        .create_provider(&ProviderEndpointInput {
-            name: "Local".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: "https://example.com/v1/".into(),
-            api_key: Some("secret".into()),
-            custom_headers: serde_json::json!({"x-route":"one", "authorization":"header-secret"}),
-            extra_params: serde_json::json!({"temperature":0}),
-        })
-        .await
-        .unwrap();
-    assert!(provider.has_api_key);
-    assert!(!serde_json::to_string(&provider).unwrap().contains("secret"));
-    assert_eq!(
-        provider.custom_headers["authorization"],
-        serde_json::Value::Null
-    );
-    let updated = store
-        .update_provider(
-            provider.provider_id,
-            &ProviderEndpointInput {
-                name: "Renamed".into(),
-                provider_type: provider.provider_type,
-                base_url: provider.base_url.clone(),
-                api_key: None,
-                custom_headers: provider.custom_headers.clone(),
-                extra_params: provider.extra_params.clone(),
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(updated.name, "Renamed");
-    assert_eq!(
-        store
-            .provider(provider.provider_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .custom_headers["authorization"],
-        "header-secret"
-    );
+fn model_input() -> ModelConfigInput {
+    ModelConfigInput {
+        sort_order: 0,
+        display_name: "Model A".into(),
+        model_type: ModelType::OpenAi,
+        base_url: "https://example.com/v1/chat/completions".into(),
+        use_full_url: true,
+        api_key: "secret".into(),
+        tooltip_data: "Model A".into(),
+        model_id: "model-a".into(),
+        reasoning_effort: None,
+        openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+        openai_extra_params_enabled: true,
+        openai_extra_params: serde_json::json!({"temperature":0}),
+        custom_headers_enabled: true,
+        custom_headers: serde_json::json!({"x-route":"one"}),
+        anthropic_extra_params_enabled: false,
+        anthropic_extra_params: serde_json::json!({}),
+        context_window_tokens: None,
+        max_completion_tokens: None,
+        anthropic_max_tokens: None,
+        anthropic_thinking_effort: None,
+        thinking_budget_tokens: None,
+    }
+}
 
-    let model = store
-        .save_provider_model(
-            provider.provider_id,
-            &ProviderModelInput {
-                model_id: "model-a".into(),
-                display_name: "Model A".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: true,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(model.model_hash, "bab5019a");
-    assert!(model.supports_image_generation);
+#[tokio::test]
+async fn model_configuration_round_trips_and_hash_uses_v0049_identity() {
+    let (_directory, store) = store().await;
+    let model = store.create_model(&model_input()).await.unwrap();
+    assert_eq!(model.model_hash.len(), 16);
+    assert_eq!(model.api_key, "secret");
+    assert_eq!(model.custom_headers["x-route"], "one");
+
+    let original_hash = model.model_hash.clone();
+    let mut input = model_input();
+    input.base_url = "https://example.com/v1/chat/completions".into();
+    input.sort_order = 3;
+    input.tooltip_data = "Updated tooltip".into();
+    let updated = store.update_model(&original_hash, &input).await.unwrap();
+    assert_eq!(updated.model_hash, original_hash);
+    assert_eq!(updated.sort_order, 3);
+    assert_eq!(updated.tooltip_data, "Updated tooltip");
+}
+
+#[tokio::test]
+async fn arbitrary_request_url_is_independent_from_openai_protocol() {
+    let (_directory, store) = store().await;
+    let mut input = model_input();
+    input.base_url = "https://proxy.example.com/arbitrary/generate?api-version=2026-01-01".into();
+
+    let chat = store.create_model(&input).await.unwrap();
+    assert_eq!(chat.provider_type(), ProviderType::OpenAiChat);
+    assert_eq!(chat.request_url().unwrap(), input.base_url);
+
+    input.openai_endpoint = "/v1/responses".into();
+    let responses = store.update_model(&chat.model_hash, &input).await.unwrap();
+    assert_eq!(responses.provider_type(), ProviderType::OpenAiResponses);
+    assert_eq!(responses.request_url().unwrap(), input.base_url);
+}
+
+#[tokio::test]
+async fn standard_server_address_resolves_to_the_same_model_identity_as_a_complete_url() {
+    let (_directory, store) = store().await;
+    let complete = model_input();
+    let mut standard = complete.clone();
+    standard.base_url = "https://example.com/v1".into();
+    standard.use_full_url = false;
+
+    let model = store.create_model(&standard).await.unwrap();
+    assert!(!model.use_full_url);
+    assert_eq!(
+        model.request_url().unwrap(),
+        "https://example.com/v1/chat/completions"
+    );
+    assert_eq!(
+        model.model_hash,
+        cursor_server::model::model_hash(&complete).unwrap()
+    );
 }
 
 #[tokio::test]
 async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
     let (_directory, store) = store().await;
-    let provider = store
-        .create_provider(&ProviderEndpointInput {
-            name: "Local".into(),
-            provider_type: ProviderType::OpenAiChat,
-            base_url: "https://example.com/v1".into(),
-            api_key: None,
-            custom_headers: serde_json::json!({}),
-            extra_params: serde_json::json!({}),
-        })
-        .await
-        .unwrap();
-    let model = store
-        .save_provider_model(
-            provider.provider_id,
-            &ProviderModelInput {
-                model_id: "model-a".into(),
-                display_name: "Model A".into(),
-                endpoint_type: ProviderType::OpenAiChat,
-                request_url: String::new(),
-                enabled: true,
-                sort_order: 0,
-                context_window_tokens: None,
-                max_output_tokens: None,
-                reasoning_enabled: false,
-                reasoning_effort: None,
-                supports_image_generation: false,
-            },
-        )
-        .await
-        .unwrap();
+    let model = store.create_model(&model_input()).await.unwrap();
     let call = NewLlmCall {
         call_id: "call-1".into(),
         run_id: "run-1".into(),
@@ -121,7 +105,7 @@ async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
         provider_call_index: 0,
         model_hash: model.model_hash,
         provider_type: ProviderType::OpenAiChat,
-        provider_url: provider.base_url,
+        provider_url: model.base_url.clone(),
         request_type: ProviderType::OpenAiChat,
         request_url: "https://example.com/v1/chat/completions".into(),
         model_id: model.model_id,
@@ -137,6 +121,7 @@ async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
     store
         .claim_run(&PreparedRun {
             run_id: RunId::new("run-1"),
+            cursor_request_id: None,
             conversation_id,
             kind: RunKind::Root,
             model: ModelSpec::new(call.model_hash.clone()),

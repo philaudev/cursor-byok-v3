@@ -1,3 +1,4 @@
+mod configuration;
 mod conversation;
 mod cursor_trace;
 mod inference;
@@ -6,13 +7,13 @@ mod message;
 mod model_spec;
 mod overview;
 mod projection;
-mod provider;
 mod run;
 mod runtime_tag;
 mod token_count;
 mod tool;
 mod usage;
 
+pub use configuration::*;
 pub use conversation::*;
 pub use cursor_trace::*;
 pub use inference::*;
@@ -21,7 +22,6 @@ pub use message::*;
 pub use model_spec::*;
 pub use overview::*;
 pub use projection::*;
-pub use provider::*;
 pub use run::*;
 pub use runtime_tag::*;
 pub(crate) use token_count::*;

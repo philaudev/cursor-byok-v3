@@ -16,13 +16,14 @@ use crate::{
     harness::CursorHarness,
     model::{
         ContentPart, CursorRunTraceArtifact, CursorRunTraceSummary, LlmCallRequest,
-        LlmCallResponseChunk, LlmCallSummary, ModelInvocation, ModelRequest, ModelSpec, Overview,
-        ProjectedContent, ProjectedMessage, PromptSpec, ProviderEndpoint, ProviderEndpointInput,
-        ProviderModel, ProviderModelInput, ProviderType, Role,
+        LlmCallResponseChunk, LlmCallSummary, ModelConfig, ModelConfigInput, ModelInvocation,
+        ModelRequest, ModelSpec, ModelType, Overview, ProjectedContent, ProjectedMessage,
+        PromptSpec, ProviderType, Role,
     },
     provider::{ModelEvent, Provider},
     store::{
-        PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage, Store, TabSettings,
+        DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage, Store,
+        TabSettings,
     },
     Error, Result,
 };
@@ -37,6 +38,53 @@ pub struct ControlService {
 #[derive(Clone, Debug, Serialize)]
 pub struct DiscoveredModels {
     pub models: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LegacyModelImportResult {
+    pub imported: usize,
+    pub skipped: usize,
+    pub total: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LegacyModelImportPreview {
+    pub source: String,
+    pub total: usize,
+    pub new_models: usize,
+    pub existing_models: usize,
+    pub models: Vec<LegacyModelImportPreviewItem>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LegacyModelImportPreviewItem {
+    pub model_hash: String,
+    pub display_name: String,
+    pub model_id: String,
+    #[serde(rename = "type")]
+    pub model_type: ModelType,
+    pub existing: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ModelDiscoveryInput {
+    #[serde(rename = "type")]
+    pub model_type: ModelType,
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub custom_headers_enabled: bool,
+    #[serde(default = "empty_json_object")]
+    pub custom_headers: serde_json::Value,
+}
+
+fn empty_json_object() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+fn empty_json_object_ref() -> &'static serde_json::Value {
+    static EMPTY: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(empty_json_object)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -162,28 +210,8 @@ impl ControlService {
         Ok(())
     }
 
-    pub async fn providers(&self) -> Result<Vec<ProviderEndpoint>> {
-        self.store.providers().await
-    }
-
-    pub async fn create_provider(&self, input: &ProviderEndpointInput) -> Result<ProviderEndpoint> {
-        self.store.create_provider(input).await
-    }
-
-    pub async fn update_provider(
-        &self,
-        provider_id: i64,
-        input: &ProviderEndpointInput,
-    ) -> Result<ProviderEndpoint> {
-        self.store.update_provider(provider_id, input).await
-    }
-
-    pub async fn delete_provider(&self, provider_id: i64) -> Result<()> {
-        self.store.delete_provider(provider_id).await
-    }
-
-    pub async fn models(&self) -> Result<Vec<ProviderModel>> {
-        self.store.provider_models(false).await
+    pub async fn models(&self) -> Result<Vec<ModelConfig>> {
+        self.store.models().await
     }
 
     pub async fn overview(
@@ -191,31 +219,28 @@ impl ControlService {
         start_ms: Option<i64>,
         end_ms: Option<i64>,
         model_hashes: Option<&str>,
-        provider_ids: Option<&str>,
     ) -> Result<Overview> {
-        self.store
-            .overview(start_ms, end_ms, model_hashes, provider_ids)
-            .await
+        self.store.overview(start_ms, end_ms, model_hashes).await
     }
 
-    pub async fn save_models(
-        &self,
-        provider_id: i64,
-        models: &[ProviderModelInput],
-    ) -> Result<Vec<ProviderModel>> {
-        self.store.save_provider_models(provider_id, models).await
+    pub async fn create_models(&self, models: &[ModelConfigInput]) -> Result<Vec<ModelConfig>> {
+        self.store.create_models(models).await
+    }
+
+    pub async fn reorder_models(&self, model_hashes: &[String]) -> Result<Vec<ModelConfig>> {
+        self.store.reorder_models(model_hashes).await
     }
 
     pub async fn delete_model(&self, model_hash: &str) -> Result<()> {
-        self.store.delete_provider_model(model_hash).await
+        self.store.delete_model(model_hash).await
     }
 
     pub async fn update_model(
         &self,
         model_hash: &str,
-        input: &ProviderModelInput,
-    ) -> Result<ProviderModel> {
-        self.store.update_provider_model(model_hash, input).await
+        input: &ModelConfigInput,
+    ) -> Result<ModelConfig> {
+        self.store.update_model(model_hash, input).await
     }
 
     pub async fn test_model(&self, model_hash: &str) -> Result<ModelConnectivityResult> {
@@ -224,19 +249,12 @@ impl ControlService {
 
         let configured = self
             .store
-            .provider_model(model_hash)
+            .model(model_hash)
             .await?
             .ok_or_else(|| Error::RunNotFound(format!("model {model_hash}")))?;
         let mut model = ModelSpec::new(model_hash);
-        if configured.reasoning_enabled {
-            model.reasoning.enabled = true;
-            model.reasoning.effort = Some(
-                configured
-                    .reasoning_effort
-                    .filter(|effort| !effort.trim().is_empty())
-                    .unwrap_or_else(|| "medium".into()),
-            );
-        }
+        configured.configure(&mut model);
+        model.max_output_tokens = Some(configured.max_output_tokens().unwrap_or(65_536));
         let test_id = format!("model-test-{}", uuid::Uuid::new_v4());
         let call_id = test_id.clone();
         let invocation = ModelInvocation {
@@ -316,6 +334,11 @@ impl ControlService {
         }
         let elapsed = started.elapsed();
         let output = output.trim().to_string();
+        if first_text_at.is_none() {
+            return Err(Error::Provider(
+                "model connectivity test received no text output".into(),
+            ));
+        }
         let tokens_estimated = output_tokens.is_none();
         let output_tokens = output_tokens.unwrap_or_else(|| estimate_output_tokens(&output));
         Ok(ModelConnectivityResult {
@@ -337,44 +360,58 @@ impl ControlService {
         })
     }
 
-    pub async fn create_provider_with_models(
-        &self,
-        provider: &ProviderEndpointInput,
-        models: &[ProviderModelInput],
-    ) -> Result<(ProviderEndpoint, Vec<ProviderModel>)> {
-        self.store
-            .create_provider_with_models(provider, models)
-            .await
-    }
-
-    pub async fn discover_input(&self, input: &ProviderEndpointInput) -> Result<DiscoveredModels> {
+    pub async fn discover_models(&self, input: &ModelDiscoveryInput) -> Result<DiscoveredModels> {
         let client = crate::network::client(&self.store).await?;
-        let base_url = crate::model::normalize_base_url(&input.base_url)?;
-        discover_provider_models(
+        let base_url = crate::model::normalize_request_url(&input.base_url)?;
+        discover_models_from_endpoint(
             &client,
-            input.provider_type,
+            match input.model_type {
+                ModelType::OpenAi => ProviderType::OpenAiResponses,
+                ModelType::Anthropic => ProviderType::Anthropic,
+            },
             &base_url,
-            input.api_key.as_deref().unwrap_or_default(),
-            &input.custom_headers,
+            &input.api_key,
+            if input.custom_headers_enabled {
+                &input.custom_headers
+            } else {
+                empty_json_object_ref()
+            },
         )
         .await
     }
 
-    pub async fn discover_models(&self, provider_id: i64) -> Result<DiscoveredModels> {
-        let client = crate::network::client(&self.store).await?;
-        let provider = self
-            .store
-            .provider(provider_id)
-            .await?
-            .ok_or_else(|| Error::RunNotFound(format!("provider {provider_id}")))?;
-        discover_provider_models(
-            &client,
-            provider.endpoint.provider_type,
-            &provider.endpoint.base_url,
-            provider.endpoint.api_key.as_deref().unwrap_or_default(),
-            &provider.custom_headers,
-        )
-        .await
+    pub async fn import_v0049_models(&self) -> Result<LegacyModelImportResult> {
+        let path = crate::config::v0049_config_path()?;
+        let outcome = self.store.import_v0049_model_config(&path).await?;
+        Ok(LegacyModelImportResult {
+            imported: outcome.imported,
+            skipped: outcome.skipped,
+            total: outcome.total,
+        })
+    }
+
+    pub async fn preview_v0049_models(&self) -> Result<LegacyModelImportPreview> {
+        let path = crate::config::v0049_config_path()?;
+        let plan = self.store.preview_v0049_model_config(&path).await?;
+        let total = plan.models.len();
+        let existing_models = plan.models.iter().filter(|model| model.existing).count();
+        Ok(LegacyModelImportPreview {
+            source: path.display().to_string(),
+            total,
+            new_models: total - existing_models,
+            existing_models,
+            models: plan
+                .models
+                .into_iter()
+                .map(|model| LegacyModelImportPreviewItem {
+                    model_hash: model.model_hash,
+                    display_name: model.input.display_name,
+                    model_id: model.input.model_id,
+                    model_type: model.input.model_type,
+                    existing: model.existing,
+                })
+                .collect(),
+        })
     }
 
     pub async fn calls(&self, limit: i64) -> Result<Vec<CallSummary>> {
@@ -497,6 +534,14 @@ impl ControlService {
     pub async fn set_tab_settings(&self, settings: TabSettings) -> Result<TabSettings> {
         self.cursor_harness.set_tab_settings(settings).await
     }
+
+    pub async fn desktop_settings(&self) -> Result<DesktopSettings> {
+        self.store.desktop_settings().await
+    }
+
+    pub async fn set_desktop_settings(&self, settings: DesktopSettings) -> Result<()> {
+        self.store.set_desktop_settings(settings).await
+    }
 }
 
 fn official_call(trace: CursorRunTraceSummary) -> CallSummary {
@@ -586,7 +631,7 @@ fn readable_utf8(data: &[u8]) -> Option<&str> {
         .then_some(value)
 }
 
-async fn discover_provider_models(
+async fn discover_models_from_endpoint(
     client: &reqwest::Client,
     provider_type: ProviderType,
     base_url: &str,
@@ -608,10 +653,10 @@ async fn discover_provider_models(
 
 fn model_discovery_url(base_url: &str) -> Result<Url> {
     let mut url = Url::parse(base_url)
-        .map_err(|error| Error::Config(format!("invalid provider base URL: {error}")))?;
+        .map_err(|error| Error::Config(format!("invalid model request URL: {error}")))?;
     if url.host_str().is_none() {
         return Err(Error::Config(
-            "provider base URL must contain a host".into(),
+            "model request URL must contain a host".into(),
         ));
     }
     url.set_path("/v1/models");
@@ -747,10 +792,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::{
-        model::{
-            ModelInvocation, ProjectedContent, ProviderEndpointInput, ProviderModelInput,
-            ProviderType,
-        },
+        model::{ModelConfigInput, ModelInvocation, ModelType, ProjectedContent},
         provider::{FinishReason, ModelEvent, Provider, ProviderStream},
         store::Store,
     };
@@ -794,34 +836,30 @@ mod tests {
         .await
         .unwrap();
         let invocation = Arc::new(Mutex::new(None));
-        let provider = store
-            .create_provider(&ProviderEndpointInput {
-                name: "Test".into(),
-                provider_type: ProviderType::OpenAiResponses,
-                base_url: "https://example.com/v1".into(),
-                api_key: None,
-                custom_headers: serde_json::json!({}),
-                extra_params: serde_json::json!({}),
-            })
-            .await
-            .unwrap();
         let model = store
-            .save_provider_model(
-                provider.provider_id,
-                &ProviderModelInput {
-                    model_id: "reasoning-model".into(),
-                    display_name: "Reasoning Model".into(),
-                    endpoint_type: ProviderType::OpenAiResponses,
-                    request_url: String::new(),
-                    enabled: true,
-                    sort_order: 0,
-                    context_window_tokens: None,
-                    max_output_tokens: None,
-                    reasoning_enabled: true,
-                    reasoning_effort: None,
-                    supports_image_generation: false,
-                },
-            )
+            .create_model(&ModelConfigInput {
+                model_id: "reasoning-model".into(),
+                display_name: "Reasoning Model".into(),
+                model_type: ModelType::OpenAi,
+                base_url: "https://example.com/v1/responses".into(),
+                use_full_url: true,
+                api_key: "secret".into(),
+                tooltip_data: "Reasoning Model".into(),
+                sort_order: 0,
+                reasoning_effort: Some("medium".into()),
+                openai_endpoint: "/v1/responses".into(),
+                openai_extra_params_enabled: false,
+                openai_extra_params: serde_json::json!({}),
+                custom_headers_enabled: false,
+                custom_headers: serde_json::json!({}),
+                anthropic_extra_params_enabled: false,
+                anthropic_extra_params: serde_json::json!({}),
+                context_window_tokens: None,
+                max_completion_tokens: None,
+                anthropic_max_tokens: None,
+                anthropic_thinking_effort: None,
+                thinking_budget_tokens: None,
+            })
             .await
             .unwrap();
         let service = ControlService::new(
@@ -916,16 +954,15 @@ mod tests {
         )
         .unwrap();
         let result = service
-            .discover_input(&ProviderEndpointInput {
-                name: "Test".into(),
-                provider_type: ProviderType::OpenAiResponses,
+            .discover_models(&super::ModelDiscoveryInput {
+                model_type: ModelType::OpenAi,
                 base_url: format!("http://{address}/custom/responses"),
-                api_key: Some("secret".into()),
+                api_key: "secret".into(),
+                custom_headers_enabled: true,
                 custom_headers: serde_json::json!({
                     "uSeR-aGeNt": "inherited-user-agent",
                     "x-tenant": "tenant-a"
                 }),
-                extra_params: serde_json::json!({ "temperature": 0.7 }),
             })
             .await
             .unwrap();

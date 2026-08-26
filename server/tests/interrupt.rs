@@ -54,6 +54,7 @@ async fn a_replaced_run_cannot_overwrite_its_cancelled_status() {
     let base_revision_id = store.ensure_conversation(&conversation_id).await.unwrap();
     let prepared = |run_id: &str| PreparedRun {
         run_id: RunId::new(run_id),
+        cursor_request_id: None,
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("model"),

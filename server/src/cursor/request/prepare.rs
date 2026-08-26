@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use uuid::Uuid;
 
 use crate::{
     cursor::prompting::{Mode, PromptCompiler},
@@ -75,7 +76,7 @@ pub(crate) async fn prepare(
     );
     // RunSSE/Bidi request_id identifies this concrete execution attempt. Cursor may
     // reuse AgentRunRequest.run_id when a queued or subagent-driven attempt resumes.
-    let run_id = RunId::new(request_id);
+    let run_id = execution_run_id(request_id);
     let history = conversation_history(request);
     let mut base_messages = if request.conversation_state.is_some() {
         Some(
@@ -143,19 +144,15 @@ pub(crate) async fn prepare(
         starts_turn,
         compacting,
         background_completion,
-    } = action(request_id, request)?;
+    } = action(request)?;
     let checkpoint_mode = if request.subagent_type_name.is_some() {
         Mode::Subagent
     } else {
         mode_from_proto(mode_number)?
     };
     let mut model = model::requested_model(request)?;
-    if let Some(provider_model) = store
-        .provider_model(&model.model_id)
-        .await?
-        .filter(|model| model.enabled)
-    {
-        provider_model.configure(&mut model);
+    if let Some(configured_model) = store.model(&model.model_id).await? {
+        configured_model.configure(&mut model);
     }
     let dynamic = context::dynamic_mcp(request, &request_context)?;
     let subagent_model_overrides = model::overrides(request)?;
@@ -312,6 +309,7 @@ pub(crate) async fn prepare(
     Ok((
         PreparedRun {
             run_id,
+            cursor_request_id: Some(request_id.into()),
             conversation_id,
             kind,
             model,
@@ -530,12 +528,17 @@ fn validate_prompt_root(messages: &[CanonicalMessage]) -> Result<()> {
     Ok(())
 }
 
-fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProjection> {
-    let mode = request
+fn execution_run_id(request_id: &str) -> RunId {
+    let execution_id = Uuid::new_v4().simple().to_string();
+    RunId::new(format!("{request_id}:{}", &execution_id[..8]))
+}
+
+fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+    let conversation_mode = request
         .conversation_state
         .as_ref()
-        .and_then(|state| state.mode)
-        .unwrap_or(pb::AgentMode::Agent as i32);
+        .and_then(|state| state.mode);
+    let mode = conversation_mode.unwrap_or(pb::AgentMode::Agent as i32);
     let Some(action) = request
         .action
         .as_ref()
@@ -557,6 +560,11 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
             let user = action.user_message.as_ref().ok_or_else(|| {
                 Error::Protocol("Cursor user message action has no UserMessage".into())
             })?;
+            let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
+                conversation_mode.unwrap_or(user.mode)
+            } else {
+                user.mode
+            };
             if user.message_id.is_empty() {
                 return Err(Error::Protocol(
                     "Cursor user message action has no message_id".into(),
@@ -564,7 +572,7 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
             }
             if user.text.trim() == "/summarize" {
                 return Ok(ActionProjection {
-                    mode: user.mode,
+                    mode,
                     turn_user: Some(user.clone()),
                     action_context: String::new(),
                     event_id: None,
@@ -587,12 +595,13 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
                     .filter(|text| !text.is_empty())
                     .cloned(),
             );
+            let event_id = format!("cursor:user:{}", user.message_id);
             Ok(ActionProjection {
-                mode: user.mode,
+                mode,
                 turn_user: Some(user.clone()),
                 action_context: context.join("\n\n"),
-                event_id: Some(format!("run-request:{request_id}")),
-                input_id: Some(format!("cursor:user:{}", user.message_id)),
+                event_id: Some(event_id.clone()),
+                input_id: Some(event_id),
                 starts_turn: true,
                 compacting: false,
                 background_completion: false,
@@ -600,10 +609,11 @@ fn action(request_id: &str, request: &pb::AgentRunRequest) -> Result<ActionProje
         }
         pb::conversation_action::Action::BackgroundTaskCompletionAction(action) => {
             let projection = background::project(action, mode)?;
+            let event_id = projection.turn_user.message_id.clone();
             Ok(ActionProjection {
                 mode,
                 action_context: projection.context,
-                event_id: Some(format!("run-request:{request_id}")),
+                event_id: Some(event_id),
                 input_id: None,
                 turn_user: Some(projection.turn_user),
                 starts_turn: true,
@@ -793,6 +803,18 @@ mod tests {
     }
 
     #[test]
+    fn execution_run_id_keeps_the_request_id_and_adds_eight_uuid_hex_digits() {
+        let run_id = execution_run_id("01bba7c5-9c00-4922-b1df-1f58146b5d90");
+        let suffix = run_id
+            .as_str()
+            .strip_prefix("01bba7c5-9c00-4922-b1df-1f58146b5d90:")
+            .unwrap();
+
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn current_user_message_consumes_the_mode_instead_of_history_mode() {
         let request = pb::AgentRunRequest {
             conversation_state: Some(pb::ConversationStateStructure {
@@ -815,13 +837,70 @@ mod tests {
             }),
             ..Default::default()
         };
-        let projection = action("request", &request).unwrap();
+        let projection = action(&request).unwrap();
         assert_eq!(projection.mode, pb::AgentMode::Ask as i32);
         assert_eq!(
             projection.input_id.as_deref(),
             Some("cursor:user:user-message")
         );
         assert_eq!(mode_from_proto(projection.mode).unwrap(), Mode::Ask);
+    }
+
+    #[test]
+    fn queued_user_message_without_mode_inherits_conversation_mode() {
+        let request = pb::AgentRunRequest {
+            conversation_state: Some(pb::ConversationStateStructure {
+                mode: Some(pb::AgentMode::Agent as i32),
+                ..Default::default()
+            }),
+            action: Some(pb::ConversationAction {
+                action: Some(pb::conversation_action::Action::UserMessageAction(
+                    pb::UserMessageAction {
+                        user_message: Some(pb::UserMessage {
+                            text: "queued follow-up".into(),
+                            message_id: "queued-user-message".into(),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let projection = action(&request).unwrap();
+
+        assert_eq!(projection.mode, pb::AgentMode::Agent as i32);
+        assert_eq!(mode_from_proto(projection.mode).unwrap(), Mode::Agent);
+    }
+
+    #[test]
+    fn queued_messages_reusing_a_request_id_keep_distinct_runtime_identities() {
+        let request = |message_id: &str| pb::AgentRunRequest {
+            action: Some(pb::ConversationAction {
+                action: Some(pb::conversation_action::Action::UserMessageAction(
+                    pb::UserMessageAction {
+                        user_message: Some(pb::UserMessage {
+                            text: "queued follow-up".into(),
+                            message_id: message_id.into(),
+                            mode: pb::AgentMode::Agent as i32,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let first = action(&request("message-one")).unwrap();
+        let second = action(&request("message-two")).unwrap();
+
+        assert_eq!(first.event_id.as_deref(), Some("cursor:user:message-one"));
+        assert_eq!(second.event_id.as_deref(), Some("cursor:user:message-two"));
+        assert_ne!(first.event_id, second.event_id);
     }
 
     #[test]
@@ -842,8 +921,8 @@ mod tests {
             ..Default::default()
         };
 
-        let first = action("request-one", &request).unwrap();
-        let second = action("request-two", &request).unwrap();
+        let first = action(&request).unwrap();
+        let second = action(&request).unwrap();
         assert_eq!(first.mode, pb::AgentMode::Agent as i32);
         assert!(first.starts_turn);
         assert_eq!(first.event_id, second.event_id);

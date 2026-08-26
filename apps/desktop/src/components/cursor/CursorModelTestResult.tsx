@@ -2,13 +2,16 @@ import type { ModelConnectivityResult } from "../../api";
 import { Icon } from "../ui/Icon";
 import { TooltipTrigger } from "../ui/TooltipTrigger";
 import { informationOutlineIcon } from "../ui/icons";
-import styles from "./CursorSettings.module.scss";
+import styles from "./CursorModelTestResult.module.scss";
 
 export type CursorModelTestState =
   | { status: "success"; result: ModelConnectivityResult }
   | { status: "error"; error: string };
 
-export function CursorModelTestResult({ state }: { state: CursorModelTestState }) {
+export function CursorModelTestResult({ state, testing = false }: { state?: CursorModelTestState; testing?: boolean }) {
+  if (testing) return <div className={`${styles.root} ${styles.testing}`}><span className={styles.summary}>{t("测试中…")}</span></div>;
+  if (!state) return <div className={`${styles.root} ${styles.idle}`}><span className={styles.summary}>{t("未测试")}</span></div>;
+
   const success = state.status === "success";
   const summary = success
     ? t("速度：{speed} tokens/s", { speed: formatSpeed(state.result.tokens_per_second) })
@@ -24,9 +27,9 @@ export function CursorModelTestResult({ state }: { state: CursorModelTestState }
     })
     : t("测试失败：{error}", { error: state.error });
 
-  return <div className={`${styles.testResult} ${success ? styles.testSuccess : styles.testError}`}>
-    <span className={styles.testResultText}>{summary}</span>
-    <TooltipTrigger label={detail}><span className={styles.testResultHint} tabIndex={0}><Icon icon={informationOutlineIcon} size="1.1em" /></span></TooltipTrigger>
+  return <div className={`${styles.root} ${success ? styles.success : styles.error}`}>
+    <span className={styles.summary}>{summary}</span>
+    <TooltipTrigger label={detail}><button type="button" className={styles.details}>{t("查看详情")}<Icon icon={informationOutlineIcon} size="1.1em" /></button></TooltipTrigger>
   </div>;
 }
 

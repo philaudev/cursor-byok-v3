@@ -89,24 +89,42 @@ impl CursorActor {
                                                         .map(|parent| parent.tool_call_id.clone()),
                                                     request.conversation_state.clone(),
                                                 );
-                                                let parent = handle.parent().map(|parent| {
-                                                    (
-                                                        crate::model::RunId::new(&parent.run_id),
-                                                        parent.tool_call_id.clone(),
+                                                let prepared = async {
+                                                    let parent = match handle.parent() {
+                                                        Some(parent) => {
+                                                            let parent_run_id = dependencies
+                                                                .store
+                                                                .active_run_for_cursor_request(
+                                                                    &parent.request_id,
+                                                                )
+                                                                .await?
+                                                                .ok_or_else(|| {
+                                                                    crate::Error::Protocol(format!(
+                                                                        "Cursor parent request {} has no active local Run",
+                                                                        parent.request_id
+                                                                    ))
+                                                                })?;
+                                                            Some((
+                                                                parent_run_id,
+                                                                parent.tool_call_id.clone(),
+                                                            ))
+                                                        }
+                                                        None => None,
+                                                    };
+                                                    request::prepare(
+                                                        handle.request_id(),
+                                                        &request,
+                                                        parent,
+                                                        request::PrepareDependencies {
+                                                            compiler: &dependencies.compiler,
+                                                            store: &dependencies.store,
+                                                            checkpoint: &checkpoint,
+                                                            blob_sync: &blob_sync,
+                                                            context_sync: &context_sync,
+                                                        },
                                                     )
-                                                });
-                                                let prepared = request::prepare(
-                                                    handle.request_id(),
-                                                    &request,
-                                                    parent,
-                                                    request::PrepareDependencies {
-                                                        compiler: &dependencies.compiler,
-                                                        store: &dependencies.store,
-                                                        checkpoint: &checkpoint,
-                                                        blob_sync: &blob_sync,
-                                                        context_sync: &context_sync,
-                                                    },
-                                                )
+                                                    .await
+                                                }
                                                 .await;
                                                 let (prepared, context) = match prepared {
                                                     Ok(prepared) => prepared,

@@ -1,5 +1,6 @@
 mod anthropic;
 mod event;
+mod normalize;
 mod openai_chat;
 mod openai_responses;
 mod recorder;

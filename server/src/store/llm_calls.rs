@@ -1,7 +1,12 @@
+use std::str::FromStr;
+
 use sqlx::Row;
 
 use crate::{
-    model::{LlmCallRequest, LlmCallResponseChunk, LlmCallSummary, NewLlmCall, Usage},
+    model::{
+        ConversationId, LlmCallRequest, LlmCallResponseChunk, LlmCallSummary, LlmCallUsageAnchor,
+        NewLlmCall, ProviderType, Usage,
+    },
     Result,
 };
 
@@ -197,6 +202,41 @@ impl Store {
             .transpose()
     }
 
+    pub(crate) async fn latest_llm_call_usage_anchor(
+        &self,
+        conversation_id: &ConversationId,
+        model_hash: &str,
+    ) -> Result<Option<LlmCallUsageAnchor>> {
+        let row = sqlx::query(
+            r#"SELECT request_type, usage_json, message_count, tool_count
+               FROM llm_calls
+               WHERE conversation_id = ?
+                 AND model_hash = ?
+                 AND status = 'completed'
+                 AND input_tokens IS NOT NULL
+                 AND usage_json IS NOT NULL
+               ORDER BY rowid DESC
+               LIMIT 1"#,
+        )
+        .bind(conversation_id.as_str())
+        .bind(model_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let message_count =
+                usize::try_from(row.try_get::<i64, _>("message_count")?).unwrap_or(usize::MAX);
+            let tool_count =
+                usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
+            Ok(LlmCallUsageAnchor {
+                request_type: ProviderType::from_str(row.try_get("request_type")?)?,
+                usage: serde_json::from_str(row.try_get("usage_json")?)?,
+                message_count,
+                tool_count,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn llm_call_request(&self, call_id: &str) -> Result<Option<LlmCallRequest>> {
         let row = sqlx::query(
             "SELECT headers_json, body_json, byte_count FROM llm_call_requests WHERE call_id = ?",
@@ -283,4 +323,97 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
         error_message: row.try_get("error_message")?,
         detailed: row.try_get("detailed")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ModelConfigInput, ModelType};
+
+    #[tokio::test]
+    async fn latest_usage_anchor_uses_the_latest_completed_call_for_the_same_conversation_and_model(
+    ) {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+        let model = store
+            .create_model(&ModelConfigInput {
+                model_id: "model".into(),
+                display_name: "Model".into(),
+                model_type: ModelType::OpenAi,
+                base_url: "https://example.com/v1/responses".into(),
+                use_full_url: true,
+                api_key: "secret".into(),
+                tooltip_data: "Model".into(),
+                sort_order: 0,
+                reasoning_effort: None,
+                openai_endpoint: "/v1/responses".into(),
+                openai_extra_params_enabled: false,
+                openai_extra_params: serde_json::json!({}),
+                custom_headers_enabled: false,
+                custom_headers: serde_json::json!({}),
+                anthropic_extra_params_enabled: false,
+                anthropic_extra_params: serde_json::json!({}),
+                context_window_tokens: Some(200_000),
+                max_completion_tokens: Some(16_000),
+                anthropic_max_tokens: None,
+                anthropic_thinking_effort: None,
+                thinking_budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        let conversation_id = ConversationId::new("conversation");
+
+        for (call_id, status, input_tokens, message_count) in [
+            ("completed-old", "completed", 120_000, 10),
+            ("failed-newer", "error", 180_000, 11),
+            ("completed-latest", "completed", 140_649, 12),
+        ] {
+            store
+                .start_llm_call(&NewLlmCall {
+                    call_id: call_id.into(),
+                    run_id: format!("run-{call_id}"),
+                    conversation_id: conversation_id.to_string(),
+                    provider_call_index: 0,
+                    model_hash: model.model_hash.clone(),
+                    provider_type: model.provider_type(),
+                    provider_url: model.base_url.clone(),
+                    request_type: model.provider_type(),
+                    request_url: model.request_url().unwrap(),
+                    model_id: model.model_id.clone(),
+                    display_name: model.display_name.clone(),
+                    reasoning_effort: None,
+                    fast: false,
+                    message_count,
+                    tool_count: 7,
+                    detailed: false,
+                })
+                .await
+                .unwrap();
+            store
+                .record_llm_usage(
+                    call_id,
+                    Usage {
+                        input_tokens: Some(input_tokens),
+                        cache_read_tokens: Some(100_000),
+                        ..Usage::default()
+                    },
+                )
+                .await
+                .unwrap();
+            store
+                .finish_llm_call(call_id, status, None, 1, None, None)
+                .await
+                .unwrap();
+        }
+
+        let anchor = store
+            .latest_llm_call_usage_anchor(&conversation_id, &model.model_hash)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(anchor.request_type, ProviderType::OpenAiResponses);
+        assert_eq!(anchor.usage.input_tokens, Some(140_649));
+        assert_eq!(anchor.message_count, 12);
+        assert_eq!(anchor.tool_count, 7);
+    }
 }

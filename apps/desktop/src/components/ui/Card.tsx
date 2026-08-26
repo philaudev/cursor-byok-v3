@@ -1,12 +1,11 @@
-import type { ElementType, ReactNode } from "react";
+import type { ElementType, HTMLAttributes, ReactNode } from "react";
 import styles from "./Card.module.scss";
 
-type CardProps = {
+type CardProps = HTMLAttributes<HTMLElement> & {
   as?: ElementType;
-  className?: string;
   children: ReactNode;
 };
 
-export function Card({ as: Component = "div", className, children }: CardProps) {
-  return <Component className={[styles.root, className].filter(Boolean).join(" ")}>{children}</Component>;
+export function Card({ as: Component = "div", className, children, ...props }: CardProps) {
+  return <Component {...props} className={[styles.root, className].filter(Boolean).join(" ")}>{children}</Component>;
 }
