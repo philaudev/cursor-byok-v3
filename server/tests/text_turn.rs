@@ -308,7 +308,7 @@ async fn text_turn_runs_from_bidi_request_through_checkpoint_and_end_stream() {
 }
 
 #[tokio::test]
-async fn input_only_usage_updates_context_usage() {
+async fn cached_only_usage_updates_context_usage() {
     let (_directory, store) = fixtures::temp_store().await;
     let endpoint = store
         .create_provider(&ProviderEndpointInput {
@@ -349,7 +349,8 @@ async fn input_only_usage_updates_context_usage() {
         ModelEvent::TextDelta("hello".into()),
         ModelEvent::TextEnd,
         ModelEvent::Usage(Usage {
-            input_tokens: Some(218_000),
+            cache_read_tokens: Some(7_000),
+            cache_write_tokens: Some(3_000),
             ..Default::default()
         }),
         ModelEvent::Done(FinishReason::Stop),
@@ -419,11 +420,13 @@ async fn input_only_usage_updates_context_usage() {
     }
 
     let turn_usage = turn_usage.unwrap();
-    assert_eq!(turn_usage.input_tokens, Some(218_000));
+    assert_eq!(turn_usage.input_tokens, None);
     assert_eq!(turn_usage.output_tokens, None);
+    assert_eq!(turn_usage.cache_read_tokens, Some(7_000));
+    assert_eq!(turn_usage.cache_write_tokens, Some(3_000));
     assert_eq!(
         final_checkpoint.unwrap().token_details.unwrap().used_tokens,
-        218_000
+        10_000
     );
 }
 

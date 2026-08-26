@@ -377,13 +377,21 @@ fn merge_chat_fragment(target: &mut String, fragment: &str) {
 }
 
 pub(crate) fn openai_usage(value: &Value) -> Usage {
+    let prompt_tokens = value.get("prompt_tokens").and_then(Value::as_u64);
+    let cached_tokens = value
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .and_then(Value::as_u64);
+    let input_tokens = match (prompt_tokens, cached_tokens) {
+        (Some(prompt), Some(cached)) => Some(prompt.saturating_sub(cached)),
+        (Some(prompt), None) => Some(prompt),
+        _ => None,
+    };
+
     Usage {
-        input_tokens: value.get("prompt_tokens").and_then(Value::as_u64),
+        input_tokens,
         output_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
-        cache_read_tokens: value
-            .pointer("/prompt_tokens_details/cached_tokens")
-            .and_then(Value::as_u64),
+        cache_read_tokens: cached_tokens,
         cache_write_tokens: None,
         reasoning_tokens: value
             .pointer("/completion_tokens_details/reasoning_tokens")

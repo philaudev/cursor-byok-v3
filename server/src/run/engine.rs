@@ -613,12 +613,15 @@ fn estimate_context_tokens(
     messages: &[CanonicalMessage],
 ) -> u64 {
     let serialized = serde_json::to_string(&(prompt, messages)).unwrap_or_default();
-    serialized
-        .chars()
-        .fold(0_u64, |units, character| {
-            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
-        })
-        .div_ceil(1_000)
+    let trimmed = serialized.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let rune_count = trimmed.chars().count() as u64;
+    let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
+    let base = (rune_count + 3) / 4 + newlines;
+    let overhead = messages.len() as u64 * 8;
+    base + overhead
 }
 
 fn fallback_summary(messages: &[CanonicalMessage]) -> String {

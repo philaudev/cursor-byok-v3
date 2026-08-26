@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
+
 use crate::{
     cursor::prompting::{Mode, PromptCompiler},
     cursor::{
@@ -12,7 +14,7 @@ use crate::{
     },
     model::{
         CanonicalMessage, ContentPart, ConversationId, MessageContent, Origin, PreparedRun,
-        PromptSpec, Role, RunAction, RunId, RunKind,
+        PromptSpec, Role, RunAction, RunId, RunKind, ToolCallContent, ToolResultContent,
     },
     store::{BlobId, Store},
     Error, Result,
@@ -74,6 +76,7 @@ pub(crate) async fn prepare(
     // RunSSE/Bidi request_id identifies this concrete execution attempt. Cursor may
     // reuse AgentRunRequest.run_id when a queued or subagent-driven attempt resumes.
     let run_id = RunId::new(request_id);
+    let history = conversation_history(request);
     let mut base_messages = if request.conversation_state.is_some() {
         Some(
             checkpoint
@@ -83,6 +86,18 @@ pub(crate) async fn prepare(
     } else {
         None
     };
+    if let Some(history) = history.filter(|history| !history.messages.is_empty()) {
+        let decoded = decode_conversation_history(history)?;
+        match base_messages.as_mut() {
+            Some(messages)
+                if needs_history_restore(request.conversation_state.as_ref(), messages.len()) =>
+            {
+                messages.extend(decoded)
+            }
+            Some(_) => {}
+            None => base_messages = Some(decoded),
+        }
+    }
     if let Some(trace) = blob_sync.trace() {
         let hydrated_messages = base_messages.as_deref().unwrap_or_default();
         let hydrated_images = hydrated_messages
@@ -95,23 +110,23 @@ pub(crate) async fn prepare(
                 _ => 0,
             })
             .sum::<usize>();
-        let history = request
-            .action
-            .as_ref()
-            .and_then(|action| action.action.as_ref())
-            .and_then(|action| match action {
-                pb::conversation_action::Action::UserMessageAction(action) => {
-                    action.conversation_history.as_ref()
-                }
-                _ => None,
-            });
+        let history = conversation_history(request);
+        let history_source = if history.is_some_and(|history| !history.messages.is_empty()) {
+            "conversation_history"
+        } else if request.conversation_state.is_some()
+            && !base_messages.as_deref().unwrap_or_default().is_empty()
+        {
+            "root_prompt_messages_json"
+        } else {
+            "none"
+        };
         let summary = serde_json::json!({
             "checkpoint_root_count": request.conversation_state.as_ref().map_or(0, |state| state.root_prompt_messages_json.len()),
             "checkpoint_turn_count": request.conversation_state.as_ref().map_or(0, |state| state.turns.len()),
             "conversation_history_message_count": history.map_or(0, |history| history.messages.len()),
             "hydrated_message_count": hydrated_messages.len(),
             "hydrated_image_count": hydrated_images,
-            "selected_source": "root_prompt_messages_json",
+            "selected_source": history_source,
         });
         let encoded = serde_json::to_vec(&summary)?;
         trace
@@ -319,6 +334,161 @@ pub(crate) async fn prepare(
             compacting,
         },
     ))
+}
+
+fn needs_history_restore(
+    state: Option<&pb::ConversationStateStructure>,
+    root_message_count: usize,
+) -> bool {
+    root_message_count <= 1
+        || state.is_some_and(|state| state.summary.is_some() && root_message_count <= 2)
+}
+
+fn conversation_history(request: &pb::AgentRunRequest) -> Option<&pb::ConversationHistory> {
+    request
+        .action
+        .as_ref()
+        .and_then(|action| action.action.as_ref())
+        .and_then(|action| match action {
+            pb::conversation_action::Action::UserMessageAction(action) => {
+                action.conversation_history.as_ref()
+            }
+            _ => None,
+        })
+}
+
+fn decode_conversation_history(history: &pb::ConversationHistory) -> Result<Vec<CanonicalMessage>> {
+    use pb::{
+        conversation_history_assistant_content::Content as AssistantContent,
+        conversation_history_message::Message,
+        conversation_history_tool_result_content::Content as ToolContent,
+        conversation_history_user_content::Content as UserContent,
+    };
+
+    let mut messages = Vec::with_capacity(history.messages.len());
+    for (index, entry) in history.messages.iter().enumerate() {
+        let Some(entry) = entry.message.as_ref() else {
+            continue;
+        };
+        let message = match entry {
+            Message::User(user) => {
+                let mut parts = Vec::new();
+                for content in &user.content {
+                    match content.content.as_ref() {
+                        Some(UserContent::Text(text)) => parts.push(ContentPart::Text {
+                            text: text.text.clone(),
+                        }),
+                        Some(UserContent::Image(image)) => parts.push(ContentPart::Image {
+                            mime_type: image
+                                .mime_type
+                                .clone()
+                                .unwrap_or_else(|| "application/octet-stream".into()),
+                            data: STANDARD.decode(&image.data).map_err(|error| {
+                                Error::Protocol(format!(
+                                    "invalid conversation history image base64: {error}"
+                                ))
+                            })?,
+                        }),
+                        None => {}
+                    }
+                }
+                CanonicalMessage {
+                    message_id: format!("cursor-history:{index}"),
+                    role: Role::User,
+                    origin: Origin::User,
+                    content: MessageContent::Parts { parts },
+                    runtime_event_id: None,
+                }
+            }
+            Message::Assistant(assistant) => {
+                let mut text = String::new();
+                let mut thinking = String::new();
+                let mut tool_calls = Vec::new();
+                for content in &assistant.content {
+                    match content.content.as_ref() {
+                        Some(AssistantContent::Text(value)) => text.push_str(&value.text),
+                        Some(AssistantContent::Reasoning(value)) => thinking.push_str(&value.text),
+                        Some(AssistantContent::RedactedReasoning(_)) | None => {}
+                        Some(AssistantContent::ToolCall(call)) => {
+                            let arguments = serde_json::from_str(&call.args_json)
+                                .unwrap_or(serde_json::Value::Null);
+                            tool_calls.push(ToolCallContent {
+                                index: tool_calls.len(),
+                                call_id: call.tool_call_id.clone(),
+                                name: call.tool_name.clone(),
+                                arguments,
+                            });
+                        }
+                    }
+                }
+                CanonicalMessage {
+                    message_id: format!("cursor-history:{index}"),
+                    role: Role::Assistant,
+                    origin: Origin::Assistant,
+                    content: MessageContent::Assistant {
+                        text,
+                        thinking,
+                        tool_round_id: (!tool_calls.is_empty()).then(|| {
+                            crate::model::ToolRoundId::new(format!(
+                                "cursor-history:{index}:tool-round"
+                            ))
+                        }),
+                        replay_state: None,
+                        tool_calls,
+                    },
+                    runtime_event_id: None,
+                }
+            }
+            Message::Tool(tool) => {
+                let mut content = String::new();
+                let mut provider_parts = Vec::new();
+                for part in &tool.content {
+                    match part.content.as_ref() {
+                        Some(ToolContent::Text(value)) => {
+                            content.push_str(&value.text);
+                            provider_parts.push(ContentPart::Text {
+                                text: value.text.clone(),
+                            });
+                        }
+                        Some(ToolContent::Image(image)) => {
+                            let data = STANDARD.decode(&image.data).map_err(|error| {
+                                Error::Protocol(format!(
+                                    "invalid conversation history image base64: {error}"
+                                ))
+                            });
+                            match data {
+                                Ok(data) => provider_parts.push(ContentPart::Image {
+                                    mime_type: image
+                                        .mime_type
+                                        .clone()
+                                        .unwrap_or_else(|| "application/octet-stream".into()),
+                                    data,
+                                }),
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                CanonicalMessage {
+                    message_id: format!("cursor-history:{index}"),
+                    role: Role::Tool,
+                    origin: Origin::Tool,
+                    content: MessageContent::ToolResult(ToolResultContent {
+                        call_id: tool.tool_call_id.clone(),
+                        name: tool.tool_name.clone(),
+                        content,
+                        is_error: tool.is_error.unwrap_or(false),
+                        image: None,
+                        provider_parts,
+                    }),
+                    runtime_event_id: None,
+                }
+            }
+        };
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 fn run_kind(subagent_type_name: Option<&str>, parent: Option<(RunId, String)>) -> Result<RunKind> {
@@ -570,6 +740,18 @@ fn exec_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compacted_checkpoint_restores_request_history_after_summary() {
+        let compacted = pb::ConversationStateStructure {
+            root_prompt_messages_json: vec![vec![1], vec![2]],
+            summary: Some(vec![3]),
+            ..Default::default()
+        };
+
+        assert!(needs_history_restore(Some(&compacted), 2));
+        assert!(!needs_history_restore(Some(&compacted), 3));
+    }
 
     #[test]
     fn restored_system_root_is_structural_not_bound_to_the_next_model() {
