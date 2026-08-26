@@ -644,6 +644,9 @@ impl CursorSession {
         &self,
         action: pb::BackgroundTaskCompletionAction,
     ) -> Result<()> {
+        self.tool_runtime
+            .observe_background_task_completion(&action)
+            .await;
         let event = background_completion_event(action, self.context.mode)?;
         self.core
             .commands
@@ -778,7 +781,9 @@ mod tests {
         );
         assert!(event.text.contains("kind: subagent"));
         assert!(event.text.contains("child result"));
-        assert!(event.text.contains("Perform any necessary follow-up actions"));
+        assert!(event
+            .text
+            .contains("Perform any necessary follow-up actions"));
     }
 }
 

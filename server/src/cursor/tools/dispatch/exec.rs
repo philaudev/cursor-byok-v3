@@ -33,9 +33,16 @@ pub(super) async fn start(
 
             // Resilient name extraction: if toolName is empty, check "name"
             if requested_tool.is_empty() {
-                if let Some(raw_name) = call.arguments.get("name").and_then(serde_json::Value::as_str) {
-                    if !requested_server.is_empty() && raw_name.starts_with(&format!("{requested_server}-")) {
-                        requested_tool = raw_name.trim_start_matches(&format!("{requested_server}-"));
+                if let Some(raw_name) = call
+                    .arguments
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !requested_server.is_empty()
+                        && raw_name.starts_with(&format!("{requested_server}-"))
+                    {
+                        requested_tool =
+                            raw_name.trim_start_matches(&format!("{requested_server}-"));
                     } else if raw_name.starts_with("user-") {
                         if let Some((_, rest)) = raw_name.split_once('-') {
                             requested_tool = rest;
@@ -78,7 +85,7 @@ pub(super) async fn start(
                 });
             };
             let id = runtime.reserve_exec(call, context).await?;
-            codec::mcp_meta_request(id, call, &route.provider_identifier, route)?
+            codec::mcp_meta_request(id, call, &route.server_identifier, route)?
         }
         _ => {
             let id = runtime.reserve_exec(call, context).await?;

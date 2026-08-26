@@ -258,6 +258,12 @@ impl CursorActor {
                                                 {
                                                     continue;
                                                 }
+                                                if tool_runtime
+                                                    .mark_background_shell_transport_closed(close.id)
+                                                    .await
+                                                {
+                                                    continue;
+                                                }
                                                 match codec::stream_closed(close.id, &tool_runtime)
                                                     .await
                                                 {

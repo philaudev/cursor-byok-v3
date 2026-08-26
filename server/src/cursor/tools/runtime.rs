@@ -13,10 +13,44 @@ use crate::{cursor::proto::agent::v1 as pb, model::ToolCall, Error, Result};
 
 use super::edit::EditWrite;
 
+pub(crate) const DEFAULT_SHELL_BLOCK_UNTIL_MS: u64 = 30_000;
+pub(crate) const MAX_SHELL_BLOCK_UNTIL_MS: u64 = 60_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackgroundShellStatus {
+    Backgrounded,
+    Running,
+    Completed,
+    Rejected,
+    PermissionDenied,
+    TransportClosed,
+}
+
+impl BackgroundShellStatus {
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Rejected | Self::PermissionDenied | Self::TransportClosed
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BackgroundShellState {
+    pub shell_id: String,
+    pub status: BackgroundShellStatus,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Clone, Default)]
 pub struct CursorToolRuntime {
     next_id: Arc<AtomicU32>,
     execs: Arc<Mutex<HashMap<u32, PendingExec>>>,
+    background_shells: Arc<Mutex<HashMap<String, BackgroundShellState>>>,
+    background_shell_execs: Arc<Mutex<HashMap<String, String>>>,
+    background_shell_message_ids: Arc<Mutex<HashMap<u32, String>>>,
     interactions: Arc<Mutex<HashMap<u32, PendingInteraction>>>,
     completed: Arc<Mutex<HashMap<u32, String>>>,
 }
@@ -26,6 +60,9 @@ impl CursorToolRuntime {
         Self {
             next_id: Arc::new(AtomicU32::new(0)),
             execs: Arc::new(Mutex::new(HashMap::new())),
+            background_shells: Arc::new(Mutex::new(HashMap::new())),
+            background_shell_execs: Arc::new(Mutex::new(HashMap::new())),
+            background_shell_message_ids: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(Mutex::new(HashMap::new())),
             completed: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -35,6 +72,9 @@ impl CursorToolRuntime {
         Self {
             next_id,
             execs: Arc::new(Mutex::new(HashMap::new())),
+            background_shells: Arc::new(Mutex::new(HashMap::new())),
+            background_shell_execs: Arc::new(Mutex::new(HashMap::new())),
+            background_shell_message_ids: Arc::new(Mutex::new(HashMap::new())),
             interactions: Arc::new(Mutex::new(HashMap::new())),
             completed: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -82,6 +122,7 @@ pub struct ExecContext {
 pub struct McpRoute {
     pub name: String,
     pub provider_identifier: String,
+    pub server_identifier: String,
     pub tool_name: String,
     pub description: String,
 }
@@ -101,10 +142,16 @@ impl ExecContext {
     }
 
     pub fn prepare_call(&self, call: &ToolCall) -> Result<ToolCall> {
-        if !call.name.eq_ignore_ascii_case("Task") {
-            return Ok(call.clone());
+        let mut prepared = call.clone();
+        if prepared.name.eq_ignore_ascii_case("Shell")
+            || prepared.name.eq_ignore_ascii_case("AwaitShell")
+        {
+            normalize_shell_block_until_ms(&mut prepared)?;
         }
-        let arguments = call
+        if !prepared.name.eq_ignore_ascii_case("Task") {
+            return Ok(prepared);
+        }
+        let arguments = prepared
             .arguments
             .as_object()
             .ok_or_else(|| Error::Protocol("Task arguments must be a JSON object".into()))?;
@@ -112,8 +159,8 @@ impl ExecContext {
             .get("subagent_type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("generalPurpose");
-        if self.task_disabled(call) {
-            return Ok(call.clone());
+        if self.task_disabled(&prepared) {
+            return Ok(prepared);
         }
         let model = match &self.subagent_model {
             Some(SubagentModel::Model(model)) => model.clone(),
@@ -130,7 +177,6 @@ impl ExecContext {
                 "Task subagent type {subagent_type} has no model"
             )));
         }
-        let mut prepared = call.clone();
         prepared
             .arguments
             .as_object_mut()
@@ -138,6 +184,29 @@ impl ExecContext {
             .insert("model".into(), serde_json::Value::String(model));
         Ok(prepared)
     }
+}
+
+fn normalize_shell_block_until_ms(call: &mut ToolCall) -> Result<()> {
+    let tool_name = call.name.clone();
+    let arguments = call
+        .arguments
+        .as_object_mut()
+        .ok_or_else(|| Error::Protocol(format!("{tool_name} arguments must be a JSON object")))?;
+    let Some(value) = arguments.get("block_until_ms") else {
+        return Ok(());
+    };
+    let value = value.as_u64().ok_or_else(|| {
+        Error::Protocol(format!(
+            "{tool_name} block_until_ms must be a non-negative integer"
+        ))
+    })?;
+    if value > MAX_SHELL_BLOCK_UNTIL_MS {
+        arguments.insert(
+            "block_until_ms".into(),
+            serde_json::Value::from(MAX_SHELL_BLOCK_UNTIL_MS),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) struct PendingInteraction {
@@ -205,11 +274,11 @@ impl CursorToolRuntime {
             .arguments
             .get("block_until_ms")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(30_000);
-        if block_ms > 7_140_000 {
-            return Err(Error::Protocol(
-                "AwaitShell block_until_ms exceeds 7140000".into(),
-            ));
+            .unwrap_or(DEFAULT_SHELL_BLOCK_UNTIL_MS);
+        if block_ms > MAX_SHELL_BLOCK_UNTIL_MS {
+            return Err(Error::Protocol(format!(
+                "AwaitShell block_until_ms exceeds {MAX_SHELL_BLOCK_UNTIL_MS}"
+            )));
         }
         let output_file_path = format!(
             "{}/{}.txt",
@@ -277,6 +346,167 @@ impl CursorToolRuntime {
             },
         );
         Ok(id)
+    }
+
+    pub async fn mark_background_shell_transport_closed(&self, message_id: u32) -> bool {
+        let Some(shell_id) = self.background_shell_for_message(message_id).await else {
+            return false;
+        };
+        let mut shells = self.background_shells.lock().await;
+        let Some(shell) = shells.get_mut(&shell_id) else {
+            return false;
+        };
+        if !matches!(shell.status, BackgroundShellStatus::Running) {
+            return false;
+        }
+        shell.status = BackgroundShellStatus::TransportClosed;
+        true
+    }
+
+    pub async fn observe_background_task_completion(
+        &self,
+        action: &pb::BackgroundTaskCompletionAction,
+    ) {
+        for completion in &action.completions {
+            if completion.kind != pb::BackgroundTaskKind::Shell as i32
+                || completion.task_id.is_empty()
+            {
+                continue;
+            }
+            let status = match pb::BackgroundTaskStatus::try_from(completion.status) {
+                Ok(pb::BackgroundTaskStatus::Success) => BackgroundShellStatus::Backgrounded,
+                Ok(pb::BackgroundTaskStatus::Error) | Ok(pb::BackgroundTaskStatus::Aborted) => {
+                    BackgroundShellStatus::TransportClosed
+                }
+                Ok(pb::BackgroundTaskStatus::Unspecified) | Err(_) => continue,
+            };
+            let detail = completion.detail.as_deref().unwrap_or_default();
+            self.update_background_shell(&completion.task_id, |state| {
+                if matches!(status, BackgroundShellStatus::TransportClosed) {
+                    state.stderr.push_str(detail);
+                } else {
+                    state.stdout.push_str(detail);
+                }
+                state.status = status;
+            })
+            .await;
+        }
+    }
+
+    pub(crate) async fn background_shell_for_event(
+        &self,
+        message_id: u32,
+        exec_id: &str,
+    ) -> Option<String> {
+        if let Some(shell_id) = self.background_shell_for_exec(exec_id).await {
+            return Some(shell_id);
+        }
+        self.background_shell_for_message(message_id).await
+    }
+
+    pub(crate) async fn background_shell_for_message(&self, message_id: u32) -> Option<String> {
+        self.background_shell_message_ids
+            .lock()
+            .await
+            .get(&message_id)
+            .cloned()
+    }
+
+    pub(crate) async fn background_shell_for_exec(&self, exec_id: &str) -> Option<String> {
+        self.background_shell_execs
+            .lock()
+            .await
+            .get(exec_id)
+            .cloned()
+    }
+
+    pub async fn background_shell(&self, shell_id: &str) -> Option<BackgroundShellState> {
+        self.background_shells.lock().await.get(shell_id).cloned()
+    }
+
+    pub async fn background_shell_backgrounded(
+        &self,
+        shell_id: u32,
+        message_id: u32,
+        exec_id: &str,
+        stdout: String,
+        stderr: String,
+    ) {
+        let shell_id = shell_id.to_string();
+        self.background_shell_execs
+            .lock()
+            .await
+            .insert(exec_id.into(), shell_id.clone());
+        self.background_shell_message_ids
+            .lock()
+            .await
+            .insert(message_id, shell_id.clone());
+        self.background_shells
+            .lock()
+            .await
+            .entry(shell_id.clone())
+            .or_insert(BackgroundShellState {
+                shell_id,
+                status: BackgroundShellStatus::Backgrounded,
+                stdout,
+                stderr,
+                exit_code: None,
+            });
+    }
+
+    pub async fn background_shell_stdout(&self, shell_id: &str, data: &str) {
+        self.update_background_shell(shell_id, |state| {
+            state.stdout.push_str(data);
+            if !state.status.is_terminal() {
+                state.status = BackgroundShellStatus::Running;
+            }
+        })
+        .await;
+    }
+
+    pub(crate) async fn background_shell_stderr(&self, shell_id: &str, data: &str) {
+        self.update_background_shell(shell_id, |state| {
+            state.stderr.push_str(data);
+            if !state.status.is_terminal() {
+                state.status = BackgroundShellStatus::Running;
+            }
+        })
+        .await;
+    }
+
+    pub async fn background_shell_exit(&self, shell_id: &str, exit_code: i32) {
+        self.update_background_shell(shell_id, |state| {
+            state.exit_code = Some(exit_code);
+            state.status = BackgroundShellStatus::Completed;
+        })
+        .await;
+    }
+
+    pub(crate) async fn background_shell_terminal(
+        &self,
+        shell_id: &str,
+        status: BackgroundShellStatus,
+    ) {
+        self.update_background_shell(shell_id, |state| state.status = status)
+            .await;
+    }
+
+    async fn update_background_shell(
+        &self,
+        shell_id: &str,
+        update: impl FnOnce(&mut BackgroundShellState),
+    ) {
+        let mut shells = self.background_shells.lock().await;
+        let state = shells
+            .entry(shell_id.to_string())
+            .or_insert_with(|| BackgroundShellState {
+                shell_id: shell_id.into(),
+                status: BackgroundShellStatus::Running,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+            });
+        update(state);
     }
 
     pub async fn exec_call(&self, id: u32) -> Option<ToolCall> {
@@ -417,6 +647,42 @@ mod tests {
         assert!(first.exec_call(id1).await.is_some());
         assert!(first.exec_call(id2).await.is_none());
         assert!(second.exec_call(id1).await.is_none());
+    }
+
+    #[test]
+    fn shell_timeouts_are_clamped_without_affecting_background_execution() {
+        let context = ExecContext::default();
+        let oversized_shell = ToolCall {
+            index: 0,
+            call_id: "shell-1".into(),
+            model_call_id: "model-call-1".into(),
+            name: "Shell".into(),
+            arguments_text: "{}".into(),
+            arguments: serde_json::json!({"command": "cargo test", "block_until_ms": 7_140_000}),
+        };
+        let oversized_await = ToolCall {
+            name: "AwaitShell".into(),
+            arguments: serde_json::json!({"shell_id": "42", "block_until_ms": 7_140_000}),
+            ..oversized_shell.clone()
+        };
+
+        assert_eq!(
+            context.prepare_call(&oversized_shell).unwrap().arguments["block_until_ms"],
+            MAX_SHELL_BLOCK_UNTIL_MS
+        );
+        assert_eq!(
+            context.prepare_call(&oversized_await).unwrap().arguments["block_until_ms"],
+            MAX_SHELL_BLOCK_UNTIL_MS
+        );
+
+        let background_shell = ToolCall {
+            arguments: serde_json::json!({"command": "npm run dev", "block_until_ms": 0}),
+            ..oversized_shell
+        };
+        assert_eq!(
+            context.prepare_call(&background_shell).unwrap().arguments["block_until_ms"],
+            0
+        );
     }
 
     #[test]
