@@ -19,6 +19,7 @@ use super::{
 pub struct ProviderRouter {
     store: Store,
     request_timeout: Duration,
+    http_client: crate::network::HttpClientManager,
 }
 
 impl ProviderRouter {
@@ -26,6 +27,7 @@ impl ProviderRouter {
         Self {
             store,
             request_timeout,
+            http_client: crate::network::HttpClientManager::new(),
         }
     }
 }
@@ -38,6 +40,7 @@ impl Provider for ProviderRouter {
     ) -> ProviderStream {
         let store = self.store.clone();
         let request_timeout = self.request_timeout;
+        let http_client = self.http_client.clone();
         Box::pin(try_stream! {
             let selected = invocation.request.model.model_id.clone();
             let model = store
@@ -83,10 +86,7 @@ impl Provider for ProviderRouter {
                 max_output_tokens: model.max_output_tokens(),
                 request_timeout,
             };
-            let client = crate::network::client_builder(&store)
-                .await?
-                .timeout(config.request_timeout)
-                .build()?;
+            let client = http_client.client(&store, config.request_timeout).await?;
             let provider = build_observed(&config, recorder.clone(), client)?;
             let stream_cancellation = cancellation.clone();
             let mut stream = provider.stream(invocation, cancellation);

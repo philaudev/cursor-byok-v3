@@ -81,7 +81,7 @@ pub struct ProxySettings {
     pub has_password: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub(crate) struct ProxySettingsSecret {
     pub mode: ProxyMode,
     pub address: String,

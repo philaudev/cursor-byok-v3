@@ -6,9 +6,11 @@ use std::{
     time::Instant,
 };
 
+use parking_lot::Mutex;
+
 use crate::{
     model::{NewLlmCall, Usage},
-    store::Store,
+    store::{LlmChunkBatchItem, Store},
     Result,
 };
 
@@ -44,6 +46,8 @@ struct Inner {
     started: Instant,
     detailed: bool,
     next_chunk: AtomicI64,
+    total_bytes: AtomicI64,
+    buffered_chunks: Mutex<Vec<LlmChunkBatchItem>>,
     finished: AtomicBool,
 }
 
@@ -58,6 +62,8 @@ impl CallRecorder {
                 started: Instant::now(),
                 detailed: call.detailed,
                 next_chunk: AtomicI64::new(0),
+                total_bytes: AtomicI64::new(0),
+                buffered_chunks: Mutex::new(Vec::new()),
                 finished: AtomicBool::new(false),
             }),
         })
@@ -92,16 +98,17 @@ impl CallRecorder {
 
     pub async fn response_chunk(&self, data: &[u8]) -> Result<()> {
         let seq = self.inner.next_chunk.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .store
-            .record_llm_chunk(
-                &self.inner.call_id,
+        let bytes_len = data.len() as i64;
+        self.inner.total_bytes.fetch_add(bytes_len, Ordering::Relaxed);
+        if self.inner.detailed {
+            let item = LlmChunkBatchItem {
                 seq,
-                self.elapsed_ms(),
-                data,
-                self.inner.detailed,
-            )
-            .await
+                received_offset_ms: self.elapsed_ms(),
+                data: data.to_vec(),
+            };
+            self.inner.buffered_chunks.lock().push(item);
+        }
+        Ok(())
     }
 
     pub async fn event(&self, event: &ModelEvent) -> Result<()> {
@@ -155,7 +162,29 @@ impl CallRecorder {
         if self.inner.finished.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.inner
+        let total_chunks = self.inner.next_chunk.load(Ordering::Relaxed);
+        let total_bytes = self.inner.total_bytes.load(Ordering::Relaxed);
+        let chunks = self.inner.buffered_chunks.lock().clone();
+        if total_chunks > 0 || total_bytes > 0 || !chunks.is_empty() {
+            if let Err(error) = self
+                .inner
+                .store
+                .record_llm_chunks_batch(
+                    &self.inner.call_id,
+                    &chunks,
+                    total_bytes,
+                    total_chunks,
+                    self.inner.detailed,
+                )
+                .await
+            {
+                self.inner.finished.store(false, Ordering::Release);
+                return Err(error);
+            }
+            self.inner.buffered_chunks.lock().clear();
+        }
+        if let Err(error) = self
+            .inner
             .store
             .finish_llm_call(
                 &self.inner.call_id,
@@ -166,6 +195,11 @@ impl CallRecorder {
                 error_message,
             )
             .await
+        {
+            self.inner.finished.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn elapsed_ms(&self) -> i64 {

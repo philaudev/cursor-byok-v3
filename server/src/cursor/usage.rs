@@ -103,9 +103,11 @@ pub(crate) fn breakdown(
     }
     let easter_egg_tokens = 1_u64;
     let local_total: u64 = estimates.iter().sum();
-    // Align with Go fork behavior: take max(provider_reported, local_compiled_estimate)
-    // so that intermediate tool outputs & prompt growth immediately reflect in context usage.
-    let effective_used_tokens = (used_tokens as u64).max(local_total);
+    let effective_used_tokens = if used_tokens > 0 {
+        used_tokens as u64
+    } else {
+        local_total
+    };
 
     if effective_used_tokens > 0 {
         fit_special_estimates(&mut estimates, effective_used_tokens);

@@ -12,6 +12,13 @@ use crate::{
 
 use super::{now_ms, Store};
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct LlmChunkBatchItem {
+    pub seq: i64,
+    pub received_offset_ms: i64,
+    pub data: Vec<u8>,
+}
+
 impl Store {
     pub async fn detailed_logging(&self) -> Result<bool> {
         let value: String = sqlx::query_scalar(
@@ -105,6 +112,42 @@ impl Store {
             .bind(call_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn record_llm_chunks_batch(
+        &self,
+        call_id: &str,
+        chunks: &[LlmChunkBatchItem],
+        total_bytes: i64,
+        total_events: i64,
+        detailed: bool,
+    ) -> Result<()> {
+        if chunks.is_empty() && total_bytes == 0 && total_events == 0 {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await?;
+        if detailed && !chunks.is_empty() {
+            for chunk in chunks {
+                sqlx::query("INSERT INTO llm_call_response_chunks(call_id, seq, received_offset_ms, data, byte_count) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM llm_calls WHERE call_id = ?)")
+                    .bind(call_id)
+                    .bind(chunk.seq)
+                    .bind(chunk.received_offset_ms)
+                    .bind(&chunk.data)
+                    .bind(chunk.data.len() as i64)
+                    .bind(call_id)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+        }
+        sqlx::query("UPDATE llm_calls SET first_event_at_ms = COALESCE(first_event_at_ms, ?), response_bytes = response_bytes + ?, stream_event_count = stream_event_count + ? WHERE call_id = ?")
+            .bind(now_ms())
+            .bind(total_bytes)
+            .bind(total_events)
+            .bind(call_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -415,5 +458,100 @@ mod tests {
         assert_eq!(anchor.usage.input_tokens, Some(140_649));
         assert_eq!(anchor.message_count, 12);
         assert_eq!(anchor.tool_count, 7);
+    }
+
+    #[tokio::test]
+    async fn record_llm_chunks_batch_persists_in_order_and_updates_metrics() {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+        let model = store
+            .create_model(&ModelConfigInput {
+                model_id: "gpt-4o".into(),
+                display_name: "GPT-4o".into(),
+                model_type: ModelType::OpenAi,
+                base_url: "https://api.example.com/v1/responses".into(),
+                use_full_url: true,
+                api_key: "secret".into(),
+                tooltip_data: "GPT-4o".into(),
+                sort_order: 0,
+                reasoning_effort: None,
+                openai_endpoint: "/v1/responses".into(),
+                openai_extra_params_enabled: false,
+                openai_extra_params: serde_json::json!({}),
+                custom_headers_enabled: false,
+                custom_headers: serde_json::json!({}),
+                anthropic_extra_params_enabled: false,
+                anthropic_extra_params: serde_json::json!({}),
+                context_window_tokens: Some(200_000),
+                max_completion_tokens: Some(16_000),
+                anthropic_max_tokens: None,
+                anthropic_thinking_effort: None,
+                thinking_budget_tokens: None,
+            })
+            .await
+            .unwrap();
+        let call_id = "batch-call-1";
+        store
+            .start_llm_call(&NewLlmCall {
+                call_id: call_id.into(),
+                run_id: "run-1".into(),
+                conversation_id: "conv-1".into(),
+                provider_call_index: 0,
+                model_hash: model.model_hash.clone(),
+                provider_type: ProviderType::OpenAiResponses,
+                provider_url: "https://api.example.com".into(),
+                request_type: ProviderType::OpenAiResponses,
+                request_url: "https://api.example.com/v1/responses".into(),
+                model_id: "gpt-4o".into(),
+                display_name: "GPT-4o".into(),
+                reasoning_effort: None,
+                fast: false,
+                message_count: 2,
+                tool_count: 3,
+                detailed: true,
+            })
+            .await
+            .unwrap();
+
+        let chunks = vec![
+            LlmChunkBatchItem {
+                seq: 0,
+                received_offset_ms: 10,
+                data: b"chunk-0".to_vec(),
+            },
+            LlmChunkBatchItem {
+                seq: 1,
+                received_offset_ms: 25,
+                data: b"chunk-1".to_vec(),
+            },
+            LlmChunkBatchItem {
+                seq: 2,
+                received_offset_ms: 40,
+                data: b"chunk-2".to_vec(),
+            },
+        ];
+        let total_bytes: i64 = chunks.iter().map(|c| c.data.len() as i64).sum();
+        let total_events = chunks.len() as i64;
+
+        store
+            .record_llm_chunks_batch(call_id, &chunks, total_bytes, total_events, true)
+            .await
+            .unwrap();
+
+        let summary = store.llm_call(call_id).await.unwrap().unwrap();
+        assert_eq!(summary.response_bytes, total_bytes);
+        assert_eq!(summary.stream_event_count, total_events);
+
+        let rows: Vec<(i64, i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT seq, received_offset_ms, data FROM llm_call_response_chunks WHERE call_id = ? ORDER BY seq ASC",
+        )
+        .bind(call_id)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], (0, 10, b"chunk-0".to_vec()));
+        assert_eq!(rows[1], (1, 25, b"chunk-1".to_vec()));
+        assert_eq!(rows[2], (2, 40, b"chunk-2".to_vec()));
     }
 }

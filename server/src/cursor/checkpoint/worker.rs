@@ -63,48 +63,17 @@ impl CheckpointWorker {
                 let result = match job.kind {
                     CheckpointKind::Settled(revision_id)
                     | CheckpointKind::ToolSettled(revision_id) => {
-                        publish_settled(
-                            &store,
-                            &mut builder,
-                            &handle,
-                            mode,
-                            revision_id,
-                            &presentation,
-                        )
-                        .await
+                        publish_settled(&store, &mut builder, &handle, mode, revision_id, &presentation).await
                     }
-                    CheckpointKind::ToolStarted {
-                        stable_revision_id,
-                        assistant,
-                        calls,
-                    } => {
-                        publish_started(
-                            &store,
-                            &mut builder,
-                            &handle,
-                            mode,
-                            stable_revision_id,
-                            &assistant,
-                            &calls,
-                            &presentation,
-                        )
-                        .await
+                    CheckpointKind::ToolStarted { stable_revision_id, assistant, calls } => {
+                        publish_started(&store, &mut builder, &handle, mode, stable_revision_id, &assistant, &calls, &presentation).await
                     }
-                    CheckpointKind::Final {
-                        revision_id,
-                        result,
-                    } => {
-                        let checkpoints =
-                            build_final(&store, &mut builder, mode, revision_id, &presentation)
-                                .await;
+                    CheckpointKind::Final { revision_id, result } => {
+                        let checkpoints = build_final(&store, &mut builder, mode, revision_id, &presentation).await;
                         let _ = result.send(checkpoints);
                         Ok(())
                     }
-                    CheckpointKind::Compaction {
-                        revision_id,
-                        summary,
-                        result,
-                    } => {
+                    CheckpointKind::Compaction { revision_id, summary, result } => {
                         let messages = store.load_revision_messages(revision_id).await;
                         let checkpoint = match messages {
                             Ok(messages) => {

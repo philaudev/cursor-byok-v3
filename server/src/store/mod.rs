@@ -15,6 +15,7 @@ mod storage;
 mod tool_rounds;
 
 pub use cas::*;
+pub use llm_calls::LlmChunkBatchItem;
 pub use runs::*;
 pub use settings::*;
 pub(crate) use sqlite::now_ms;
