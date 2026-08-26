@@ -2,13 +2,17 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use crate::model::{RevisionId, ToolCall, ToolRoundId, Usage};
+use crate::model::{RevisionId, ToolCall, ToolRoundAssistant, ToolRoundId, Usage};
 use crate::run::RunOutcome;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CommitCause {
     InitialMessages,
-    ToolRoundStarted(ToolRoundId),
+    ToolRoundStarted {
+        round_id: ToolRoundId,
+        assistant: ToolRoundAssistant,
+        calls: Vec<ToolCall>,
+    },
     ToolResult { call_id: String },
     FinalTurn,
     Compaction { summary: String },

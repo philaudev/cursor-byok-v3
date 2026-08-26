@@ -21,6 +21,26 @@ pub struct CursorToolRuntime {
     completed: Arc<Mutex<HashMap<u32, String>>>,
 }
 
+impl CursorToolRuntime {
+    pub fn new() -> Self {
+        Self {
+            next_id: Arc::new(AtomicU32::new(0)),
+            execs: Arc::new(Mutex::new(HashMap::new())),
+            interactions: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_shared_ids(next_id: Arc<AtomicU32>) -> Self {
+        Self {
+            next_id,
+            execs: Arc::new(Mutex::new(HashMap::new())),
+            interactions: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
 pub(crate) struct PendingExec {
     pub call: ToolCall,
     pub context: ExecContext,
@@ -366,6 +386,25 @@ mod tests {
             arguments_text: arguments.to_string(),
             arguments,
         }
+    }
+
+    #[tokio::test]
+    async fn shared_runtime_ids_are_unique_across_sessions() {
+        let next_id = Arc::new(AtomicU32::new(0));
+        let first = CursorToolRuntime::with_shared_ids(next_id.clone());
+        let second = CursorToolRuntime::with_shared_ids(next_id);
+        let call = task(serde_json::json!({"prompt":"inspect", "model":"child-model"}));
+        let context = ExecContext::default();
+
+        let id1 = first.reserve_exec(&call, &context).await.unwrap();
+        let id2 = second.reserve_interaction(&call).await.unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+
+        // State isolation test: each session has its own pending execs map
+        assert!(first.exec_call(id1).await.is_some());
+        assert!(first.exec_call(id2).await.is_none());
+        assert!(second.exec_call(id1).await.is_none());
     }
 
     #[test]

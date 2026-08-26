@@ -46,16 +46,27 @@ pub(super) async fn execute(
         calls = calls.len(),
         "tool round started"
     );
+    let (barrier, ready) = {
+        let (barrier, ready) = CommitBarrier::before_continue();
+        (barrier, Some(ready))
+    };
     send(
         client,
         ClientEvent::StateCommitted(StateCommitted {
             revision_id: revision,
             tool_round_version: 0,
-            cause: CommitCause::ToolRoundStarted(round_id.clone()),
-            barrier: CommitBarrier::None,
+            cause: CommitCause::ToolRoundStarted {
+                round_id: round_id.clone(),
+                assistant: assistant.clone(),
+                calls: calls.clone(),
+            },
+            barrier,
         }),
     )
     .await?;
+    if let Some(ready) = ready {
+        super::engine::wait_for_state_ready(ready, cancellation).await?;
+    }
     send(
         client,
         ClientEvent::ExecuteToolRound {

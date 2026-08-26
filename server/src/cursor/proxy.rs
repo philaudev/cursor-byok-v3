@@ -46,9 +46,13 @@ impl BufferedResponse {
 }
 
 impl CursorProxy {
-    pub fn cursor(store: crate::store::Store) -> Result<Self> {
+    pub async fn cursor(store: crate::store::Store) -> Result<Self> {
+        let client = crate::network::client_builder(&store)
+            .await?
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         Ok(Self {
-            client: None,
+            client: Some(client),
             store: Some(store),
             upstream: CURSOR_UPSTREAM.into(),
         })

@@ -19,8 +19,8 @@ use crate::{
     Result,
 };
 
-pub fn router(registry: CursorSessionRegistry) -> Result<Router> {
-    let proxy = CursorProxy::cursor(registry.store().clone())?;
+pub async fn router(registry: CursorSessionRegistry) -> Result<Router> {
+    let proxy = CursorProxy::cursor(registry.store().clone()).await?;
     Ok(router_with_proxy(registry, proxy))
 }
 

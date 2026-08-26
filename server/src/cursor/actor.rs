@@ -39,13 +39,13 @@ impl CursorActor {
         mut receiver: mpsc::Receiver<CursorCommand>,
         dependencies: RunDependencies,
         blob_sync: BlobSynchronizer,
+        tool_runtime: CursorToolRuntime,
         next_append_seqno: i64,
     ) {
         tokio::spawn(async move {
             let mut inbox = OrderedInbox::starting_at(next_append_seqno);
             let (results_tx, results_rx) = tool_result_channel();
             let (runtime_actions_tx, runtime_actions_rx) = mpsc::unbounded_channel();
-            let tool_runtime = CursorToolRuntime::default();
             let context_sync =
                 RequestContextSynchronizer::new(handle.clone(), dependencies.store.clone());
             let tools = ToolDispatcher::with_results(tool_runtime.clone(), results_tx.clone());
