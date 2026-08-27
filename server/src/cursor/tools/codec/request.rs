@@ -123,7 +123,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             subagent_type: optional_string("subagent_type").unwrap_or_default(),
             model_id: string("model")?,
             prompt: string("prompt")?,
-            readonly: false,
+            readonly: custom_subagent_is_readonly(call, context),
             resume_agent_id: optional_string("resume"),
             run_in_background: call
                 .arguments
@@ -475,6 +475,21 @@ fn shell_notification(call: &ToolCall) -> Result<Option<pb::ShellOutputNotificat
         debounce: object.get("debounce_ms").and_then(Value::as_f64),
         notification_limit: None,
     }))
+}
+
+fn custom_subagent_is_readonly(call: &ToolCall, context: &ExecContext) -> bool {
+    let subagent_type = call
+        .arguments
+        .get("subagent_type")
+        .and_then(Value::as_str)
+        .unwrap_or("generalPurpose");
+    context
+        .custom_subagents
+        .iter()
+        .find(|agent| agent.name == subagent_type)
+        .is_some_and(|agent| {
+            agent.permission_mode == pb::CustomSubagentPermissionMode::Readonly as i32
+        })
 }
 
 fn task_attachments(call: &ToolCall) -> Option<pb::SelectedContext> {

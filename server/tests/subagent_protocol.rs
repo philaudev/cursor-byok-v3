@@ -188,6 +188,12 @@ fn context() -> ExecContext {
         root_conversation_id: "root".into(),
         default_subagent_model: "parent-model".into(),
         subagent_model: None,
+        subagent_models: HashMap::new(),
+        custom_subagents: vec![pb::CustomSubagent {
+            name: "advisor".into(),
+            permission_mode: pb::CustomSubagentPermissionMode::Readonly as i32,
+            ..Default::default()
+        }],
         allow_subagents: true,
         subagents_disabled: false,
         terminals_folder: "/tmp/terminals".into(),

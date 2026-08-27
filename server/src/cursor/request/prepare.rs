@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use uuid::Uuid;
@@ -156,13 +156,11 @@ pub(crate) async fn prepare(
         configured_model.configure(&mut model);
     }
     let dynamic = context::dynamic_mcp(request, &request_context)?;
+    let custom_subagent = selected_custom_subagent(request, &request_context);
     let subagent_model_overrides = model::overrides(request)?;
-    let subagents_disabled = subagent_model_overrides
-        .first()
-        .is_some_and(|(_, selection)| {
-            matches!(selection, crate::model::SubagentModelOverride::Disabled)
-        });
-    let mut checkpoint_prompt = compiler.prompt_spec(
+    let subagents_disabled = model::override_for(&subagent_model_overrides, "generalPurpose")
+        .is_some_and(|selection| matches!(selection, crate::model::SubagentModelOverride::Disabled));
+    let mut checkpoint_prompt = compiler.prompt_spec_with_custom_instructions(
         checkpoint_mode,
         &model,
         &dynamic
@@ -170,7 +168,11 @@ pub(crate) async fn prepare(
             .map(|(_, definition)| definition.clone())
             .collect::<Vec<_>>(),
         request.suppress_subagent_progress_update_tool == Some(true),
+        custom_subagent.map(|agent| agent.prompt.as_str()),
     )?;
+    if let Some(agent) = custom_subagent.filter(|agent| !agent.tools.is_empty()) {
+        restrict_tools(&mut checkpoint_prompt, &agent.tools)?;
+    }
     if subagents_disabled {
         checkpoint_prompt.tools.retain(|tool| tool.name != "Task");
     }
@@ -769,6 +771,32 @@ pub(super) fn mode_from_proto(mode: i32) -> Result<Mode> {
     }
 }
 
+fn selected_custom_subagent<'a>(
+    request: &pb::AgentRunRequest,
+    request_context: &'a pb::RequestContext,
+) -> Option<&'a pb::CustomSubagent> {
+    request
+        .subagent_type_name
+        .as_deref()
+        .and_then(|name| request_context.custom_subagents.iter().find(|agent| agent.name == name))
+}
+
+fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
+    let allowed = allowed.iter().map(String::as_str).collect::<HashSet<_>>();
+    let unknown = allowed
+        .iter()
+        .filter(|name| !prompt.tools.iter().any(|tool| tool.name == **name))
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(Error::Protocol(format!(
+            "custom subagent declares unavailable tools: {}",
+            unknown.into_iter().copied().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    prompt.tools.retain(|tool| allowed.contains(tool.name.as_str()));
+    Ok(())
+}
+
 fn exec_context(
     request: &pb::AgentRunRequest,
     request_context: &pb::RequestContext,
@@ -780,7 +808,28 @@ fn exec_context(
         crate::model::SubagentModelOverride,
     )],
 ) -> ExecContext {
-    let subagent_model = overrides.first().map(|(_, value)| match value {
+    let subagent_models = overrides
+        .iter()
+        .map(|(kind, selection)| {
+            let name = match kind {
+                crate::model::SubagentKind::GeneralPurpose => "generalPurpose".to_string(),
+                crate::model::SubagentKind::Named(name) => name.clone(),
+            };
+            let model = match selection {
+                crate::model::SubagentModelOverride::Explicit(model) => {
+                    SubagentModel::Model(model.model_id.clone())
+                }
+                crate::model::SubagentModelOverride::Inherit => SubagentModel::Model(model_id.into()),
+                crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
+            };
+            (name, model)
+        })
+        .collect();
+    let subagent_model = model::override_for(
+        overrides,
+        request.subagent_type_name.as_deref().unwrap_or("generalPurpose"),
+    )
+    .map(|value| match value {
         crate::model::SubagentModelOverride::Explicit(model) => {
             SubagentModel::Model(model.model_id.clone())
         }
@@ -795,6 +844,8 @@ fn exec_context(
             .unwrap_or_else(|| conversation_id.to_string()),
         default_subagent_model: model_id.into(),
         subagent_model,
+        subagent_models,
+        custom_subagents: request_context.custom_subagents.clone(),
         allow_subagents: request.subagent_type_name.is_none() && !subagents_disabled,
         subagents_disabled,
         terminals_folder: request_context

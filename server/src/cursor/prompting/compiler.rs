@@ -66,6 +66,23 @@ impl PromptCompiler {
         dynamic_tools: &[ToolDefinition],
         suppress_subagent_progress: bool,
     ) -> Result<PromptSpec> {
+        self.prompt_spec_with_custom_instructions(
+            mode,
+            model,
+            dynamic_tools,
+            suppress_subagent_progress,
+            None,
+        )
+    }
+
+    pub fn prompt_spec_with_custom_instructions(
+        &self,
+        mode: Mode,
+        model: &ModelSpec,
+        dynamic_tools: &[ToolDefinition],
+        suppress_subagent_progress: bool,
+        custom_instructions: Option<&str>,
+    ) -> Result<PromptSpec> {
         let mut tools = self.tools(mode, suppress_subagent_progress);
         let mut dynamic_tools = dynamic_tools.to_vec();
         dynamic_tools.sort_by(|left, right| left.name.cmp(&right.name));
@@ -77,8 +94,14 @@ impl PromptCompiler {
             .display_name
             .as_deref()
             .unwrap_or(model.model_id.as_str());
+        let instructions = self.append_global_rules(self.instructions(mode, fake_model_name)?)?;
+        let instructions = append_custom_instructions(
+            instructions,
+            mode,
+            custom_instructions,
+        );
         Ok(PromptSpec {
-            instructions: self.append_global_rules(self.instructions(mode, fake_model_name)?)?,
+            instructions,
             tools,
         })
     }
@@ -119,6 +142,21 @@ impl PromptCompiler {
     }
 }
 
+fn append_custom_instructions(
+    mut instructions: String,
+    mode: Mode,
+    custom_instructions: Option<&str>,
+) -> String {
+    let Some(custom_instructions) = custom_instructions else {
+        return instructions;
+    };
+    if mode != Mode::Subagent || custom_instructions.trim().is_empty() {
+        return instructions;
+    }
+    instructions.push_str("\n\n");
+    instructions.push_str(custom_instructions);
+    instructions
+}
 fn read_compaction_prompt(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|error| {
         Error::Config(format!(
@@ -168,6 +206,49 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn custom_subagent_instructions_append_after_baseline() {
+        let compiler = PromptCompiler::new(PromptAssets::embedded().unwrap());
+        let model = ModelSpec::new("model");
+        let baseline = compiler
+            .prompt_spec(Mode::Subagent, &model, &[], false)
+            .unwrap();
+        let custom = "Custom subagent instructions.";
+        let spec = compiler
+            .prompt_spec_with_custom_instructions(
+                Mode::Subagent,
+                &model,
+                &[],
+                false,
+                Some(custom),
+            )
+            .unwrap();
+
+        assert_eq!(spec.instructions, format!("{}\n\n{}", baseline.instructions, custom));
+        assert_eq!(spec.tools, baseline.tools);
+    }
+
+    #[test]
+    fn empty_custom_subagent_instructions_preserve_baseline() {
+        let compiler = PromptCompiler::new(PromptAssets::embedded().unwrap());
+        let model = ModelSpec::new("model");
+        let baseline = compiler
+            .prompt_spec(Mode::Subagent, &model, &[], false)
+            .unwrap();
+
+        for custom in [None, Some(""), Some(" \n\t ")] {
+            let spec = compiler
+                .prompt_spec_with_custom_instructions(
+                    Mode::Subagent,
+                    &model,
+                    &[],
+                    false,
+                    custom,
+                )
+                .unwrap();
+            assert_eq!(spec, baseline);
+        }
+    }
     #[test]
     fn compaction_prompt_error_identifies_the_configured_file() {
         let path = std::path::PathBuf::from("missing-compaction.md");

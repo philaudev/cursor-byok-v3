@@ -705,7 +705,7 @@
       "type": "function",
       "function": {
         "name": "Task",
-        "description": "Launch a new agent to handle complex, multi-step tasks autonomously.\n\nSUBAGENT & DELEGATION POLICY:\nProactively leverage Subagents whenever offloading work provides a concrete benefit in speed, context isolation, or parallelism over running everything in the foreground.\n\nWhen to use Task:\n- Broad Codebase Exploration & Scans: Use subagent_type=\"explore\" or \"generalPurpose\" to search architecture, APIs, or dependencies without polluting context.\n- Parallel Execution: Decoupled workstreams (e.g. Frontend vs Backend, independent modules, unit tests) launched concurrently.\n- Bounded Implementation / Fixes: Self-contained subtasks with clear interface boundaries.\n- Heavy Noise & Log Isolation: Long test traces, build outputs, or extensive diff reviews.\n\nWhen NOT to use Task:\n- Simple single-file lookups or 1-2 quick edits (use Read, Grep, Glob directly).\n- Purely conversational answers.\n\nUsage notes:\n- description: Short, specific summary (3-5 words).\n- prompt: Self-contained instructions covering Objective, Scope, Constraints, and Done Criteria.\n- resume: Provide an existing agent ID to continue and reuse context.\n- Concurrency: Launch up to 2-3 concurrent subagents for independent workflows when requested or beneficial.\n- Output synthesis: Subagent returns working material; synthesize a concise, evidence-backed summary for the user.\n\nAvailable subagent_types:\n- generalPurpose: Multi-step workflows, implementation, and deep reasoning.\n- explore: Fast codebase exploration, pattern finding, and keyword search.\n- shell: Command execution specialist for terminal/git operations.\n- cursor-guide: Cursor product documentation and IDE features.",
+        "description": "Launch a new agent to handle complex, multi-step tasks autonomously.\n\nSUBAGENT & DELEGATION POLICY:\nProactively leverage Subagents whenever offloading work provides a concrete benefit in speed, context isolation, or parallelism over running everything in the foreground.\n\nWhen to use Task:\n- Broad Codebase Exploration & Scans: Use subagent_type=\"explore\" or \"generalPurpose\" to search architecture, APIs, or dependencies without polluting context.\n- Parallel Execution: Decoupled workstreams (e.g. Frontend vs Backend, independent modules, unit tests) launched concurrently.\n- Bounded Implementation / Fixes: Self-contained subtasks with clear interface boundaries.\n- Heavy Noise & Log Isolation: Long test traces, build outputs, or extensive diff reviews.\n\nWhen NOT to use Task:\n- Simple single-file lookups or 1-2 quick edits (use Read, Grep, Glob directly).\n- Purely conversational answers.\n\nUsage notes:\n- description: Short, specific summary (3-5 words).\n- prompt: Self-contained instructions covering Objective, Scope, Constraints, and Done Criteria.\n- resume: Provide an existing agent ID to continue and reuse context.\n- Concurrency: Launch up to 2-3 concurrent subagents for independent workflows when requested or beneficial.\n- Output synthesis: Subagent returns working material; synthesize a concise, evidence-backed summary for the user.\n\nAvailable subagent_types:\n- generalPurpose: Multi-step workflows, implementation, and deep reasoning.\n- explore: Fast codebase exploration, pattern finding, and keyword search.\n- shell: Command execution specialist for terminal/git operations.\n- cursor-guide: Cursor product documentation and IDE features.\n- Custom subagents: Use the exact `name` of a matching agent listed in the `<subagents>` context (for example `advisor`, `planner`, `debugger`, or `tester`). Choose custom subagents when their specialized role matches the task. Built-in types remain appropriate when no listed custom agent is a better fit.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -754,18 +754,7 @@
               "type": "boolean"
             },
             "subagent_type": {
-              "description": "Subagent type to use for this task. Must be one of: generalPurpose, explore, shell, cursor-guide, ci-investigator, bugbot, security-review, best-of-n-runner, test-subagent.",
-              "enum": [
-                "generalPurpose",
-                "explore",
-                "shell",
-                "cursor-guide",
-                "ci-investigator",
-                "bugbot",
-                "security-review",
-                "best-of-n-runner",
-                "test-subagent"
-              ],
+              "description": "Subagent type to use for this task. Use a built-in type such as generalPurpose, explore, shell, or cursor-guide; or use the exact `name` of a matching agent listed in the `<subagents>` context.",
               "type": "string"
             }
           },
