@@ -169,10 +169,6 @@ pub async fn get_teams(
     forward_or(upstream, request, || empty()).await
 }
 
-pub async fn empty_response() -> Result<Response<Body>> {
-    empty()
-}
-
 fn empty() -> Result<Response<Body>> {
     proto(Empty {})
 }

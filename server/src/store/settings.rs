@@ -47,10 +47,25 @@ pub struct TabSettings {
     pub address: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct DesktopSettings {
     #[serde(default)]
     pub silent_start: bool,
+    #[serde(default = "default_true")]
+    pub show_dock_icon: bool,
+}
+
+impl Default for DesktopSettings {
+    fn default() -> Self {
+        Self {
+            silent_start: false,
+            show_dock_icon: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl TabSettings {
@@ -322,6 +337,30 @@ mod tests {
         };
         store.set_port_settings(settings).await.unwrap();
         assert_eq!(store.port_settings().await.unwrap(), settings);
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_show_the_dock_icon_by_default_and_round_trip() {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+
+        assert_eq!(
+            store.desktop_settings().await.unwrap(),
+            DesktopSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_str::<DesktopSettings>(r#"{"silent_start":true}"#).unwrap(),
+            DesktopSettings {
+                silent_start: true,
+                show_dock_icon: true,
+            }
+        );
+        let settings = DesktopSettings {
+            silent_start: true,
+            show_dock_icon: false,
+        };
+        store.set_desktop_settings(settings).await.unwrap();
+
+        assert_eq!(store.desktop_settings().await.unwrap(), settings);
     }
 
     #[tokio::test]

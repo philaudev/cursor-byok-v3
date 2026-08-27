@@ -198,9 +198,12 @@ pub fn run() {
             let listener = tauri::async_runtime::block_on(server.bind())?;
             let address = listener.local_addr()?;
             tauri::async_runtime::block_on(server.harness().cleanup_stale_settings())?;
-            let silent_start = tauri::async_runtime::block_on(server.store().desktop_settings())
-                .map(|settings| settings.silent_start)
-                .unwrap_or(false);
+            let desktop_settings =
+                tauri::async_runtime::block_on(server.store().desktop_settings())
+                    .unwrap_or_default();
+            #[cfg(target_os = "macos")]
+            app.handle()
+                .set_dock_visibility(desktop_settings.show_dock_icon)?;
             let shutdown = CancellationToken::new();
             let server_shutdown = shutdown.clone();
             let app_handle = app.handle().clone();
@@ -218,7 +221,7 @@ pub fn run() {
                 exiting: AtomicBool::new(false),
             });
             let window = create_main_window(app.handle(), address)?;
-            if silent_start && started_by_autostart {
+            if desktop_settings.silent_start && started_by_autostart {
                 tracing::info!("silent autostart enabled; keeping the main window hidden");
             } else {
                 window.show()?;

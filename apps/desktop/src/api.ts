@@ -143,6 +143,7 @@ export interface TabSettings {
 
 export interface DesktopSettings {
   silent_start: boolean;
+  show_dock_icon: boolean;
 }
 
 export interface OverviewMetrics {
@@ -300,8 +301,8 @@ export const api = {
       params.set("end_ms", String(filter.endMs));
       if (filter.modelHashes?.length) params.set("model_hashes", JSON.stringify(filter.modelHashes));
     }
-    const query = params.size ? `?${params}` : "";
-    return request<Overview>(`/overview${query}`);
+    const query = params.toString();
+    return request<Overview>(`/overview${query ? `?${query}` : ""}`);
   },
   cursorHarness: () => request<CursorHarnessStatus>("/harness/cursor/status"),
   initializeCursorCa: () => request<CursorHarnessStatus>("/harness/cursor/ca/initialize", { method: "POST" }),

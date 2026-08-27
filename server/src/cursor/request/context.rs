@@ -474,9 +474,9 @@ pub fn dynamic_mcp(
     Ok(output)
 }
 
-fn normalize_mcp_parameters(tool_name: &str, mut parameters: Value) -> Result<Value> {
+fn normalize_mcp_parameters(tool_name: &str, parameters: Value) -> Result<Value> {
     let schema = parameters
-        .as_object_mut()
+        .as_object()
         .ok_or_else(|| invalid_mcp_parameters(tool_name))?;
     match schema.get("type") {
         Some(Value::String(schema_type)) if schema_type == "object" => return Ok(parameters),
@@ -501,7 +501,6 @@ fn normalize_mcp_parameters(tool_name: &str, mut parameters: Value) -> Result<Va
     if !object_only_union {
         return Err(invalid_mcp_parameters(tool_name));
     }
-    schema.insert("type".into(), Value::String("object".into()));
     Ok(parameters)
 }
 
@@ -610,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_mcp_normalizes_cursor_object_union_without_mutating_wire_schema() {
+    fn dynamic_mcp_preserves_cursor_object_union_schema() {
         let original_schema = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "anyOf": [
@@ -651,8 +650,7 @@ mod tests {
             .get("cursor-app-control-move_agent_to_cloned_root")
             .unwrap();
 
-        assert_eq!(definition.parameters["type"], "object");
-        assert_eq!(definition.parameters["anyOf"], original_schema["anyOf"]);
+        assert_eq!(definition.parameters, original_schema);
         assert_eq!(
             wire.input_schema_json.as_deref(),
             Some(original_json.as_str())
