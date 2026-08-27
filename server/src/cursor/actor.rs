@@ -93,18 +93,23 @@ impl CursorActor {
                                                         .map(|parent| parent.tool_call_id.clone()),
                                                     request.conversation_state.clone(),
                                                 );
+                                                if let Some(pb::conversation_action::Action::BackgroundTaskCompletionAction(action)) =
+                                                    request.action.as_ref().and_then(|a| a.action.as_ref())
+                                                {
+                                                    checkpoint.record_background_completions(action);
+                                                }
                                                 let prepared = async {
                                                     let parent = match handle.parent() {
                                                         Some(parent) => {
                                                             let parent_run_id = dependencies
                                                                 .store
-                                                                .active_run_for_cursor_request(
+                                                                .run_for_cursor_request(
                                                                     &parent.request_id,
                                                                 )
                                                                 .await?
                                                                 .ok_or_else(|| {
                                                                     crate::Error::Protocol(format!(
-                                                                        "Cursor parent request {} has no active local Run",
+                                                                        "Cursor parent request {} has no local Run in store",
                                                                         parent.request_id
                                                                     ))
                                                                 })?;
@@ -384,13 +389,12 @@ impl CursorActor {
                                             ),
                                         ) => {
                                             if runtime_actions_tx
-                                                .send(RuntimeAction::BackgroundTaskCompletion(action))
+                                                .send(RuntimeAction::BackgroundTaskCompletion(action.clone()))
                                                 .is_err()
                                             {
-                                                results_tx.send_error(crate::Error::Protocol(
-                                                    "BackgroundTaskCompletionAction arrived without an active Run"
-                                                        .into(),
-                                                ));
+                                                tool_runtime
+                                                    .observe_background_task_completion(&action)
+                                                    .await;
                                             }
                                         }
                                         Some(

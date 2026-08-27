@@ -750,7 +750,7 @@
             },
             "run_in_background": {
               "default": false,
-              "description": "Background subagent completion delivery is under development and is not reliable yet. Always omit this parameter or set it to false so the parent waits for, receives, and integrates the result in the current turn. Do not set this to true.",
+              "description": "Optional boolean. Keep false by default so the parent waits for the result. Set true only when the subagent is long-running and independent, the parent can continue without its result, and the result is not needed for the next action. Keep false for short tasks, sequential reasoning, shared-context or shared-file work, edits that must be reviewed immediately, and any task whose result the parent needs before continuing. When background execution is used, the parent receives the completion automatically if its session is still active.",
               "type": "boolean"
             },
             "subagent_type": {

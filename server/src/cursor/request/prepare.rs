@@ -345,7 +345,7 @@ pub(crate) async fn prepare(
         };
         RunAction::Resume { pending_tool_round }
     };
-    let kind = run_kind(request.subagent_type_name.as_deref(), parent)?;
+    let kind = run_kind(request.subagent_type_name.as_deref(), parent, checkpoint)?;
     let exec = exec_context(
         request,
         &request_context,
@@ -555,15 +555,22 @@ fn runtime_message_text(message: &CanonicalMessage) -> Result<String> {
     Ok(text.clone())
 }
 
-fn run_kind(subagent_type_name: Option<&str>, parent: Option<(RunId, String)>) -> Result<RunKind> {
+fn run_kind(
+    subagent_type_name: Option<&str>,
+    parent: Option<(RunId, String)>,
+    checkpoint: &CheckpointBuilder,
+) -> Result<RunKind> {
     match (subagent_type_name, parent) {
         (None | Some("side-chat"), _) => Ok(RunKind::Root),
-        (Some(name), Some((parent_run_id, parent_tool_call_id))) => Ok(RunKind::Subagent {
-            parent_run_id,
-            parent_tool_call_id,
-            kind: model::subagent_kind(name),
-            background: false,
-        }),
+        (Some(name), Some((parent_run_id, parent_tool_call_id))) => {
+            let background = checkpoint.is_background_subagent(&parent_tool_call_id);
+            Ok(RunKind::Subagent {
+                parent_run_id,
+                parent_tool_call_id,
+                kind: model::subagent_kind(name),
+                background,
+            })
+        }
         (Some(_), None) => Err(Error::Protocol(
             "subagent Run is missing its parent Run and tool call".into(),
         )),

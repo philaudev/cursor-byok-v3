@@ -196,7 +196,25 @@ pub(super) fn task(
                     .get("run_in_background")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true);
+            let conversation_steps = if let Some(final_message) = &value.final_message {
+                let trimmed = final_message.trim();
+                if !trimmed.is_empty() {
+                    vec![pb::ConversationStep {
+                        message: Some(pb::conversation_step::Message::AssistantMessage(
+                            pb::AssistantMessage {
+                                text: trimmed.to_string(),
+                                ..Default::default()
+                            },
+                        )),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
             Output::Success(pb::TaskSuccess {
+                conversation_steps,
                 agent_id: Some(value.agent_id.clone()),
                 is_background,
                 duration_ms: Some(
@@ -205,7 +223,6 @@ pub(super) fn task(
                 result_suffix: value.final_message.clone(),
                 background_reason: value.background_reason,
                 transcript_path: value.transcript_path.clone(),
-                ..Default::default()
             })
         }
         Some(Input::Error(value)) => Output::Error(pb::TaskError {
