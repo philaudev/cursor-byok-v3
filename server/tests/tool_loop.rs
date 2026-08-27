@@ -646,6 +646,48 @@ async fn exec_stream_close_without_a_terminal_result_becomes_a_tool_error() {
 }
 
 #[tokio::test]
+async fn foreground_subagent_stream_close_is_ignored_until_its_terminal_result() {
+    let pending = CursorToolRuntime::default();
+    let mut task = call("task-call", "Task");
+    task.arguments = json!({
+        "description": "Inspect protocol",
+        "prompt": "Inspect the protocol",
+        "run_in_background": false,
+        "subagent_type": "explore"
+    });
+    let id = pending.reserve_exec(&task, &exec_context()).await.unwrap();
+
+    assert!(codec::stream_closed(id, &pending).await.unwrap().is_none());
+    assert_eq!(
+        pending.exec_call(id).await.map(|call| call.call_id),
+        Some("task-call".into())
+    );
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id,
+            message: Some(pb::exec_client_message::Message::SubagentResult(
+                pb::SubagentResult {
+                    result: Some(pb::subagent_result::Result::Success(pb::SubagentSuccess {
+                        agent_id: "child-id".into(),
+                        final_message: Some("finished".into()),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &pending,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("expected terminal foreground Task result")
+    };
+    assert!(!completion.result().is_error);
+}
+
+#[tokio::test]
 async fn tool_success_is_not_inferred_from_debug_text() {
     let pending = CursorToolRuntime::default();
     let mut write = call("call-1", "Write");

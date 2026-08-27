@@ -211,6 +211,13 @@ async fn background_shell_event(
 }
 
 pub async fn stream_closed(id: u32, pending: &CursorToolRuntime) -> Result<Option<ToolCompletion>> {
+    if pending
+        .exec_call(id)
+        .await
+        .is_some_and(|call| call.name.eq_ignore_ascii_case("Task"))
+    {
+        return Ok(None);
+    }
     let Some(entry) = pending.take_exec(id).await else {
         return Ok(None);
     };
