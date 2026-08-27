@@ -720,22 +720,82 @@ fn estimate_context_tokens(
     prompt: &crate::model::PromptSpec,
     messages: &[CanonicalMessage],
 ) -> u64 {
-    let serialized = serde_json::to_string(&(prompt, messages)).unwrap_or_default();
-    estimate_serialized_tokens(&serialized)
+    let mut total = estimate_prompt_tokens(prompt);
+    total = total.saturating_add(estimate_message_tokens(messages));
+    total
+}
+
+fn estimate_prompt_tokens(prompt: &crate::model::PromptSpec) -> u64 {
+    let mut total = estimate_text_tokens(&prompt.instructions);
+    for tool in &prompt.tools {
+        let serialized = serde_json::to_string(tool).unwrap_or_default();
+        total = total.saturating_add(estimate_text_tokens(&serialized));
+    }
+    total
 }
 
 fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u64 {
-    let serialized = serde_json::to_string(messages).unwrap_or_default();
-    estimate_serialized_tokens(&serialized)
+    let mut total = 0_u64;
+    for message in messages {
+        total = total.saturating_add(8); // estimatedTokensPerMessageOverhead
+        match &message.content {
+            crate::model::MessageContent::Parts { parts } => {
+                for part in parts {
+                    match part {
+                        crate::model::ContentPart::Text { text } => {
+                            total = total.saturating_add(estimate_text_tokens(text));
+                        }
+                        crate::model::ContentPart::Image { .. } => {
+                            total = total.saturating_add(1024);
+                        }
+                    }
+                }
+            }
+            crate::model::MessageContent::Assistant {
+                text,
+                thinking,
+                tool_calls,
+                ..
+            } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+                total = total.saturating_add(estimate_text_tokens(thinking));
+                for call in tool_calls {
+                    total = total.saturating_add(6); // estimatedTokensPerToolCallOverhead
+                    total = total.saturating_add(estimate_text_tokens(&call.name));
+                    let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
+                    total = total.saturating_add(estimate_text_tokens(&arguments));
+                }
+            }
+            crate::model::MessageContent::ToolResult(result) => {
+                total = total.saturating_add(estimate_text_tokens(&result.content));
+                for part in &result.provider_parts {
+                    match part {
+                        crate::model::ContentPart::Text { text } => {
+                            total = total.saturating_add(estimate_text_tokens(text));
+                        }
+                        crate::model::ContentPart::Image { .. } => {
+                            total = total.saturating_add(1024);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total
 }
 
-fn estimate_serialized_tokens(serialized: &str) -> u64 {
-    serialized
-        .chars()
-        .fold(0_u64, |units, character| {
-            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
-        })
-        .div_ceil(1_000)
+fn estimate_text_tokens(text: &str) -> u64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let char_count = trimmed.chars().count() as u64;
+    if char_count == 0 {
+        return 0;
+    }
+    let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
+    let estimated = ((char_count + 3) / 4).saturating_add(newlines);
+    estimated.max(1)
 }
 
 fn fallback_summary(messages: &[CanonicalMessage]) -> String {
@@ -967,7 +1027,7 @@ mod tests {
 
         assert_eq!(
             estimate_context_tokens(&prepared.prompt, &messages),
-            190_813
+            174_683
         );
         assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
     }
@@ -980,7 +1040,7 @@ mod tests {
             "runtime:current",
             Role::User,
             Origin::Runtime,
-            "x".repeat(190_000),
+            "x".repeat(210_000),
         );
         let messages = vec![old_history, current_runtime.clone()];
         let prepared = PreparedRun {

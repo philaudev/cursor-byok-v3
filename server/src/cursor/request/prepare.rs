@@ -384,9 +384,13 @@ pub(crate) async fn prepare(
 }
 
 fn needs_history_restore(
-    _state: Option<&pb::ConversationStateStructure>,
+    state: Option<&pb::ConversationStateStructure>,
     root_message_count: usize,
 ) -> bool {
+    let has_summary = state.and_then(|state| state.summary.as_ref()).is_some();
+    if has_summary {
+        return false;
+    }
     root_message_count <= 1
 }
 
@@ -871,7 +875,8 @@ mod tests {
         };
 
         assert!(!needs_history_restore(Some(&compacted), 2));
-        assert!(needs_history_restore(Some(&compacted), 1));
+        assert!(!needs_history_restore(Some(&compacted), 1));
+        assert!(needs_history_restore(None, 1));
     }
 
     #[test]

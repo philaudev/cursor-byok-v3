@@ -179,19 +179,22 @@ impl ExecContext {
         let model = match self.subagent_models.get(subagent_type) {
             Some(SubagentModel::Model(model)) => model.clone(),
             Some(SubagentModel::Disabled) => return Ok(prepared),
-            None => match custom_subagent {
-                Some(agent) if !agent.force_default_model && valid_custom_model(&agent.model) => {
-                    agent.model.clone()
-                }
-                _ => match &self.subagent_model {
-                    Some(SubagentModel::Model(model)) => model.clone(),
-                    Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
-                    None => arguments
-                        .get("model")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|model| *model != "inherit")
-                        .unwrap_or(&self.default_subagent_model)
-                        .to_string(),
+            None => match self.subagent_models.get("explore") {
+                Some(SubagentModel::Model(model)) => model.clone(),
+                _ => match custom_subagent {
+                    Some(agent) if !agent.force_default_model && valid_custom_model(&agent.model) => {
+                        agent.model.clone()
+                    }
+                    _ => match &self.subagent_model {
+                        Some(SubagentModel::Model(model)) => model.clone(),
+                        Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
+                        None => arguments
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|model| *model != "inherit")
+                            .unwrap_or(&self.default_subagent_model)
+                            .to_string(),
+                    },
                 },
             },
         };
@@ -763,6 +766,15 @@ mod tests {
         };
         let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
         assert_eq!(context.prepare_call(&call).unwrap().arguments["model"], "advisor-model");
+
+        let context = ExecContext {
+            subagent_models: HashMap::from([(
+                "explore".into(),
+                SubagentModel::Model("explore-model".into()),
+            )]),
+            ..context
+        };
+        assert_eq!(context.prepare_call(&call).unwrap().arguments["model"], "explore-model");
 
         let context = ExecContext {
             subagent_models: HashMap::from([(
