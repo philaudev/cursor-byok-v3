@@ -4,6 +4,7 @@
     "Glob",
     "Grep",
     "Read",
+    "InspectChanges",
     "Write",
     "StrReplace",
     "Delete",

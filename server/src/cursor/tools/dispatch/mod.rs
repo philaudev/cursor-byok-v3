@@ -1,6 +1,7 @@
 mod await_shell;
 mod edit;
 mod exec;
+mod inspect_changes;
 mod interaction;
 mod local;
 mod semble;
@@ -60,6 +61,7 @@ pub(super) async fn start(
         "todowrite" | "updatecurrentstep" => local::start(call, message_index),
         "awaitshell" => await_shell::start(runtime, results, call, context).await,
         "semblesearch" | "semblefindrelated" => semble::start(results, call, store.cloned()),
+        "inspectchanges" => inspect_changes::start(results, call, context),
         _ => Err(Error::Protocol(format!("unsupported tool: {}", call.name))),
     }
 }

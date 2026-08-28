@@ -169,6 +169,7 @@ pub(crate) struct AwaitState {
 
 #[derive(Clone, Debug, Default)]
 pub struct ExecContext {
+    pub workspace_paths: Vec<String>,
     pub conversation_id: String,
     pub root_conversation_id: String,
     pub default_subagent_model: String,

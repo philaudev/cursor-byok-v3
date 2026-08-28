@@ -4,6 +4,7 @@
     "CallMcpTool",
     "Delete",
     "FetchMcpResource",
+    "InspectChanges",
     "Glob",
     "Grep",
     "Read",

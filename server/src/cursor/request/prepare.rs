@@ -859,6 +859,11 @@ fn exec_context(
         crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
     });
     ExecContext {
+        workspace_paths: request_context
+            .env
+            .as_ref()
+            .map(|env| env.workspace_paths.clone())
+            .unwrap_or_default(),
         conversation_id: conversation_id.to_string(),
         root_conversation_id: request
             .conversation_group_id

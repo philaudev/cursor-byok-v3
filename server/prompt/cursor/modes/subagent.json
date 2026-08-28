@@ -6,6 +6,7 @@
     "WebSearch",
     "WebFetch",
     "GenerateImage",
+    "InspectChanges",
     "ReadLints",
     "EditNotebook",
     "TodoWrite",
