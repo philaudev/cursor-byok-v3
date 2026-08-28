@@ -137,3 +137,342 @@ async fn complete_write(runtime: &CursorToolRuntime, exec: &pb::ExecServerMessag
     .unwrap();
     assert!(matches!(event, codec::ClientExecEvent::Completed(_)));
 }
+
+#[tokio::test]
+async fn test_inspect_changes_non_git_workspace() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let non_git_dir = temp_dir.path().join("nongit");
+    std::fs::create_dir_all(&non_git_dir).unwrap();
+
+    let runtime = CursorToolRuntime::default();
+    let (results, mut rx) = result::tool_result_channel();
+    let call = ToolCall {
+        index: 0,
+        call_id: "inspect_non_git".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({
+            "path": non_git_dir.to_str().unwrap()
+        }),
+    };
+
+    let context = ExecContext::default();
+
+    dispatch::start(
+        &runtime,
+        &results,
+        &call,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion = rx.recv().await.unwrap().expect("should receive completion");
+    let content = completion.result().content.clone();
+    let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(val["is_git_repo"], false);
+    assert_eq!(val["path"], non_git_dir.to_str().unwrap());
+    assert!(val["message"]
+        .as_str()
+        .unwrap()
+        .contains("is not a git repository"));
+}
+
+#[tokio::test]
+async fn test_inspect_changes_git_workflow() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_dir = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+
+    // Initialize git repo
+    let init = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "init"])
+        .output()
+        .unwrap();
+    if !init.status.success() {
+        return; // Git not installed or accessible in test environment
+    }
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.name", "Test"])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.email", "test@test.com"])
+        .output();
+
+    // 1. Clean repo test
+    let runtime = CursorToolRuntime::default();
+    let (results, mut rx) = result::tool_result_channel();
+    let call = ToolCall {
+        index: 0,
+        call_id: "inspect_clean".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({
+            "path": repo_dir.to_str().unwrap()
+        }),
+    };
+
+    let context = ExecContext::default();
+
+    dispatch::start(
+        &runtime,
+        &results,
+        &call,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion = rx.recv().await.unwrap().unwrap();
+    let val: serde_json::Value = serde_json::from_str(&completion.result().content).unwrap();
+    assert_eq!(val["is_git_repo"], true);
+    assert_eq!(val["has_changes"], false);
+    assert!(val.get("branch").is_some());
+
+    // 2. Add modified & untracked files
+    let file_a = repo_dir.join("a.txt");
+    let file_b = repo_dir.join("b.txt");
+    std::fs::write(&file_a, "initial content\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "add", "a.txt"])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "commit", "-m", "init"])
+        .output();
+
+    // Modify a.txt and create untracked b.txt
+    std::fs::write(&file_a, "modified content\n").unwrap();
+    std::fs::write(&file_b, "new file content\n").unwrap();
+
+    let (results2, mut rx2) = result::tool_result_channel();
+    let call2 = ToolCall {
+        index: 0,
+        call_id: "inspect_all".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({
+            "path": repo_dir.to_str().unwrap()
+        }),
+    };
+
+    dispatch::start(
+        &runtime,
+        &results2,
+        &call2,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion2 = rx2.recv().await.unwrap().unwrap();
+    let val2: serde_json::Value = serde_json::from_str(&completion2.result().content).unwrap();
+    assert_eq!(val2["is_git_repo"], true);
+    assert_eq!(val2["has_changes"], true);
+    assert_eq!(val2["changed_files_count"], 2);
+
+    // 3. Test single file filter
+    let (results3, mut rx3) = result::tool_result_channel();
+    let file_a_path = repo_dir.join("a.txt");
+    let call3 = ToolCall {
+        index: 0,
+        call_id: "inspect_single".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({"path": file_a_path.to_str().unwrap()}),
+    };
+
+    dispatch::start(
+        &runtime,
+        &results3,
+        &call3,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion3 = rx3.recv().await.unwrap().unwrap();
+    let val3: serde_json::Value = serde_json::from_str(&completion3.result().content).unwrap();
+    assert_eq!(val3["is_git_repo"], true);
+    assert_eq!(val3["target_file"], file_a_path.to_str().unwrap());
+    assert_eq!(val3["has_changes"], true);
+    assert!(val3["diff"].as_str().unwrap().contains("-initial content"));
+    assert!(val3["diff"].as_str().unwrap().contains("+modified content"));
+}
+
+#[tokio::test]
+async fn test_inspect_changes_lockfile_noise_and_truncation() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_dir = temp_dir.path().join("repo_truncation");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+
+    let init = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "init"])
+        .output()
+        .unwrap();
+    if !init.status.success() {
+        return;
+    }
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.name", "Test"])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.email", "test@test.com"])
+        .output();
+
+    // 1. Commit initial files
+    let lock_file = repo_dir.join("Cargo.lock");
+    let code_file = repo_dir.join("large.rs");
+    std::fs::write(&lock_file, "lock initial\n").unwrap();
+    std::fs::write(&code_file, "fn main() {}\n").unwrap();
+
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "add", "."])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "commit", "-m", "init"])
+        .output();
+
+    // 2. Modify Cargo.lock (should be filtered out from diff) and generate a massive diff in large.rs (>8000 chars)
+    std::fs::write(&lock_file, "lock modified version 2.0 with many locks\n").unwrap();
+    let large_content = (0..300)
+        .map(|i| format!("    println!(\"This is a very long log line number {i} to test truncation behavior\");\n"))
+        .collect::<String>();
+    std::fs::write(&code_file, format!("fn main() {{\n{large_content}}}\n")).unwrap();
+
+    let runtime = CursorToolRuntime::default();
+    let (results, mut rx) = result::tool_result_channel();
+    let call = ToolCall {
+        index: 0,
+        call_id: "inspect_truncation".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({
+            "path": repo_dir.to_str().unwrap()
+        }),
+    };
+
+    let context = ExecContext::default();
+
+    dispatch::start(
+        &runtime,
+        &results,
+        &call,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion = rx.recv().await.unwrap().unwrap();
+    let val: serde_json::Value = serde_json::from_str(&completion.result().content).unwrap();
+    assert_eq!(val["is_git_repo"], true);
+    assert_eq!(val["has_changes"], true);
+    assert_eq!(val["changed_files_count"], 2);
+    assert_eq!(val["truncated"], true);
+    assert!(val.get("hint").is_some());
+
+    // Verify Cargo.lock diff is filtered out from combined diff
+    let diff_str = val["diff"].as_str().unwrap();
+    assert!(!diff_str.contains("Cargo.lock"));
+    assert!(diff_str.len() <= 8000);
+}
+
+#[tokio::test]
+async fn test_inspect_changes_staged_and_deleted_files() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo_dir = temp_dir.path().join("repo_staged");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+
+    let init = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "init"])
+        .output()
+        .unwrap();
+    if !init.status.success() {
+        return;
+    }
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.name", "Test"])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "config", "user.email", "test@test.com"])
+        .output();
+
+    let file_del = repo_dir.join("to_delete.txt");
+    let file_staged = repo_dir.join("staged.txt");
+    std::fs::write(&file_del, "delete me\n").unwrap();
+    std::fs::write(&file_staged, "initial\n").unwrap();
+
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "add", "."])
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "commit", "-m", "init"])
+        .output();
+
+    // Delete to_delete.txt and stage modified staged.txt
+    std::fs::remove_file(&file_del).unwrap();
+    std::fs::write(&file_staged, "staged content\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["-C", repo_dir.to_str().unwrap(), "add", "staged.txt"])
+        .output();
+
+    let runtime = CursorToolRuntime::default();
+    let (results, mut rx) = result::tool_result_channel();
+    let call = ToolCall {
+        index: 0,
+        call_id: "inspect_staged_del".into(),
+        model_call_id: "model:0".into(),
+        name: "InspectChanges".into(),
+        arguments_text: String::new(),
+        arguments: json!({
+            "path": repo_dir.to_str().unwrap()
+        }),
+    };
+
+    let context = ExecContext::default();
+
+    dispatch::start(
+        &runtime,
+        &results,
+        &call,
+        0,
+        &BTreeMap::new(),
+        &context,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let completion = rx.recv().await.unwrap().unwrap();
+    let val: serde_json::Value = serde_json::from_str(&completion.result().content).unwrap();
+    assert_eq!(val["is_git_repo"], true);
+    assert_eq!(val["has_changes"], true);
+
+    let files = val["files"].as_array().unwrap();
+    let staged_item = files.iter().find(|f| f["path"] == "staged.txt").unwrap();
+    let del_item = files.iter().find(|f| f["path"] == "to_delete.txt").unwrap();
+
+    assert_eq!(staged_item["staged"], true);
+    assert_eq!(staged_item["status"], "Modified");
+    assert_eq!(del_item["status"], "Deleted");
+}
+

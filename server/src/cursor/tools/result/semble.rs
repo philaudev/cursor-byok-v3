@@ -22,6 +22,7 @@ pub(crate) fn complete(
     let (tool_name, fallback_description) = match normalized(&call.name).as_str() {
         "semblesearch" => ("search", "Search the codebase"),
         "semblefindrelated" => ("find_related", "Find related code"),
+        "inspectchanges" => ("inspect_changes", "Inspect uncommitted git changes"),
         _ => (call.name.as_str(), "Search the codebase"),
     };
     let description = call

@@ -14,6 +14,7 @@ pub(crate) fn await_result(
     output_length: u64,
     regex_match: Option<String>,
     exit_code: Option<i32>,
+    completed: bool,
 ) -> Result<ToolCompletion> {
     let ExecStage::Await(state) = &pending.stage else {
         return Err(Error::Protocol(
@@ -21,7 +22,7 @@ pub(crate) fn await_result(
         ));
     };
     let runtime_ms = now_ms().saturating_sub(pending.started_at_ms);
-    let result = if exit_code.is_some() {
+    let result = if completed {
         pb::await_success::AwaitResult::Complete(pb::AwaitTaskComplete {
             task_id: state.task_id.clone(),
             runtime_ms,

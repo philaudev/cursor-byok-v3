@@ -174,7 +174,7 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "todowrite" => Tool::UpdateTodosToolCall(pb::UpdateTodosToolCall::default()),
         "strreplace" | "editnotebook" | "write" => Tool::EditToolCall(pb::EditToolCall::default()),
         "readlints" => Tool::ReadLintsToolCall(pb::ReadLintsToolCall::default()),
-        "callmcptool" | "semblesearch" | "semblefindrelated" => {
+        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges" => {
             Tool::McpToolCall(pb::McpToolCall::default())
         }
         "createplan" => Tool::CreatePlanToolCall(pb::CreatePlanToolCall::default()),
@@ -528,6 +528,7 @@ fn semble_tool_name(name: &str) -> Option<&'static str> {
     match normalized(name).as_str() {
         "semblesearch" => Some("search"),
         "semblefindrelated" => Some("find_related"),
+        "inspectchanges" => Some("inspect_changes"),
         _ => None,
     }
 }

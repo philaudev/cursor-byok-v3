@@ -859,6 +859,11 @@ fn exec_context(
         crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
     });
     ExecContext {
+        workspace_paths: request_context
+            .env
+            .as_ref()
+            .map(|env| env.workspace_paths.clone())
+            .unwrap_or_default(),
         conversation_id: conversation_id.to_string(),
         root_conversation_id: request
             .conversation_group_id
@@ -919,18 +924,20 @@ mod tests {
         assert!(mode_from_proto(99).is_err());
     }
 
-    #[test]
-    fn side_chat_without_task_parent_is_an_independent_root_run() {
+    #[tokio::test]
+    async fn side_chat_without_task_parent_is_an_independent_root_run() {
+        let checkpoint = CheckpointBuilder::test_empty().await;
         assert!(matches!(
-            run_kind(Some("side-chat"), None).unwrap(),
+            run_kind(Some("side-chat"), None, &checkpoint).unwrap(),
             RunKind::Root
         ));
     }
 
-    #[test]
-    fn task_subagent_without_parent_is_still_rejected() {
+    #[tokio::test]
+    async fn task_subagent_without_parent_is_still_rejected() {
+        let checkpoint = CheckpointBuilder::test_empty().await;
         assert!(matches!(
-            run_kind(Some("explore"), None),
+            run_kind(Some("explore"), None, &checkpoint),
             Err(Error::Protocol(message))
                 if message == "subagent Run is missing its parent Run and tool call"
         ));

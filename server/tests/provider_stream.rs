@@ -921,6 +921,7 @@ fn invocation() -> ModelInvocation {
         run_id: "run-1".into(),
         conversation_id: "conversation-1".into(),
         provider_call_index: 0,
+        canonical_message_count: 1,
         request: ModelRequest {
             prompt: PromptSpec {
                 instructions: "system".into(),

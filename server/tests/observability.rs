@@ -200,6 +200,7 @@ async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
                 run_id: "run-1".into(),
                 conversation_id: "conversation-1".into(),
                 provider_call_index: 0,
+                canonical_message_count: 0,
                 request: ModelRequest {
                     prompt: PromptSpec {
                         instructions: "system".into(),

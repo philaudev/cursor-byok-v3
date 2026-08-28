@@ -306,6 +306,7 @@ impl ControlService {
             run_id: call_id.clone(),
             conversation_id: call_id.clone(),
             provider_call_index: 0,
+            canonical_message_count: 1,
             request: ModelRequest {
                 prompt: PromptSpec {
                     instructions: String::new(),

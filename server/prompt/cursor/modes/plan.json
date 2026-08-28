@@ -1,8 +1,24 @@
 {
   "tools": [
-    "Shell", "Glob", "Grep", "Read", "Write", "StrReplace", "Delete",
-    "TodoWrite", "ReadLints", "WebSearch", "WebFetch", "AskQuestion",
-    "CreatePlan", "Task", "FetchMcpResource", "CallMcpTool",
-    "SembleSearch", "SembleFindRelated"
+    "Shell",
+    "Glob",
+    "Grep",
+    "Read",
+    "InspectChanges",
+    "Write",
+    "StrReplace",
+    "Delete",
+    "TodoWrite",
+    "ReadLints",
+    "WebSearch",
+    "WebFetch",
+    "AskQuestion",
+    "CreatePlan",
+    "Task",
+    "FetchMcpResource",
+    "CallMcpTool",
+    "SwitchMode",
+    "SembleSearch",
+    "SembleFindRelated"
   ]
 }

@@ -181,25 +181,20 @@ impl RunEngine {
                 Ok(messages) => messages,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            let context_anchor = if prepared.action == RunAction::Start {
-                match self
-                    .store
-                    .latest_llm_call_usage_anchor(
-                        &prepared.conversation_id,
-                        &prepared.model.model_id,
-                    )
-                    .await
-                {
-                    Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
-                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
-                }
-            } else {
-                None
+            let context_anchor = match self
+                .store
+                .latest_llm_call_usage_anchor(
+                    &prepared.conversation_id,
+                    &prepared.model.model_id,
+                )
+                .await
+            {
+                Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
+                Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
             let history_grew_since_auto_compaction =
                 should_repeat_auto_compaction(last_auto_compaction_message_count, messages.len());
-            if prepared.action == RunAction::Start
-                && history_grew_since_auto_compaction
+            if history_grew_since_auto_compaction
                 && should_auto_compact(prepared, &messages, context_anchor)
             {
                 match self
@@ -250,6 +245,7 @@ impl RunEngine {
                 run_id: prepared.run_id.to_string(),
                 conversation_id: prepared.conversation_id.to_string(),
                 provider_call_index,
+                canonical_message_count: messages.len(),
                 request,
             };
             let cycle_cancellation = cancellation.child_token();
@@ -675,6 +671,7 @@ impl RunEngine {
             run_id: prepared.run_id.to_string(),
             conversation_id: prepared.conversation_id.to_string(),
             provider_call_index,
+            canonical_message_count: compactable.len(),
             request: crate::model::ModelRequest {
                 prompt: crate::model::PromptSpec {
                     instructions: prepared.compaction_prompt.instructions.clone(),
@@ -806,7 +803,7 @@ fn should_auto_compact(
     messages: &[CanonicalMessage],
     anchor: Option<ContextUsageAnchor>,
 ) -> bool {
-    if prepared.action != RunAction::Start {
+    if prepared.action == RunAction::Compact {
         return false;
     }
     let Some(context_window) = prepared.model.context_window_tokens else {
@@ -909,7 +906,10 @@ fn estimate_text_tokens(text: &str) -> u64 {
         return 0;
     }
     let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
-    let estimated = ((char_count + 3) / 4).saturating_add(newlines);
+    // BPE tokenizers typically average 3.2 - 3.5 chars per token for code/JSON/Unicode,
+    // plus structural whitespace overhead. Using 10 / 33 (~3.3 chars/token) + newlines
+    // prevents underestimating token size for large file reads.
+    let estimated = ((char_count * 10 + 32) / 33).saturating_add(newlines);
     estimated.max(1)
 }
 
@@ -1207,7 +1207,7 @@ mod tests {
 
         assert_eq!(
             estimate_context_tokens(&prepared.prompt, &messages),
-            174_683
+            211_733
         );
         assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
     }
@@ -1242,6 +1242,49 @@ mod tests {
             },
             initial_messages: vec![current_runtime],
             action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
+    }
+
+    #[test]
+    fn auto_compaction_triggers_for_resume_action_when_threshold_exceeded() {
+        let old_history =
+            CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text(
+            "runtime:current",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(210_000),
+        );
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(200_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Resume {
+                pending_tool_round: None,
+            },
             base_revision_id: RevisionId(1),
         };
         let anchor = ContextUsageAnchor {
