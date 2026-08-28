@@ -23,6 +23,7 @@ pub struct ModelInvocation {
     pub run_id: String,
     pub conversation_id: String,
     pub provider_call_index: u64,
+    pub canonical_message_count: usize,
     pub request: ModelRequest,
 }
 
