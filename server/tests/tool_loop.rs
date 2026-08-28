@@ -971,7 +971,7 @@ async fn await_shell_uses_completed_background_state_when_terminal_file_lags() {
         .expect("expected initial terminal-file read");
 
     runtime
-        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
         .await;
     runtime.background_shell_exit("42", 1).await;
     let event = codec::client_event(
@@ -1030,7 +1030,7 @@ async fn await_shell_survives_stream_close_after_backgrounding() {
         .expect("expected initial terminal-file read");
 
     runtime
-        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
         .await;
     assert!(
         !runtime.mark_background_shell_transport_closed(900).await,
@@ -1094,7 +1094,7 @@ async fn await_shell_reports_running_shell_transport_close() {
         .expect("expected initial terminal-file read");
 
     runtime
-        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
         .await;
     runtime
         .background_shell_stdout("42", "still running\n")
@@ -1157,7 +1157,7 @@ async fn await_shell_uses_terminal_file_after_successful_background_completion()
         .expect("expected initial terminal-file read");
 
     runtime
-        .background_shell_backgrounded(42, 900, "shell-exec", String::new(), String::new())
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
         .await;
     runtime
         .observe_background_task_completion(&pb::BackgroundTaskCompletionAction {
@@ -1173,7 +1173,7 @@ async fn await_shell_uses_terminal_file_after_successful_background_completion()
     let state = runtime.background_shell("42").await.unwrap();
     assert_eq!(
         state.status,
-        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Backgrounded
+        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Completed
     );
 
     let event = codec::client_event(
@@ -1200,6 +1200,247 @@ async fn await_shell_uses_terminal_file_after_successful_background_completion()
     };
     assert!(!completion.result().is_error);
     assert!(completion.result().content.contains("\"exit_code\":0"));
+}
+
+#[tokio::test]
+async fn await_shell_observe_background_task_completion_success_marks_shell_completed() {
+    let runtime = CursorToolRuntime::default();
+    runtime
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
+        .await;
+    runtime
+        .observe_background_task_completion(&pb::BackgroundTaskCompletionAction {
+            completions: vec![pb::BackgroundTaskCompletion {
+                task_id: "42".into(),
+                kind: pb::BackgroundTaskKind::Shell as i32,
+                status: pb::BackgroundTaskStatus::Success as i32,
+                detail: Some("background task completed successfully".into()),
+                ..Default::default()
+            }],
+        })
+        .await;
+
+    let state = runtime.background_shell("42").await.unwrap();
+    assert_eq!(
+        state.status,
+        cursor_server::cursor::tools::runtime::BackgroundShellStatus::Completed,
+        "Success completion must mark the shell as Completed"
+    );
+}
+
+#[tokio::test]
+async fn await_shell_completes_successfully_when_shell_completed_without_exit_code() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-no-exit-code", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(
+            42,
+            None,
+            900,
+            "shell-exec",
+            "output before done\n".into(),
+            String::new(),
+        )
+        .await;
+    // Task hoàn tất thành công qua BackgroundTaskCompletionAction (không có exit_code)
+    runtime
+        .observe_background_task_completion(&pb::BackgroundTaskCompletionAction {
+            completions: vec![pb::BackgroundTaskCompletion {
+                task_id: "42".into(),
+                kind: pb::BackgroundTaskKind::Shell as i32,
+                status: pb::BackgroundTaskStatus::Success as i32,
+                detail: Some("background task completed".into()),
+                ..Default::default()
+            }],
+        })
+        .await;
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content(
+                            "output before done\n".into(),
+                        )),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("completed shell without exit_code must complete AwaitShell immediately")
+    };
+    assert!(
+        !completion.result().is_error,
+        "AwaitShell result must be success, but got error: {}",
+        completion.result().content
+    );
+    let Some(pb::tool_call::Tool::AwaitToolCall(tool)) = completion.tool_call().tool.as_ref()
+    else {
+        panic!("expected AwaitToolCall")
+    };
+    let pb::await_result::Result::Success(success) =
+        tool.result.as_ref().unwrap().result.as_ref().unwrap()
+    else {
+        panic!("expected Await success")
+    };
+    let pb::await_success::AwaitResult::Complete(complete) = success.await_result.as_ref().unwrap()
+    else {
+        panic!("expected AwaitTaskComplete for completed task, even without exit_code")
+    };
+    assert_eq!(complete.task_id, "42");
+    assert_eq!(complete.exit_code, None);
+}
+
+#[tokio::test]
+async fn await_shell_cross_run_shared_state_completes_in_subsequent_run() {
+    let background_shells = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let background_shell_execs =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let background_shell_message_ids =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let next_id = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    // Run 1: Khởi tạo runtime cho Run 1
+    let runtime_run_1 = CursorToolRuntime::with_shared_background_state(
+        next_id.clone(),
+        background_shells.clone(),
+        background_shell_execs.clone(),
+        background_shell_message_ids.clone(),
+    );
+
+    runtime_run_1
+        .background_shell_backgrounded(
+            42,
+            None,
+            900,
+            "shell-exec",
+            "output run 1\n".into(),
+            String::new(),
+        )
+        .await;
+    runtime_run_1
+        .observe_background_task_completion(&pb::BackgroundTaskCompletionAction {
+            completions: vec![pb::BackgroundTaskCompletion {
+                task_id: "42".into(),
+                kind: pb::BackgroundTaskKind::Shell as i32,
+                status: pb::BackgroundTaskStatus::Success as i32,
+                detail: Some("shell finished in run 1".into()),
+                ..Default::default()
+            }],
+        })
+        .await;
+
+    // Run 2: Khởi tạo runtime riêng cho Run 2 (execs/interactions độc lập, nhưng chung background_shells)
+    let runtime_run_2 = CursorToolRuntime::with_shared_background_state(
+        next_id,
+        background_shells,
+        background_shell_execs,
+        background_shell_message_ids,
+    );
+    let dispatcher_run_2 = ToolDispatcher::new(runtime_run_2.clone());
+
+    let mut await_call = call("await-run-2", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher_run_2
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read in Run 2");
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content("output run 1\n".into())),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime_run_2,
+    )
+    .await
+    .unwrap();
+
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("AwaitShell in Run 2 must complete immediately using shared background state")
+    };
+    assert!(!completion.result().is_error);
+    let Some(pb::tool_call::Tool::AwaitToolCall(tool)) = completion.tool_call().tool.as_ref()
+    else {
+        panic!("expected AwaitToolCall in Run 2")
+    };
+    let pb::await_result::Result::Success(success) =
+        tool.result.as_ref().unwrap().result.as_ref().unwrap()
+    else {
+        panic!("expected Await success in Run 2")
+    };
+    let pb::await_success::AwaitResult::Complete(complete) = success.await_result.as_ref().unwrap()
+    else {
+        panic!("expected AwaitTaskComplete in Run 2")
+    };
+    assert_eq!(complete.task_id, "42");
+    assert_eq!(complete.exit_code, None);
 }
 
 #[tokio::test]
@@ -1477,6 +1718,129 @@ async fn provider_tool_use_waits_for_client_result_then_calls_provider_again() {
     };
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0].call_id, "call-1");
+}
+
+#[tokio::test]
+async fn await_shell_completes_on_header_status_succeeded() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-header", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    runtime
+        .background_shell_backgrounded(42, None, 900, "shell-exec", String::new(), String::new())
+        .await;
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content(
+                            "---\nstatus: succeeded\nrunning_for_ms: 120\n---\n".into(),
+                        )),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("header status succeeded must complete AwaitShell immediately")
+    };
+    assert!(!completion.result().is_error);
+    assert!(completion.result().content.contains("\"exit_code\":0"));
+}
+
+#[tokio::test]
+async fn await_shell_completes_on_pid_termination_probe() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut await_call = call("await-pid", "AwaitShell");
+    await_call.arguments = json!({"shell_id": "42", "block_until_ms": 60_000});
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[await_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+    let initial_read = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec.id),
+            _ => None,
+        })
+        .expect("expected initial terminal-file read");
+
+    // PID 99999999 is nonexistent so is_pid_alive returns false
+    runtime
+        .background_shell_backgrounded(42, Some(99999999), 900, "shell-exec", String::new(), String::new())
+        .await;
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: initial_read,
+            message: Some(pb::exec_client_message::Message::ReadResult(
+                pb::ReadResult {
+                    result: Some(pb::read_result::Result::Success(pb::ReadSuccess {
+                        output: Some(pb::read_success::Output::Content(
+                            "---\nstatus: running\nrunning_for_ms: 10\n---\n".into(),
+                        )),
+                        ..Default::default()
+                    })),
+                },
+            )),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("dead PID probe must complete AwaitShell immediately")
+    };
+    assert!(!completion.result().is_error);
+    assert!(completion.result().content.contains("\"exit_code\":0"));
 }
 
 fn client_run() -> pb::AgentClientMessage {

@@ -35,3 +35,4 @@ cursor-tab-server/cursor-tab-server-linux-amd64.tar
 !/scripts/cursor-proto/proto/aiserver_v1.proto
 docs/
 plans/
+.env*

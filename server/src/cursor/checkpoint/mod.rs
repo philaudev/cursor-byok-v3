@@ -65,6 +65,14 @@ impl CheckpointBuilder {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_empty() -> Self {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+        let handle = CursorSessionHandle::test_handle("test");
+        let sync = BlobSynchronizer::new("test".into(), store.clone(), handle);
+        Self::new(store, sync, None, None)
+    }
+
     pub fn configure(
         &mut self,
         model: String,

@@ -38,10 +38,54 @@ impl BackgroundShellStatus {
 #[derive(Clone, Debug)]
 pub struct BackgroundShellState {
     pub shell_id: String,
+    pub pid: Option<u32>,
     pub status: BackgroundShellStatus,
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
+}
+
+#[cfg(windows)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            let error = GetLastError();
+            // If access is denied, the process exists and is alive (we just lack permissions to query).
+            // Otherwise (e.g. ERROR_INVALID_PARAMETER / not found), the PID does not exist.
+            return error == ERROR_ACCESS_DENIED;
+        }
+        let mut exit_code: u32 = 0;
+        let success = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        if success != 0 {
+            exit_code == STILL_ACTIVE as u32
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    let res = unsafe { libc::kill(pid as i32, 0) };
+    if res == 0 {
+        true
+    } else {
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+pub fn is_pid_alive(_pid: u32) -> bool {
+    true
 }
 
 #[derive(Clone, Default)]
@@ -75,6 +119,23 @@ impl CursorToolRuntime {
             background_shells: Arc::new(Mutex::new(HashMap::new())),
             background_shell_execs: Arc::new(Mutex::new(HashMap::new())),
             background_shell_message_ids: Arc::new(Mutex::new(HashMap::new())),
+            interactions: Arc::new(Mutex::new(HashMap::new())),
+            completed: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_shared_background_state(
+        next_id: Arc<AtomicU32>,
+        background_shells: Arc<Mutex<HashMap<String, BackgroundShellState>>>,
+        background_shell_execs: Arc<Mutex<HashMap<String, String>>>,
+        background_shell_message_ids: Arc<Mutex<HashMap<u32, String>>>,
+    ) -> Self {
+        Self {
+            next_id,
+            execs: Arc::new(Mutex::new(HashMap::new())),
+            background_shells,
+            background_shell_execs,
+            background_shell_message_ids,
             interactions: Arc::new(Mutex::new(HashMap::new())),
             completed: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -413,7 +474,7 @@ impl CursorToolRuntime {
                 continue;
             }
             let status = match pb::BackgroundTaskStatus::try_from(completion.status) {
-                Ok(pb::BackgroundTaskStatus::Success) => BackgroundShellStatus::Backgrounded,
+                Ok(pb::BackgroundTaskStatus::Success) => BackgroundShellStatus::Completed,
                 Ok(pb::BackgroundTaskStatus::Error) | Ok(pb::BackgroundTaskStatus::Aborted) => {
                     BackgroundShellStatus::TransportClosed
                 }
@@ -466,6 +527,7 @@ impl CursorToolRuntime {
     pub async fn background_shell_backgrounded(
         &self,
         shell_id: u32,
+        pid: Option<u32>,
         message_id: u32,
         exec_id: &str,
         stdout: String,
@@ -486,6 +548,7 @@ impl CursorToolRuntime {
             .entry(shell_id.clone())
             .or_insert(BackgroundShellState {
                 shell_id,
+                pid,
                 status: BackgroundShellStatus::Backgrounded,
                 stdout,
                 stderr,
@@ -540,6 +603,7 @@ impl CursorToolRuntime {
             .entry(shell_id.to_string())
             .or_insert_with(|| BackgroundShellState {
                 shell_id: shell_id.into(),
+                pid: None,
                 status: BackgroundShellStatus::Running,
                 stdout: String::new(),
                 stderr: String::new(),

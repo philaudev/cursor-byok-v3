@@ -69,6 +69,19 @@ impl CursorSessionHandle {
     pub fn cancellation(&self) -> CancellationToken {
         self.cancellation.clone()
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_handle(request_id: &str) -> Self {
+        let (commands, _receiver) = mpsc::channel(1);
+        Self {
+            request_id: request_id.into(),
+            commands,
+            output: Arc::new(OutputHub::default()),
+            cancellation: CancellationToken::new(),
+            parent: Arc::new(OnceLock::new()),
+            trace: None,
+        }
+    }
     pub fn set_parent(&self, parent: CursorParent) -> Result<()> {
         if parent.request_id.is_empty() || parent.tool_call_id.is_empty() {
             return Err(crate::Error::Protocol(
@@ -157,6 +170,10 @@ struct RegistryInner {
     runs: Mutex<HashMap<String, CursorSessionHandle>>,
     upstream_runs: Mutex<HashMap<String, u64>>,
     next_tool_message_id: Arc<AtomicU32>,
+    background_shells:
+        Arc<Mutex<HashMap<String, crate::cursor::tools::runtime::BackgroundShellState>>>,
+    background_shell_execs: Arc<Mutex<HashMap<String, String>>>,
+    background_shell_message_ids: Arc<Mutex<HashMap<u32, String>>>,
     route_changed: Notify,
     run_registry: RunRegistry,
     store: Store,
@@ -186,6 +203,9 @@ impl CursorSessionRegistry {
                 runs: Mutex::new(HashMap::new()),
                 upstream_runs: Mutex::new(HashMap::new()),
                 next_tool_message_id: Arc::new(AtomicU32::new(0)),
+                background_shells: Arc::new(Mutex::new(HashMap::new())),
+                background_shell_execs: Arc::new(Mutex::new(HashMap::new())),
+                background_shell_message_ids: Arc::new(Mutex::new(HashMap::new())),
                 route_changed: Notify::new(),
                 run_registry,
                 store,
@@ -196,7 +216,12 @@ impl CursorSessionRegistry {
     }
 
     pub(crate) fn tool_runtime(&self) -> CursorToolRuntime {
-        CursorToolRuntime::with_shared_ids(self.inner.next_tool_message_id.clone())
+        CursorToolRuntime::with_shared_background_state(
+            self.inner.next_tool_message_id.clone(),
+            self.inner.background_shells.clone(),
+            self.inner.background_shell_execs.clone(),
+            self.inner.background_shell_message_ids.clone(),
+        )
     }
 
     pub async fn get_or_create(&self, request_id: &str) -> Result<CursorSessionHandle> {

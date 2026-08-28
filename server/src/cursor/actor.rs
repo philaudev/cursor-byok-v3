@@ -267,9 +267,10 @@ impl CursorActor {
                                                 {
                                                     continue;
                                                 }
-                                                if tool_runtime
+                                                let marked_transport_closed = tool_runtime
                                                     .mark_background_shell_transport_closed(close.id)
-                                                    .await
+                                                    .await;
+                                                if marked_transport_closed
                                                 {
                                                     continue;
                                                 }

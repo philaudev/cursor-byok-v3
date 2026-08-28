@@ -105,6 +105,7 @@ pub async fn client_event(
             pending
                 .background_shell_backgrounded(
                     backgrounded.shell_id,
+                    backgrounded.pid.map(|p| p as u32),
                     message.id,
                     &message.exec_id,
                     entry.stdout.clone(),
@@ -316,12 +317,50 @@ async fn advance_await(
             "AwaitShell result reached a non-await execution stage".into(),
         ));
     };
+
+    // Prefer reading the freshest terminal file directly from disk if available,
+    // as Desktop UI RPC may return a stale/cached ReadResult buffer.
+    let disk_content = if !state.output_file_path.is_empty() {
+        std::fs::read_to_string(&state.output_file_path).ok()
+    } else {
+        None
+    };
+
+    let rpc_content = match read.result.as_ref() {
+        Some(pb::read_result::Result::Success(success)) => match success.output.as_ref() {
+            Some(pb::read_success::Output::Content(content)) => content.as_str(),
+            _ => "",
+        },
+        Some(pb::read_result::Result::FileNotFound(_)) => "",
+        Some(pb::read_result::Result::Error(error)) => {
+            tracing::warn!(
+                task_id = %state.task_id,
+                error = %error.error,
+                "advance_await ReadResult error"
+            );
+            return Ok(ClientExecEvent::Completed(Box::new(result::await_error(
+                entry,
+                &error.error,
+            )?)));
+        }
+        _ => "",
+    };
+
+    let content: &str = match &disk_content {
+        Some(disk_str) if !disk_str.is_empty() => disk_str.as_str(),
+        _ => rpc_content,
+    };
+
     let shell_state = registry.background_shell(&state.task_id).await;
     if let Some(shell) = shell_state
         .as_ref()
         .filter(|shell| shell.status.is_terminal())
     {
-        let combined_output = format!("{}{}", shell.stdout, shell.stderr);
+        let combined_output = if !content.is_empty() {
+            content.to_string()
+        } else {
+            format!("{}{}", shell.stdout, shell.stderr)
+        };
         let regex_match = state
             .regex
             .as_ref()
@@ -333,12 +372,18 @@ async fn advance_await(
                     .find(&combined_output)
                     .map(|found| found.as_str().to_string())
             });
-        if let Some(exit_code) = shell.exit_code {
+        let file_exit_code = content.lines().find_map(|line| {
+            line.strip_prefix("exit_code:")
+                .and_then(|value| value.trim().parse::<i32>().ok())
+        });
+        let completed = matches!(shell.status, BackgroundShellStatus::Completed);
+        if completed {
             return Ok(ClientExecEvent::Completed(Box::new(result::await_result(
                 entry,
                 combined_output.len() as u64,
                 regex_match,
-                Some(exit_code),
+                shell.exit_code.or(file_exit_code),
+                true,
             )?)));
         }
         let message = match shell.status {
@@ -354,20 +399,6 @@ async fn advance_await(
             entry, message,
         )?)));
     }
-    let content = match read.result.as_ref() {
-        Some(pb::read_result::Result::Success(success)) => match success.output.as_ref() {
-            Some(pb::read_success::Output::Content(content)) => content.as_str(),
-            _ => "",
-        },
-        Some(pb::read_result::Result::FileNotFound(_)) => "",
-        Some(pb::read_result::Result::Error(error)) => {
-            return Ok(ClientExecEvent::Completed(Box::new(result::await_error(
-                entry,
-                &error.error,
-            )?)))
-        }
-        _ => "",
-    };
     let regex_match = state
         .regex
         .as_ref()
@@ -379,16 +410,61 @@ async fn advance_await(
                 .find(content)
                 .map(|found| found.as_str().to_string())
         });
-    let exit_code = content.lines().find_map(|line| {
+    let mut exit_code = content.lines().find_map(|line| {
         line.strip_prefix("exit_code:")
             .and_then(|value| value.trim().parse::<i32>().ok())
     });
-    if regex_match.is_some() || exit_code.is_some() || std::time::Instant::now() >= state.deadline {
+
+    // Check header status metadata from terminal file (e.g. status: succeeded / status: failed / status: completed)
+    let header_status_completed = content.lines().find_map(|line| {
+        let val = line.strip_prefix("status:")?.trim();
+        if val.eq_ignore_ascii_case("succeeded") || val.eq_ignore_ascii_case("completed") {
+            Some(0)
+        } else if val.eq_ignore_ascii_case("failed") || val.eq_ignore_ascii_case("error") {
+            Some(1)
+        } else {
+            None
+        }
+    });
+
+    if exit_code.is_none() && header_status_completed.is_some() {
+        exit_code = header_status_completed;
+    }
+
+    // Parse PID from terminal header if background shell state doesn't have it
+    let file_pid = content.lines().find_map(|line| {
+        line.strip_prefix("pid:")
+            .and_then(|val| val.trim().parse::<u32>().ok())
+    });
+
+    // PID probing fallback: if file still says running or has no exit code, check if PID has terminated in OS
+    let mut pid_terminated = false;
+    if exit_code.is_none() {
+        let target_pid = shell_state
+            .as_ref()
+            .and_then(|s| s.pid)
+            .or(file_pid);
+
+        if let Some(pid) = target_pid {
+            if !crate::cursor::tools::runtime::is_pid_alive(pid) {
+                pid_terminated = true;
+                exit_code = Some(0);
+            }
+        }
+    }
+
+    if regex_match.is_some()
+        || exit_code.is_some()
+        || header_status_completed.is_some()
+        || pid_terminated
+        || std::time::Instant::now() >= state.deadline
+    {
         return Ok(ClientExecEvent::Completed(Box::new(result::await_result(
             entry,
             content.len() as u64,
             regex_match,
             exit_code,
+            exit_code.is_some() || header_status_completed.is_some() || pid_terminated,
         )?)));
     }
     let state = match entry.stage {
