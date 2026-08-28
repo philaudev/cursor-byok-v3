@@ -192,7 +192,10 @@ async fn completed_parent_allows_background_subagent_run_and_subsequent_parent_w
     assert!(saw_subagent_end, "subagent should finish with END_STREAM");
 
     // Step 3: Cursor IDE sends BackgroundTaskCompletionAction to wake up Parent
-    let parent_wakeup_handle = registry.get_or_create("parent-wakeup-req-id").await.unwrap();
+    let parent_wakeup_handle = registry
+        .get_or_create("parent-wakeup-req-id")
+        .await
+        .unwrap();
     let wakeup_request = pb::AgentClientMessage {
         message: Some(pb::agent_client_message::Message::RunRequest(
             pb::AgentRunRequest {
@@ -211,7 +214,9 @@ async fn completed_parent_allows_background_subagent_run_and_subsequent_parent_w
                                     kind: pb::BackgroundTaskKind::Subagent as i32,
                                     status: pb::BackgroundTaskStatus::Success as i32,
                                     title: "Inspect codebase".into(),
-                                    detail: Some("Subagent finished inspection successfully".into()),
+                                    detail: Some(
+                                        "Subagent finished inspection successfully".into(),
+                                    ),
                                     reason: pb::BackgroundTaskCompletionReason::TaskFinished as i32,
                                     subagent_id: Some("child-parent".into()),
                                     tool_call_id: Some("task-child-parent".into()),
@@ -327,7 +332,10 @@ async fn completed_parent_allows_background_subagent_run_and_subsequent_parent_w
             _ => {}
         }
     }
-    assert!(saw_parent_wakeup_end, "parent wakeup should finish with END_STREAM");
+    assert!(
+        saw_parent_wakeup_end,
+        "parent wakeup should finish with END_STREAM"
+    );
 
     // Step 4: Verify the final Parent checkpoint marks subagent as Success
     let final_checkpoint = final_parent_checkpoint.expect("final parent checkpoint");
@@ -794,7 +802,10 @@ async fn active_parent_stream_held_open_auto_resumes_and_final_checkpoint_is_suc
             _ => {}
         }
     }
-    assert!(saw_parent_stream_end, "parent stream must complete with END_STREAM");
+    assert!(
+        saw_parent_stream_end,
+        "parent stream must complete with END_STREAM"
+    );
     let final_chk = final_parent_checkpoint.expect("final parent checkpoint");
     let final_subagent = final_chk
         .subagent_runs_by_parent_tool_call_id
@@ -806,4 +817,3 @@ async fn active_parent_stream_held_open_auto_resumes_and_final_checkpoint_is_suc
         "final checkpoint status must be Success"
     );
 }
-

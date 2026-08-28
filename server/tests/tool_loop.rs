@@ -770,6 +770,20 @@ async fn new_task_result_exposes_the_subagent_name_and_id_to_the_model() {
         panic!("expected typed Task success")
     };
     assert_eq!(success.agent_id.as_deref(), Some("child-id"));
+    assert_eq!(
+        success.result_suffix.as_deref(),
+        Some("Subagent name: Analyze game logic\nSubagent ID: child-id")
+    );
+    assert_eq!(success.conversation_steps.len(), 1);
+    let Some(pb::conversation_step::Message::AssistantMessage(step)) =
+        success.conversation_steps[0].message.as_ref()
+    else {
+        panic!("expected fallback assistant conversation step")
+    };
+    assert_eq!(
+        step.text,
+        "Subagent name: Analyze game logic\nSubagent ID: child-id"
+    );
 }
 
 #[tokio::test]

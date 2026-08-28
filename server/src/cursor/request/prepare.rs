@@ -159,7 +159,9 @@ pub(crate) async fn prepare(
     let custom_subagent = selected_custom_subagent(request, &request_context);
     let subagent_model_overrides = model::overrides(request)?;
     let subagents_disabled = model::override_for(&subagent_model_overrides, "generalPurpose")
-        .is_some_and(|selection| matches!(selection, crate::model::SubagentModelOverride::Disabled));
+        .is_some_and(|selection| {
+            matches!(selection, crate::model::SubagentModelOverride::Disabled)
+        });
     let mut checkpoint_prompt = compiler.prompt_spec_with_custom_instructions(
         checkpoint_mode,
         &model,
@@ -786,10 +788,12 @@ fn selected_custom_subagent<'a>(
     request: &pb::AgentRunRequest,
     request_context: &'a pb::RequestContext,
 ) -> Option<&'a pb::CustomSubagent> {
-    request
-        .subagent_type_name
-        .as_deref()
-        .and_then(|name| request_context.custom_subagents.iter().find(|agent| agent.name == name))
+    request.subagent_type_name.as_deref().and_then(|name| {
+        request_context
+            .custom_subagents
+            .iter()
+            .find(|agent| agent.name == name)
+    })
 }
 
 fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
@@ -804,7 +808,9 @@ fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
             unknown.into_iter().copied().collect::<Vec<_>>().join(", ")
         )));
     }
-    prompt.tools.retain(|tool| allowed.contains(tool.name.as_str()));
+    prompt
+        .tools
+        .retain(|tool| allowed.contains(tool.name.as_str()));
     Ok(())
 }
 
@@ -830,7 +836,9 @@ fn exec_context(
                 crate::model::SubagentModelOverride::Explicit(model) => {
                     SubagentModel::Model(model.model_id.clone())
                 }
-                crate::model::SubagentModelOverride::Inherit => SubagentModel::Model(model_id.into()),
+                crate::model::SubagentModelOverride::Inherit => {
+                    SubagentModel::Model(model_id.into())
+                }
                 crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
             };
             (name, model)
@@ -838,7 +846,10 @@ fn exec_context(
         .collect();
     let subagent_model = model::override_for(
         overrides,
-        request.subagent_type_name.as_deref().unwrap_or("generalPurpose"),
+        request
+            .subagent_type_name
+            .as_deref()
+            .unwrap_or("generalPurpose"),
     )
     .map(|value| match value {
         crate::model::SubagentModelOverride::Explicit(model) => {

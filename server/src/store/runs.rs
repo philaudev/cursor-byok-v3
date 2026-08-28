@@ -154,10 +154,7 @@ impl Store {
         Ok(run_id.map(RunId))
     }
 
-    pub async fn run_for_cursor_request(
-        &self,
-        cursor_request_id: &str,
-    ) -> Result<Option<RunId>> {
+    pub async fn run_for_cursor_request(&self, cursor_request_id: &str) -> Result<Option<RunId>> {
         let run_id: Option<String> = sqlx::query_scalar(
             "SELECT run_id FROM runs
              WHERE cursor_request_id = ?
@@ -294,15 +291,15 @@ impl Store {
         let parent_run_id: Option<String> = row.get("parent_run_id");
         let parent_tool_call_id: Option<String> = row.get("parent_tool_call_id");
         let subagent_kind: Option<String> = row.get("subagent_kind");
-        let (Some(parent_run_id), Some(parent_tool_call_id)) = (parent_run_id, parent_tool_call_id) else {
+        let (Some(parent_run_id), Some(parent_tool_call_id)) = (parent_run_id, parent_tool_call_id)
+        else {
             return Ok(None);
         };
-        let parent_conversation_id: Option<String> = sqlx::query_scalar(
-            "SELECT conversation_id FROM runs WHERE run_id = ?",
-        )
-        .bind(&parent_run_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let parent_conversation_id: Option<String> =
+            sqlx::query_scalar("SELECT conversation_id FROM runs WHERE run_id = ?")
+                .bind(&parent_run_id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some(parent_conversation_id) = parent_conversation_id else {
             return Ok(None);
         };
@@ -314,34 +311,31 @@ impl Store {
         }))
     }
 
-    pub async fn run_conversation_id(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<ConversationId>> {
-        let conversation_id: Option<String> = sqlx::query_scalar(
-            "SELECT conversation_id FROM runs WHERE run_id = ?",
-        )
-        .bind(run_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn run_conversation_id(&self, run_id: &RunId) -> Result<Option<ConversationId>> {
+        let conversation_id: Option<String> =
+            sqlx::query_scalar("SELECT conversation_id FROM runs WHERE run_id = ?")
+                .bind(run_id.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(conversation_id.map(ConversationId::new))
     }
 
-    pub async fn run_final_assistant_message(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<String>> {
-        let conversation_id: Option<String> = sqlx::query_scalar(
-            "SELECT conversation_id FROM runs WHERE run_id = ?",
-        )
-        .bind(run_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn run_final_assistant_message(&self, run_id: &RunId) -> Result<Option<String>> {
+        let conversation_id: Option<String> =
+            sqlx::query_scalar("SELECT conversation_id FROM runs WHERE run_id = ?")
+                .bind(run_id.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
         let Some(conversation_id) = conversation_id else {
             return Ok(None);
         };
-        let messages = self.load_current_messages(&ConversationId::new(conversation_id)).await?;
-        let last_assistant = messages.iter().rev().find(|m| m.role == crate::model::Role::Assistant);
+        let messages = self
+            .load_current_messages(&ConversationId::new(conversation_id))
+            .await?;
+        let last_assistant = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::model::Role::Assistant);
         Ok(last_assistant.and_then(|m| m.extract_text()))
     }
 }

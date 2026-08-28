@@ -287,10 +287,8 @@ impl CheckpointBuilder {
     pub fn record_background_completions(&mut self, action: &pb::BackgroundTaskCompletionAction) {
         for completion in &action.completions {
             if completion.kind == pb::BackgroundTaskKind::Subagent as i32 {
-                if let Some(tool_call_id) = completion
-                    .tool_call_id
-                    .as_ref()
-                    .filter(|id| !id.is_empty())
+                if let Some(tool_call_id) =
+                    completion.tool_call_id.as_ref().filter(|id| !id.is_empty())
                 {
                     let run_status = match completion.status() {
                         pb::BackgroundTaskStatus::Success => pb::SubagentRunStatus::Success,

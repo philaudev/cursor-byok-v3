@@ -159,7 +159,11 @@ impl RunActor {
         parent_conversation_id: &crate::model::ConversationId,
         parent_tool_call_id: &str,
     ) -> bool {
-        if let Ok(messages) = self.store.load_current_messages(parent_conversation_id).await {
+        if let Ok(messages) = self
+            .store
+            .load_current_messages(parent_conversation_id)
+            .await
+        {
             for message in messages {
                 match &message.content {
                     crate::model::MessageContent::Assistant { tool_calls, .. } => {

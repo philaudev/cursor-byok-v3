@@ -670,10 +670,17 @@ fn kv_ack(id: u32) -> pb::AgentClientMessage {
 async fn subagent_completion_auto_notifies_parent_conversation() {
     let (_directory, store) = fixtures::temp_store().await;
     let provider = fake_provider::FakeProvider::default();
-    provider.push(stop_response("child-model-call", "Subagent task completed successfully."));
+    provider.push(stop_response(
+        "child-model-call",
+        "Subagent task completed successfully.",
+    ));
 
-    let parent_conversation_id = cursor_server::model::ConversationId::new("parent-conversation-auto");
-    let parent_root = store.ensure_conversation(&parent_conversation_id).await.unwrap();
+    let parent_conversation_id =
+        cursor_server::model::ConversationId::new("parent-conversation-auto");
+    let parent_root = store
+        .ensure_conversation(&parent_conversation_id)
+        .await
+        .unwrap();
     let parent_run = cursor_server::model::PreparedRun {
         run_id: cursor_server::model::RunId::new("parent-run-id"),
         cursor_request_id: Some("parent-request-id".into()),
@@ -693,10 +700,22 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
         base_revision_id: parent_root,
     };
     store.claim_run(&parent_run).await.unwrap();
-    store.finish_run(&parent_run.run_id, cursor_server::store::RunStatus::Completed, None, None).await.unwrap();
+    store
+        .finish_run(
+            &parent_run.run_id,
+            cursor_server::store::RunStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-    let child_conversation_id = cursor_server::model::ConversationId::new("child-conversation-auto");
-    let child_root = store.ensure_conversation(&child_conversation_id).await.unwrap();
+    let child_conversation_id =
+        cursor_server::model::ConversationId::new("child-conversation-auto");
+    let child_root = store
+        .ensure_conversation(&child_conversation_id)
+        .await
+        .unwrap();
     let child_run = cursor_server::model::PreparedRun {
         run_id: cursor_server::model::RunId::new("child-run-id"),
         cursor_request_id: Some("child-subagent-id".into()),
@@ -722,14 +741,17 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
     };
 
     let registry = cursor_server::run::RunRegistry::default();
-    let actor = cursor_server::run::RunActor::new(
-        store.clone(),
-        Arc::new(provider),
-        registry,
-    );
+    let actor = cursor_server::run::RunActor::new(store.clone(), Arc::new(provider), registry);
 
     let (port, mut core) = cursor_server::client::session(256);
-    let handle = actor.spawn(child_run, port, core.commands.clone(), tokio_util::sync::CancellationToken::new()).await;
+    let handle = actor
+        .spawn(
+            child_run,
+            port,
+            core.commands.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
     while let Some(event) = core.events.recv().await {
         match event {
@@ -747,18 +769,31 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
     assert_eq!(outcome, cursor_server::run::RunOutcome::Completed);
 
     // Parent conversation in SQLite should now automatically have the background completion message!
-    let parent_messages = store.load_current_messages(&parent_conversation_id).await.unwrap();
-    assert!(!parent_messages.is_empty(), "Parent messages must contain subagent completion");
+    let parent_messages = store
+        .load_current_messages(&parent_conversation_id)
+        .await
+        .unwrap();
+    assert!(
+        !parent_messages.is_empty(),
+        "Parent messages must contain subagent completion"
+    );
     let last = parent_messages.last().unwrap();
-    assert!(last.runtime_event_id.as_deref().unwrap_or_default().contains("task-call-42"));
+    assert!(last
+        .runtime_event_id
+        .as_deref()
+        .unwrap_or_default()
+        .contains("task-call-42"));
     let text = match &last.content {
-        cursor_server::model::MessageContent::Parts { parts } => parts.iter().filter_map(|p| match p {
-            cursor_server::model::ContentPart::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>().join("\n"),
+        cursor_server::model::MessageContent::Parts { parts } => parts
+            .iter()
+            .filter_map(|p| match p {
+                cursor_server::model::ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => String::new(),
     };
     assert!(text.contains("Subagent task completed successfully."));
     assert!(text.contains(FOLLOW_UP));
 }
-

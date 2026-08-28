@@ -1096,8 +1096,7 @@ fn has_pending_background_subagents(messages: &[CanonicalMessage]) -> bool {
             MessageContent::Parts { parts } => {
                 for part in parts {
                     if let ContentPart::Text { text } = part {
-                        if text.contains("<system_notification>")
-                            && text.contains("kind: subagent")
+                        if text.contains("<system_notification>") && text.contains("kind: subagent")
                         {
                             if let Some(event_id) = &message.runtime_event_id {
                                 if let Some(rest) = event_id.strip_prefix(
@@ -1124,7 +1123,9 @@ fn has_pending_background_subagents(messages: &[CanonicalMessage]) -> bool {
         }
     }
 
-    launched_agents.iter().any(|id| !completed_agents.contains(id))
+    launched_agents
+        .iter()
+        .any(|id| !completed_agents.contains(id))
 }
 
 #[cfg(test)]

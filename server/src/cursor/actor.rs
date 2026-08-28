@@ -273,14 +273,26 @@ impl CursorActor {
                                                 {
                                                     continue;
                                                 }
-                                                match codec::stream_closed(close.id, &tool_runtime)
+                                                if tool_runtime
+                                                    .exec_call(close.id)
                                                     .await
+                                                    .is_some_and(|call| call.name.eq_ignore_ascii_case("Task"))
                                                 {
-                                                    Ok(Some(completion)) => {
-                                                        results_tx.send(completion)
+                                                    let _ = codec::stream_closed(close.id, &tool_runtime).await;
+                                                    let runtime = tool_runtime.clone();
+                                                    let delayed_results = results_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        tokio::time::sleep(crate::cursor::tools::codec::NON_STREAMING_CLOSE_GRACE).await;
+                                                        if let Ok(Some(completion)) = crate::cursor::tools::codec::recover_transport_closed(close.id, &runtime).await {
+                                                            let _ = delayed_results.send(completion);
+                                                        }
+                                                    });
+                                                } else {
+                                                    match codec::stream_closed_immediate(close.id, &tool_runtime).await {
+                                                        Ok(Some(completion)) => results_tx.send(completion),
+                                                        Ok(None) => {}
+                                                        Err(error) => results_tx.send_error(error),
                                                     }
-                                                    Ok(None) => {}
-                                                    Err(error) => results_tx.send_error(error),
                                                 }
                                             }
                                             Some(Message::Throw(throw)) => {

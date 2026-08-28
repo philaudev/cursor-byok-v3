@@ -196,23 +196,31 @@ pub(super) fn task(
                     .get("run_in_background")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true);
-            let conversation_steps = if let Some(final_message) = &value.final_message {
-                let trimmed = final_message.trim();
-                if !trimmed.is_empty() {
-                    vec![pb::ConversationStep {
-                        message: Some(pb::conversation_step::Message::AssistantMessage(
-                            pb::AssistantMessage {
-                                text: trimmed.to_string(),
-                                ..Default::default()
-                            },
-                        )),
-                    }]
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
+            let name = call
+                .arguments
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| Error::Protocol("Task call is missing description".into()))?;
+            if value.agent_id.is_empty() {
+                return Err(Error::Protocol("Task result is missing agent_id".into()));
+            }
+            let identity = format!("Subagent name: {name}\nSubagent ID: {}", value.agent_id);
+            let detail = value
+                .final_message
+                .as_deref()
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| identity.clone());
+            let conversation_steps = vec![pb::ConversationStep {
+                message: Some(pb::conversation_step::Message::AssistantMessage(
+                    pb::AssistantMessage {
+                        text: detail.clone(),
+                        ..Default::default()
+                    },
+                )),
+            }];
             Output::Success(pb::TaskSuccess {
                 conversation_steps,
                 agent_id: Some(value.agent_id.clone()),
@@ -220,7 +228,7 @@ pub(super) fn task(
                 duration_ms: Some(
                     crate::cursor::tools::runtime::now_ms().saturating_sub(started_at_ms),
                 ),
-                result_suffix: value.final_message.clone(),
+                result_suffix: Some(detail),
                 background_reason: value.background_reason,
                 transcript_path: value.transcript_path.clone(),
             })
