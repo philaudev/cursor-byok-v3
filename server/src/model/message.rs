@@ -121,6 +121,36 @@ impl CanonicalMessage {
             runtime_event_id: None,
         }
     }
+
+    pub fn extract_text(&self) -> Option<String> {
+        match &self.content {
+            MessageContent::Assistant { text, .. } => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(text.clone())
+                }
+            }
+            MessageContent::Parts { parts } => {
+                let text = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 mod base64_bytes {

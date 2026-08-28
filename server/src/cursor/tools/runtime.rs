@@ -88,6 +88,7 @@ pub(crate) struct PendingExec {
     pub stdout: String,
     pub stderr: String,
     pub stage: ExecStage,
+    pub transport_closed: bool,
 }
 
 pub(crate) enum ExecStage {
@@ -148,7 +149,10 @@ impl ExecContext {
             .get("subagent_type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("generalPurpose");
-        matches!(self.subagent_models.get(subagent_type), Some(SubagentModel::Disabled))
+        matches!(
+            self.subagent_models.get(subagent_type),
+            Some(SubagentModel::Disabled)
+        )
     }
 
     pub fn prepare_call(&self, call: &ToolCall) -> Result<ToolCall> {
@@ -182,12 +186,16 @@ impl ExecContext {
             None => match self.subagent_models.get("explore") {
                 Some(SubagentModel::Model(model)) => model.clone(),
                 _ => match custom_subagent {
-                    Some(agent) if !agent.force_default_model && valid_custom_model(&agent.model) => {
+                    Some(agent)
+                        if !agent.force_default_model && valid_custom_model(&agent.model) =>
+                    {
                         agent.model.clone()
                     }
                     _ => match &self.subagent_model {
                         Some(SubagentModel::Model(model)) => model.clone(),
-                        Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
+                        Some(SubagentModel::Disabled) => {
+                            unreachable!("disabled Task returned above")
+                        }
                         None => arguments
                             .get("model")
                             .and_then(serde_json::Value::as_str)
@@ -361,6 +369,7 @@ impl CursorToolRuntime {
                 stdout: String::new(),
                 stderr: String::new(),
                 stage,
+                transport_closed: false,
             },
         );
         Ok(id)
@@ -547,6 +556,34 @@ impl CursorToolRuntime {
             .map(|entry| entry.call.clone())
     }
 
+    pub(crate) async fn mark_transport_closed(&self, id: u32) -> bool {
+        let mut entries = self.execs.lock().await;
+        let Some(entry) = entries.get_mut(&id) else {
+            return false;
+        };
+        if entry.transport_closed {
+            return false;
+        }
+        entry.transport_closed = true;
+        true
+    }
+
+    pub(crate) async fn take_transport_closed(&self, id: u32) -> Option<PendingExec> {
+        let mut entries = self.execs.lock().await;
+        let should_take = entries.get(&id).is_some_and(|entry| entry.transport_closed);
+        if !should_take {
+            return None;
+        }
+        let pending = entries.remove(&id);
+        drop(entries);
+        if let Some(pending) = &pending {
+            self.completed
+                .lock()
+                .await
+                .insert(id, pending.call.call_id.clone());
+        }
+        pending
+    }
     pub async fn append_stdout(&self, id: u32, data: &str) -> bool {
         let mut entries = self.execs.lock().await;
         let Some(entry) = entries.get_mut(&id) else {
@@ -765,7 +802,10 @@ mod tests {
             ..ExecContext::default()
         };
         let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
-        assert_eq!(context.prepare_call(&call).unwrap().arguments["model"], "advisor-model");
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "advisor-model"
+        );
 
         let context = ExecContext {
             subagent_models: HashMap::from([(
@@ -774,7 +814,10 @@ mod tests {
             )]),
             ..context
         };
-        assert_eq!(context.prepare_call(&call).unwrap().arguments["model"], "explore-model");
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "explore-model"
+        );
 
         let context = ExecContext {
             subagent_models: HashMap::from([(
@@ -783,7 +826,10 @@ mod tests {
             )]),
             ..context
         };
-        assert_eq!(context.prepare_call(&call).unwrap().arguments["model"], "override-model");
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "override-model"
+        );
     }
 
     #[test]
@@ -794,7 +840,12 @@ mod tests {
         };
         let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
         assert!(context.task_disabled(&call));
-        assert!(context.prepare_call(&call).unwrap().arguments.get("model").is_none());
+        assert!(context
+            .prepare_call(&call)
+            .unwrap()
+            .arguments
+            .get("model")
+            .is_none());
     }
 
     #[test]

@@ -95,11 +95,7 @@ impl PromptCompiler {
             .as_deref()
             .unwrap_or(model.model_id.as_str());
         let instructions = self.append_global_rules(self.instructions(mode, fake_model_name)?)?;
-        let instructions = append_custom_instructions(
-            instructions,
-            mode,
-            custom_instructions,
-        );
+        let instructions = append_custom_instructions(instructions, mode, custom_instructions);
         Ok(PromptSpec {
             instructions,
             tools,
@@ -215,16 +211,13 @@ mod tests {
             .unwrap();
         let custom = "Custom subagent instructions.";
         let spec = compiler
-            .prompt_spec_with_custom_instructions(
-                Mode::Subagent,
-                &model,
-                &[],
-                false,
-                Some(custom),
-            )
+            .prompt_spec_with_custom_instructions(Mode::Subagent, &model, &[], false, Some(custom))
             .unwrap();
 
-        assert_eq!(spec.instructions, format!("{}\n\n{}", baseline.instructions, custom));
+        assert_eq!(
+            spec.instructions,
+            format!("{}\n\n{}", baseline.instructions, custom)
+        );
         assert_eq!(spec.tools, baseline.tools);
     }
 
@@ -238,13 +231,7 @@ mod tests {
 
         for custom in [None, Some(""), Some(" \n\t ")] {
             let spec = compiler
-                .prompt_spec_with_custom_instructions(
-                    Mode::Subagent,
-                    &model,
-                    &[],
-                    false,
-                    custom,
-                )
+                .prompt_spec_with_custom_instructions(Mode::Subagent, &model, &[], false, custom)
                 .unwrap();
             assert_eq!(spec, baseline);
         }

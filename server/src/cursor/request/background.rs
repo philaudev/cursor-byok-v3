@@ -219,7 +219,8 @@ mod tests {
         let action = pb::BackgroundTaskCompletionAction {
             completions: vec![completion()],
         };
-        let projection = project_background_completion(&action, pb::AgentMode::Multitask as i32).unwrap();
+        let projection =
+            project_background_completion(&action, pb::AgentMode::Multitask as i32).unwrap();
 
         assert!(projection.context.contains("kind: subagent"));
         assert!(projection.context.contains("agent_id: child-id"));
@@ -238,7 +239,8 @@ mod tests {
         let action = pb::BackgroundTaskCompletionAction {
             completions: vec![shell_completion()],
         };
-        let projection = project_background_completion(&action, pb::AgentMode::Agent as i32).unwrap();
+        let projection =
+            project_background_completion(&action, pb::AgentMode::Agent as i32).unwrap();
 
         assert_eq!(projection.turn_user.text, SHELL_FOLLOW_UP);
         assert_eq!(

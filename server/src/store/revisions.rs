@@ -131,6 +131,36 @@ impl Store {
         Ok(revision)
     }
 
+    pub async fn append_idle_messages(
+        &self,
+        conversation_id: &ConversationId,
+        additions: &[CanonicalMessage],
+    ) -> Result<RevisionId> {
+        if additions.is_empty() {
+            let current = self.ensure_conversation(conversation_id).await?;
+            return Ok(current);
+        }
+        let _write = self.writes.lock().await;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = Self::ensure_conversation_tx(&mut tx, conversation_id).await?;
+        let mut full = Self::load_revision_messages_tx(&mut tx, current.0).await?;
+        full.extend_from_slice(additions);
+        let digest = message_digest(&full)?;
+        let revision =
+            Self::insert_revision_tx(&mut tx, conversation_id, current, additions, digest).await?;
+        sqlx::query(
+            "UPDATE conversations SET current_revision_id = ?, updated_at_ms = ?
+             WHERE conversation_id = ?",
+        )
+        .bind(revision.0)
+        .bind(now_ms())
+        .bind(conversation_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(revision)
+    }
+
     pub async fn append_revision(
         &self,
         conversation_id: &ConversationId,

@@ -9,8 +9,8 @@ use crate::{
         StateCommitted,
     },
     model::{
-        CanonicalMessage, MessageContent, Origin, PreparedRun, Role, RunAction, ToolRoundAssistant,
-        ToolRoundId, Usage,
+        CanonicalMessage, ContentPart, MessageContent, Origin, PreparedRun, Role, RunAction,
+        ToolRoundAssistant, ToolRoundId, Usage,
     },
     provider::Provider,
     store::{RunStatus, Store},
@@ -452,13 +452,14 @@ impl RunEngine {
                     Err(error) => return (RunOutcome::Failed(error.into()), usage),
                 };
                 if !pending_insertions.is_empty() {
+                    let insertions = std::mem::take(&mut pending_insertions);
                     let inserted = match append_insertions(
                         &self.store,
                         prepared,
                         client,
                         cancellation,
                         revision,
-                        pending_insertions,
+                        insertions,
                     )
                     .await
                     {
@@ -472,6 +473,120 @@ impl RunEngine {
                         continue 'model;
                     }
                 }
+                let current_messages = match self.store.load_revision_messages(revision).await {
+                    Ok(messages) => messages,
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                };
+                if has_pending_background_subagents(&current_messages) {
+                    let (barrier, ready) = CommitBarrier::before_continue();
+                    if emit(
+                        client,
+                        ClientEvent::StateCommitted(StateCommitted {
+                            revision_id: revision,
+                            tool_round_version: 0,
+                            cause: CommitCause::FinalTurn,
+                            barrier,
+                        }),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return (client_failure(), usage);
+                    }
+                    if let Err(outcome) = wait_for_state_ready(ready, cancellation).await {
+                        return (outcome, usage);
+                    }
+
+                    loop {
+                        tokio::select! {
+                            _ = cancellation.cancelled() => {
+                                return (RunOutcome::Cancelled, usage);
+                            }
+                            command = client.commands.recv() => {
+                                match command {
+                                    Some(ClientCommand::InsertMessages(insertion)) => {
+                                        pending_insertions.push(insertion);
+                                        break;
+                                    }
+                                    Some(ClientCommand::RuntimeMessage(message)) => {
+                                        let appended = match append_runtime_message(
+                                            &self.store,
+                                            prepared,
+                                            client,
+                                            cancellation,
+                                            revision,
+                                            message,
+                                        )
+                                        .await
+                                        {
+                                            Ok((next, _)) => next,
+                                            Err(outcome) => return (outcome, usage),
+                                        };
+                                        revision = appended;
+                                        continue 'model;
+                                    }
+                                    Some(ClientCommand::RuntimeEvent(event)) => {
+                                        let appended = match append_runtime_message(
+                                            &self.store,
+                                            prepared,
+                                            client,
+                                            cancellation,
+                                            revision,
+                                            event.into_message(),
+                                        )
+                                        .await
+                                        {
+                                            Ok((next, _)) => next,
+                                            Err(outcome) => return (outcome, usage),
+                                        };
+                                        revision = appended;
+                                        continue 'model;
+                                    }
+                                    Some(ClientCommand::Cancel) => {
+                                        return (RunOutcome::Cancelled, usage);
+                                    }
+                                    Some(ClientCommand::ClientClosed { error }) => {
+                                        return (RunOutcome::Failed(RunFailure::Client(error)), usage);
+                                    }
+                                    Some(ClientCommand::ToolResult(_)) => {
+                                        return (
+                                            RunOutcome::Failed(RunFailure::Protocol(
+                                                "received a tool result while waiting for background tasks".into(),
+                                            )),
+                                            usage,
+                                        );
+                                    }
+                                    None => {
+                                        return (client_failure(), usage);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !pending_insertions.is_empty() {
+                        let insertions = std::mem::take(&mut pending_insertions);
+                        let inserted = match append_insertions(
+                            &self.store,
+                            prepared,
+                            client,
+                            cancellation,
+                            revision,
+                            insertions,
+                        )
+                        .await
+                        {
+                            Ok((next, inserted)) => {
+                                revision = next;
+                                inserted
+                            }
+                            Err(outcome) => return (outcome, usage),
+                        };
+                        if inserted {
+                            continue 'model;
+                        }
+                    }
+                }
+
                 let (barrier, ready) = CommitBarrier::before_continue();
                 if emit(
                     client,
@@ -946,6 +1061,71 @@ fn failure_message(failure: &RunFailure) -> String {
         | RunFailure::Store(message)
         | RunFailure::Client(message) => message.clone(),
     }
+}
+
+fn has_pending_background_subagents(messages: &[CanonicalMessage]) -> bool {
+    let mut launched_agents = HashSet::new();
+    let mut completed_agents = HashSet::new();
+
+    for message in messages {
+        match &message.content {
+            MessageContent::Assistant { tool_calls, .. } => {
+                for call in tool_calls {
+                    if call.name == "Task"
+                        && call
+                            .arguments
+                            .get("run_in_background")
+                            .and_then(|v| v.as_bool())
+                            == Some(true)
+                    {
+                        launched_agents.insert(call.call_id.clone());
+                    }
+                }
+            }
+            MessageContent::ToolResult(result) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.content) {
+                    if value.get("is_background").and_then(|v| v.as_bool()) == Some(true) {
+                        launched_agents.insert(result.call_id.clone());
+                    }
+                } else if result.content.contains("\"is_background\":true")
+                    || result.content.contains("\"is_background\": true")
+                {
+                    launched_agents.insert(result.call_id.clone());
+                }
+            }
+            MessageContent::Parts { parts } => {
+                for part in parts {
+                    if let ContentPart::Text { text } = part {
+                        if text.contains("<system_notification>") && text.contains("kind: subagent")
+                        {
+                            if let Some(event_id) = &message.runtime_event_id {
+                                if let Some(rest) = event_id.strip_prefix(
+                                    "background-completed:BACKGROUND_TASK_KIND_SUBAGENT:",
+                                ) {
+                                    if let Some(tool_call_id) = rest.split(':').nth(1) {
+                                        completed_agents.insert(tool_call_id.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(event_id) = &message.runtime_event_id {
+            if let Some(rest) =
+                event_id.strip_prefix("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:")
+            {
+                if let Some(tool_call_id) = rest.split(':').nth(1) {
+                    completed_agents.insert(tool_call_id.to_string());
+                }
+            }
+        }
+    }
+
+    launched_agents
+        .iter()
+        .any(|id| !completed_agents.contains(id))
 }
 
 #[cfg(test)]

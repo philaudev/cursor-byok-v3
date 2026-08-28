@@ -14,6 +14,9 @@ use crate::{
 
 use super::request::{await_read_request, edit_write_request};
 
+pub(crate) const NON_STREAMING_CLOSE_GRACE: std::time::Duration =
+    std::time::Duration::from_millis(1500);
+
 pub enum ClientExecEvent {
     Delta(Box<pb::AgentServerMessage>),
     Message(Box<pb::AgentServerMessage>),
@@ -210,14 +213,48 @@ async fn background_shell_event(
     Ok(ClientExecEvent::Pending)
 }
 
+pub(crate) async fn recover_transport_closed(
+    id: u32,
+    pending: &CursorToolRuntime,
+) -> Result<Option<ToolCompletion>> {
+    let Some(entry) = pending.take_transport_closed(id).await else {
+        return Ok(None);
+    };
+    let error = format!(
+        "{} transport closed before terminal result arrived",
+        entry.call.name
+    );
+    let rendered = match &entry.stage {
+        ExecStage::DynamicMcp(definition) => {
+            interaction::render_dynamic_mcp(&entry.call, definition, false)
+        }
+        _ => interaction::render_tool_call(&entry.call, false)?,
+    };
+    Ok(Some(ToolCompletion::from_rendered(
+        &entry.call,
+        entry.started_at_ms,
+        error,
+        true,
+        rendered,
+    )?))
+}
+
 pub async fn stream_closed(id: u32, pending: &CursorToolRuntime) -> Result<Option<ToolCompletion>> {
     if pending
         .exec_call(id)
         .await
         .is_some_and(|call| call.name.eq_ignore_ascii_case("Task"))
     {
+        pending.mark_transport_closed(id).await;
         return Ok(None);
     }
+    stream_closed_immediate(id, pending).await
+}
+
+pub async fn stream_closed_immediate(
+    id: u32,
+    pending: &CursorToolRuntime,
+) -> Result<Option<ToolCompletion>> {
     let Some(entry) = pending.take_exec(id).await else {
         return Ok(None);
     };
@@ -258,7 +295,7 @@ pub async fn stream_closed(id: u32, pending: &CursorToolRuntime) -> Result<Optio
     Ok(Some(ToolCompletion::from_rendered(
         &entry.call,
         entry.started_at_ms,
-        error.into(),
+        error.to_string(),
         true,
         rendered,
     )?))

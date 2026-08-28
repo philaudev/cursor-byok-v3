@@ -159,7 +159,9 @@ pub(crate) async fn prepare(
     let custom_subagent = selected_custom_subagent(request, &request_context);
     let subagent_model_overrides = model::overrides(request)?;
     let subagents_disabled = model::override_for(&subagent_model_overrides, "generalPurpose")
-        .is_some_and(|selection| matches!(selection, crate::model::SubagentModelOverride::Disabled));
+        .is_some_and(|selection| {
+            matches!(selection, crate::model::SubagentModelOverride::Disabled)
+        });
     let mut checkpoint_prompt = compiler.prompt_spec_with_custom_instructions(
         checkpoint_mode,
         &model,
@@ -345,7 +347,7 @@ pub(crate) async fn prepare(
         };
         RunAction::Resume { pending_tool_round }
     };
-    let kind = run_kind(request.subagent_type_name.as_deref(), parent)?;
+    let kind = run_kind(request.subagent_type_name.as_deref(), parent, checkpoint)?;
     let exec = exec_context(
         request,
         &request_context,
@@ -555,15 +557,22 @@ fn runtime_message_text(message: &CanonicalMessage) -> Result<String> {
     Ok(text.clone())
 }
 
-fn run_kind(subagent_type_name: Option<&str>, parent: Option<(RunId, String)>) -> Result<RunKind> {
+fn run_kind(
+    subagent_type_name: Option<&str>,
+    parent: Option<(RunId, String)>,
+    checkpoint: &CheckpointBuilder,
+) -> Result<RunKind> {
     match (subagent_type_name, parent) {
         (None | Some("side-chat"), _) => Ok(RunKind::Root),
-        (Some(name), Some((parent_run_id, parent_tool_call_id))) => Ok(RunKind::Subagent {
-            parent_run_id,
-            parent_tool_call_id,
-            kind: model::subagent_kind(name),
-            background: false,
-        }),
+        (Some(name), Some((parent_run_id, parent_tool_call_id))) => {
+            let background = checkpoint.is_background_subagent(&parent_tool_call_id);
+            Ok(RunKind::Subagent {
+                parent_run_id,
+                parent_tool_call_id,
+                kind: model::subagent_kind(name),
+                background,
+            })
+        }
         (Some(_), None) => Err(Error::Protocol(
             "subagent Run is missing its parent Run and tool call".into(),
         )),
@@ -779,10 +788,12 @@ fn selected_custom_subagent<'a>(
     request: &pb::AgentRunRequest,
     request_context: &'a pb::RequestContext,
 ) -> Option<&'a pb::CustomSubagent> {
-    request
-        .subagent_type_name
-        .as_deref()
-        .and_then(|name| request_context.custom_subagents.iter().find(|agent| agent.name == name))
+    request.subagent_type_name.as_deref().and_then(|name| {
+        request_context
+            .custom_subagents
+            .iter()
+            .find(|agent| agent.name == name)
+    })
 }
 
 fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
@@ -797,7 +808,9 @@ fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
             unknown.into_iter().copied().collect::<Vec<_>>().join(", ")
         )));
     }
-    prompt.tools.retain(|tool| allowed.contains(tool.name.as_str()));
+    prompt
+        .tools
+        .retain(|tool| allowed.contains(tool.name.as_str()));
     Ok(())
 }
 
@@ -823,7 +836,9 @@ fn exec_context(
                 crate::model::SubagentModelOverride::Explicit(model) => {
                     SubagentModel::Model(model.model_id.clone())
                 }
-                crate::model::SubagentModelOverride::Inherit => SubagentModel::Model(model_id.into()),
+                crate::model::SubagentModelOverride::Inherit => {
+                    SubagentModel::Model(model_id.into())
+                }
                 crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
             };
             (name, model)
@@ -831,7 +846,10 @@ fn exec_context(
         .collect();
     let subagent_model = model::override_for(
         overrides,
-        request.subagent_type_name.as_deref().unwrap_or("generalPurpose"),
+        request
+            .subagent_type_name
+            .as_deref()
+            .unwrap_or("generalPurpose"),
     )
     .map(|value| match value {
         crate::model::SubagentModelOverride::Explicit(model) => {
