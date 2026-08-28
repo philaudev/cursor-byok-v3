@@ -54,6 +54,9 @@ mod tests {
         let mut second = OrderedInbox::default();
 
         assert_eq!(first.push(0, "first-request"), vec![(0, "first-request")]);
-        assert_eq!(second.push(0, "second-request"), vec![(0, "second-request")]);
+        assert_eq!(
+            second.push(0, "second-request"),
+            vec![(0, "second-request")]
+        );
     }
 }

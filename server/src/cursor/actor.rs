@@ -48,7 +48,11 @@ impl CursorActor {
             let (runtime_actions_tx, runtime_actions_rx) = mpsc::unbounded_channel();
             let context_sync =
                 RequestContextSynchronizer::new(handle.clone(), dependencies.store.clone());
-            let tools = ToolDispatcher::with_results(tool_runtime.clone(), results_tx.clone());
+            let tools = ToolDispatcher::with_results(
+                tool_runtime.clone(),
+                results_tx.clone(),
+                dependencies.store.clone(),
+            );
             let mut run_resources = Some((results_rx, runtime_actions_rx, dependencies));
             loop {
                 let command = match receiver.recv().await {
@@ -89,18 +93,23 @@ impl CursorActor {
                                                         .map(|parent| parent.tool_call_id.clone()),
                                                     request.conversation_state.clone(),
                                                 );
+                                                if let Some(pb::conversation_action::Action::BackgroundTaskCompletionAction(action)) =
+                                                    request.action.as_ref().and_then(|a| a.action.as_ref())
+                                                {
+                                                    checkpoint.record_background_completions(action);
+                                                }
                                                 let prepared = async {
                                                     let parent = match handle.parent() {
                                                         Some(parent) => {
                                                             let parent_run_id = dependencies
                                                                 .store
-                                                                .active_run_for_cursor_request(
+                                                                .run_for_cursor_request(
                                                                     &parent.request_id,
                                                                 )
                                                                 .await?
                                                                 .ok_or_else(|| {
                                                                     crate::Error::Protocol(format!(
-                                                                        "Cursor parent request {} has no active local Run",
+                                                                        "Cursor parent request {} has no local Run in store",
                                                                         parent.request_id
                                                                     ))
                                                                 })?;
@@ -264,14 +273,26 @@ impl CursorActor {
                                                 {
                                                     continue;
                                                 }
-                                                match codec::stream_closed(close.id, &tool_runtime)
+                                                if tool_runtime
+                                                    .exec_call(close.id)
                                                     .await
+                                                    .is_some_and(|call| call.name.eq_ignore_ascii_case("Task"))
                                                 {
-                                                    Ok(Some(completion)) => {
-                                                        results_tx.send(completion)
+                                                    let _ = codec::stream_closed(close.id, &tool_runtime).await;
+                                                    let runtime = tool_runtime.clone();
+                                                    let delayed_results = results_tx.clone();
+                                                    tokio::spawn(async move {
+                                                        tokio::time::sleep(crate::cursor::tools::codec::NON_STREAMING_CLOSE_GRACE).await;
+                                                        if let Ok(Some(completion)) = crate::cursor::tools::codec::recover_transport_closed(close.id, &runtime).await {
+                                                            let _ = delayed_results.send(completion);
+                                                        }
+                                                    });
+                                                } else {
+                                                    match codec::stream_closed_immediate(close.id, &tool_runtime).await {
+                                                        Ok(Some(completion)) => results_tx.send(completion),
+                                                        Ok(None) => {}
+                                                        Err(error) => results_tx.send_error(error),
                                                     }
-                                                    Ok(None) => {}
-                                                    Err(error) => results_tx.send_error(error),
                                                 }
                                             }
                                             Some(Message::Throw(throw)) => {
@@ -380,13 +401,12 @@ impl CursorActor {
                                             ),
                                         ) => {
                                             if runtime_actions_tx
-                                                .send(RuntimeAction::BackgroundTaskCompletion(action))
+                                                .send(RuntimeAction::BackgroundTaskCompletion(action.clone()))
                                                 .is_err()
                                             {
-                                                results_tx.send_error(crate::Error::Protocol(
-                                                    "BackgroundTaskCompletionAction arrived without an active Run"
-                                                        .into(),
-                                                ));
+                                                tool_runtime
+                                                    .observe_background_task_completion(&action)
+                                                    .await;
                                             }
                                         }
                                         Some(

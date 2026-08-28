@@ -544,6 +544,9 @@ fn fixture_context() -> pb::RequestContext {
         custom_subagents: vec![pb::CustomSubagent {
             name: "reviewer".into(),
             description: "review code".into(),
+            prompt: "review prompt".into(),
+            model: "review-model".into(),
+            tools: vec!["Read".into()],
             ..Default::default()
         }],
         mcp_meta_tool_options: Some(pb::McpMetaToolOptions {
@@ -566,6 +569,14 @@ fn fixture_context() -> pb::RequestContext {
         }),
         ..Default::default()
     }
+}
+
+#[test]
+fn fixture_custom_subagent_preserves_full_definition() {
+    let agent = fixture_context().custom_subagents.remove(0);
+    assert_eq!(agent.prompt, "review prompt");
+    assert_eq!(agent.model, "review-model");
+    assert_eq!(agent.tools, ["Read".to_string()]);
 }
 
 fn references_for(context: &pb::RequestContext) -> References {

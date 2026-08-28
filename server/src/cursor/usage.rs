@@ -132,8 +132,13 @@ pub(crate) fn breakdown(
         estimated_tokens: easter_egg_tokens as u32,
         character_count: None,
     });
-    let total_used_tokens = (effective_used_tokens.min(u32::MAX as u64) as u32)
-        .max(categories.iter().map(|c| c.estimated_tokens).sum::<u32>().saturating_sub(easter_egg_tokens as u32));
+    let total_used_tokens = (effective_used_tokens.min(u32::MAX as u64) as u32).max(
+        categories
+            .iter()
+            .map(|c| c.estimated_tokens)
+            .sum::<u32>()
+            .saturating_sub(easter_egg_tokens as u32),
+    );
     Ok(pb::PromptTokenBreakdownSnapshot {
         total_used_tokens,
         max_tokens,
@@ -424,9 +429,21 @@ mod tests {
         .unwrap();
 
         assert!(snapshot.total_used_tokens > 0);
-        let rules = snapshot.categories.iter().find(|c| c.id == "rules").unwrap();
-        let skills = snapshot.categories.iter().find(|c| c.id == "skills").unwrap();
-        let system = snapshot.categories.iter().find(|c| c.id == "system_prompt").unwrap();
+        let rules = snapshot
+            .categories
+            .iter()
+            .find(|c| c.id == "rules")
+            .unwrap();
+        let skills = snapshot
+            .categories
+            .iter()
+            .find(|c| c.id == "skills")
+            .unwrap();
+        let system = snapshot
+            .categories
+            .iter()
+            .find(|c| c.id == "system_prompt")
+            .unwrap();
 
         assert!(rules.estimated_tokens > 0);
         assert!(skills.estimated_tokens > 0);

@@ -665,3 +665,135 @@ fn kv_ack(id: u32) -> pb::AgentClientMessage {
         )),
     }
 }
+
+#[tokio::test]
+async fn subagent_completion_auto_notifies_parent_conversation() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(stop_response(
+        "child-model-call",
+        "Subagent task completed successfully.",
+    ));
+
+    let parent_conversation_id =
+        cursor_server::model::ConversationId::new("parent-conversation-auto");
+    let parent_root = store
+        .ensure_conversation(&parent_conversation_id)
+        .await
+        .unwrap();
+    let parent_run = cursor_server::model::PreparedRun {
+        run_id: cursor_server::model::RunId::new("parent-run-id"),
+        cursor_request_id: Some("parent-request-id".into()),
+        conversation_id: parent_conversation_id.clone(),
+        kind: cursor_server::model::RunKind::Root,
+        model: cursor_server::model::ModelSpec::new("parent-model"),
+        prompt: cursor_server::model::PromptSpec {
+            instructions: "You are the parent".into(),
+            tools: Vec::new(),
+        },
+        compaction_prompt: cursor_server::model::PromptSpec {
+            instructions: String::new(),
+            tools: Vec::new(),
+        },
+        initial_messages: Vec::new(),
+        action: cursor_server::model::RunAction::Start,
+        base_revision_id: parent_root,
+    };
+    store.claim_run(&parent_run).await.unwrap();
+    store
+        .finish_run(
+            &parent_run.run_id,
+            cursor_server::store::RunStatus::Completed,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let child_conversation_id =
+        cursor_server::model::ConversationId::new("child-conversation-auto");
+    let child_root = store
+        .ensure_conversation(&child_conversation_id)
+        .await
+        .unwrap();
+    let child_run = cursor_server::model::PreparedRun {
+        run_id: cursor_server::model::RunId::new("child-run-id"),
+        cursor_request_id: Some("child-subagent-id".into()),
+        conversation_id: child_conversation_id.clone(),
+        kind: cursor_server::model::RunKind::Subagent {
+            parent_run_id: parent_run.run_id.clone(),
+            parent_tool_call_id: "task-call-42".into(),
+            kind: cursor_server::model::SubagentKind::GeneralPurpose,
+            background: true,
+        },
+        model: cursor_server::model::ModelSpec::new("child-model"),
+        prompt: cursor_server::model::PromptSpec {
+            instructions: "You are subagent".into(),
+            tools: Vec::new(),
+        },
+        compaction_prompt: cursor_server::model::PromptSpec {
+            instructions: String::new(),
+            tools: Vec::new(),
+        },
+        initial_messages: Vec::new(),
+        action: cursor_server::model::RunAction::Start,
+        base_revision_id: child_root,
+    };
+
+    let registry = cursor_server::run::RunRegistry::default();
+    let actor = cursor_server::run::RunActor::new(store.clone(), Arc::new(provider), registry);
+
+    let (port, mut core) = cursor_server::client::session(256);
+    let handle = actor
+        .spawn(
+            child_run,
+            port,
+            core.commands.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+
+    while let Some(event) = core.events.recv().await {
+        match event {
+            cursor_server::client::ClientEvent::StateCommitted(state) => {
+                state.barrier.complete(Ok(()));
+            }
+            cursor_server::client::ClientEvent::Ended(_) => {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let outcome = handle.await.unwrap();
+    assert_eq!(outcome, cursor_server::run::RunOutcome::Completed);
+
+    // Parent conversation in SQLite should now automatically have the background completion message!
+    let parent_messages = store
+        .load_current_messages(&parent_conversation_id)
+        .await
+        .unwrap();
+    assert!(
+        !parent_messages.is_empty(),
+        "Parent messages must contain subagent completion"
+    );
+    let last = parent_messages.last().unwrap();
+    assert!(last
+        .runtime_event_id
+        .as_deref()
+        .unwrap_or_default()
+        .contains("task-call-42"));
+    let text = match &last.content {
+        cursor_server::model::MessageContent::Parts { parts } => parts
+            .iter()
+            .filter_map(|p| match p {
+                cursor_server::model::ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    assert!(text.contains("Subagent task completed successfully."));
+    assert!(text.contains(FOLLOW_UP));
+}

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   currentAppVersion,
+  hasDockVisibilitySetting,
   hasNativeAppLifecycle,
   readAutostart,
-  readSilentStart,
+  readDesktopSettings,
   writeAutostart,
+  writeDockIconVisibility,
   writeSilentStart,
 } from "../../native/appLifecycle";
 import { updateStore, useUpdateStore } from "../../store/updateStore";
@@ -17,12 +19,14 @@ import styles from "./AppLifecycleSettingsCard.module.scss";
 export function AppLifecycleSettingsCard() {
   const message = useMessage();
   const native = hasNativeAppLifecycle();
+  const dockVisibilitySetting = hasDockVisibilitySetting();
   const { availableVersion, checking, installing } = useUpdateStore();
   const [version, setVersion] = useState("…");
   const [autostart, setAutostart] = useState(false);
   const [loadingAutostart, setLoadingAutostart] = useState(native);
   const [silentStart, setSilentStart] = useState(false);
-  const [loadingSilentStart, setLoadingSilentStart] = useState(native);
+  const [dockIconVisible, setDockIconVisible] = useState(true);
+  const [loadingDesktopSettings, setLoadingDesktopSettings] = useState(native);
 
   useEffect(() => {
     let disposed = false;
@@ -32,10 +36,17 @@ export function AppLifecycleSettingsCard() {
         .then((enabled) => { if (!disposed) setAutostart(enabled); })
         .catch((cause) => message(cause instanceof Error ? cause.message : String(cause)))
         .finally(() => { if (!disposed) setLoadingAutostart(false); });
-      void readSilentStart()
-        .then((silent) => { if (!disposed) setSilentStart(silent); })
+      void readDesktopSettings()
+        .then((settings) => {
+          if (disposed) return;
+          setSilentStart(settings.silent_start);
+          setDockIconVisible(settings.show_dock_icon);
+        })
         .catch(() => {})
-        .finally(() => { if (!disposed) setLoadingSilentStart(false); });
+        .finally(() => {
+          if (disposed) return;
+          setLoadingDesktopSettings(false);
+        });
     }
     return () => { disposed = true; };
   }, [message, native]);
@@ -55,14 +66,27 @@ export function AppLifecycleSettingsCard() {
 
   const toggleSilentStart = async (enabled: boolean) => {
     try {
-      setLoadingSilentStart(true);
+      setLoadingDesktopSettings(true);
       await writeSilentStart(enabled);
-      setSilentStart(await readSilentStart());
+      setSilentStart(enabled);
       message(enabled ? t("已开启静默启动") : t("已关闭静默启动"));
     } catch (cause) {
       message(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setLoadingSilentStart(false);
+      setLoadingDesktopSettings(false);
+    }
+  };
+
+  const toggleDockIcon = async (visible: boolean) => {
+    try {
+      setLoadingDesktopSettings(true);
+      await writeDockIconVisibility(visible);
+      setDockIconVisible(visible);
+      message(visible ? t("已显示 Dock 栏图标") : t("已隐藏 Dock 栏图标"));
+    } catch (cause) {
+      message(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoadingDesktopSettings(false);
     }
   };
 
@@ -103,9 +127,21 @@ export function AppLifecycleSettingsCard() {
       </div>
       <Switch
         checked={silentStart}
-        disabled={!native || loadingSilentStart}
+        disabled={!native || loadingDesktopSettings}
         label={t("静默启动")}
         onChange={(enabled) => void toggleSilentStart(enabled)}
+      />
+    </div>}
+    {dockVisibilitySetting && <div className={styles.row}>
+      <div>
+        <strong>{t("在 Dock 栏显示")}</strong>
+        <small>{t("关闭后隐藏 Dock 栏图标，仍可通过菜单栏图标打开应用。")}</small>
+      </div>
+      <Switch
+        checked={dockIconVisible}
+        disabled={loadingDesktopSettings}
+        label={t("在 Dock 栏显示")}
+        onChange={(visible) => void toggleDockIcon(visible)}
       />
     </div>}
     <div className={styles.row}>

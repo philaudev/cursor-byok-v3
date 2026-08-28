@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import appIcon from "../../src-tauri/icons/32x32.png";
 import { currentAppVersion } from "../native/appLifecycle";
-import type { DesktopPlatform } from "./AppFrame";
+import type { DesktopPlatform } from "../native/platform";
 import { WindowControls } from "./WindowControls";
 import styles from "./AppHeader.module.scss";
 

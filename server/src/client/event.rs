@@ -13,10 +13,16 @@ pub enum CommitCause {
         assistant: ToolRoundAssistant,
         calls: Vec<ToolCall>,
     },
-    ToolResult { call_id: String },
+    ToolResult {
+        call_id: String,
+    },
     FinalTurn,
-    Compaction { summary: String },
-    RuntimeEvent { event_id: String },
+    Compaction {
+        summary: String,
+    },
+    RuntimeEvent {
+        event_id: String,
+    },
 }
 
 #[derive(Debug)]

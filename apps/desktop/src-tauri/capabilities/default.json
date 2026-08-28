@@ -17,6 +17,7 @@
     "core:window:allow-is-maximized",
     "core:window:allow-close",
     "allow-open-compaction-prompt",
+    "core:app:allow-set-dock-visibility",
     "allow-open-terminal-with-command",
     "clipboard-manager:allow-write-text",
     "autostart:default",

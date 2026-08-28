@@ -1,5 +1,6 @@
 import type { ModelInput, ModelType } from "../../api";
 import { defaultCustomHeadersText } from "../../utils/modelDefaults";
+import { modelPresets, presetEndpoint, trimTrailingSlash, type ModelPreset } from "../../utils/modelPresets";
 import { Button } from "../ui/Button";
 import { Checkbox } from "../ui/Checkbox";
 import { FormField, SecretTextInput, TextInput } from "../ui/FormControls";
@@ -7,6 +8,7 @@ import { JsonEditor } from "../ui/JsonEditor";
 import { Combobox, Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { claudeIcon, openAiIcon } from "../ui/icons";
+import { CursorPresetChips } from "./CursorPresetChips";
 import styles from "./CursorSettings.module.scss";
 
 export type CursorModelDraft = {
@@ -53,13 +55,64 @@ export function CursorModelEditor({ draft, modelOptions, discovering, onChange, 
   onDiscover: () => void;
 }) {
   const setModel = (patch: Partial<ModelInput>) => onChange({ ...draft, model: { ...draft.model, ...patch } });
-  const setType = (type: ModelType) => setModel({
-    type,
-    openai_endpoint: type === "openai" ? draft.model.openai_endpoint || "/v1/responses" : "",
-    anthropic_thinking_effort: type === "anthropic" ? draft.model.anthropic_thinking_effort || "xhigh" : null,
-  });
+  const setType = (type: ModelType) => {
+    // 切换协议类型时，若当前地址命中某预设的另一协议端点，自动换到该预设对应协议的端点，
+    // 避免出现「类型是 Anthropic、URL 却是 OpenAI chat/completions」的错配
+    const other: ModelType = type === "anthropic" ? "openai" : "anthropic";
+    const preset = modelPresets.find((candidate) => trimTrailingSlash(presetEndpoint(candidate, other).baseUrl) === trimTrailingSlash(draft.model.base_url.trim()));
+    const endpoint = preset ? presetEndpoint(preset, type) : null;
+    onChange({
+      ...draft,
+      model: {
+        ...draft.model,
+        type,
+        ...(endpoint ? {
+          base_url: endpoint.baseUrl,
+          use_full_url: endpoint.useFullUrl,
+          custom_headers_enabled: endpoint.customHeaders !== null,
+          custom_headers: endpoint.customHeaders ? { ...endpoint.customHeaders } : {},
+        } : {}),
+        openai_endpoint: type === "openai" ? (endpoint?.openaiEndpoint || draft.model.openai_endpoint || "/v1/responses") : "",
+        anthropic_thinking_effort: type === "anthropic" ? draft.model.anthropic_thinking_effort || "xhigh" : null,
+      },
+      customHeadersText: endpoint?.customHeaders ? JSON.stringify(endpoint.customHeaders, null, 2) : draft.customHeadersText,
+    });
+  };
   const numberValue = (value: string) => value === "" ? null : Math.trunc(Number(value));
   const canDiscover = Boolean(draft.model.base_url.trim() && draft.model.api_key.trim());
+  // 选中预设后，把该服务商已知的模型 id 并入下拉，方便直接选（仍可用「获取模型」发现）
+  const presetModelOptions = modelPresets
+    .filter((preset) => trimTrailingSlash(presetEndpoint(preset, draft.model.type).baseUrl) === trimTrailingSlash(draft.model.base_url.trim()))
+    .flatMap((preset) => preset.models.map((item) => item.model_id));
+  const combinedOptions = [...new Set([...modelOptions, ...presetModelOptions])];
+  const applyPreset = (preset: ModelPreset) => {
+    const endpoint = presetEndpoint(preset, draft.model.type);
+    const first = preset.models[0];
+    // 切到别家服务商时清空 API Key（不同家的 Key 不能串用）；同一家内切换协议则保留
+    const currentBase = trimTrailingSlash(draft.model.base_url.trim());
+    const sameProvider = [preset.endpoints.anthropic, preset.endpoints.openai]
+      .some((candidate) => trimTrailingSlash(candidate.baseUrl) === currentBase);
+    onChange({
+      ...draft,
+      model: {
+        ...draft.model,
+        base_url: endpoint.baseUrl,
+        use_full_url: endpoint.useFullUrl,
+        openai_endpoint: draft.model.type === "openai" ? endpoint.openaiEndpoint : draft.model.openai_endpoint,
+        custom_headers_enabled: endpoint.customHeaders !== null,
+        custom_headers: endpoint.customHeaders ? { ...endpoint.customHeaders } : {},
+        api_key: sameProvider ? draft.model.api_key : "",
+        model_id: first?.model_id ?? draft.model.model_id,
+        display_name: first?.display_name ?? draft.model.display_name,
+        tooltip_data: !draft.model.tooltip_data.trim() || draft.model.tooltip_data === t("备注") ? preset.name : draft.model.tooltip_data,
+        context_window_tokens: first?.context_window_tokens ?? draft.model.context_window_tokens,
+        ...(draft.model.type === "openai"
+          ? { max_completion_tokens: first?.max_output_tokens ?? draft.model.max_completion_tokens }
+          : { anthropic_max_tokens: first?.max_output_tokens ?? draft.model.anthropic_max_tokens }),
+      },
+      customHeadersText: endpoint.customHeaders ? JSON.stringify(endpoint.customHeaders, null, 2) : draft.customHeadersText,
+    });
+  };
   const requestUrlPlaceholder = draft.model.use_full_url
     ? draft.model.type === "anthropic"
       ? "https://api.anthropic.com/v1/messages"
@@ -71,6 +124,7 @@ export function CursorModelEditor({ draft, modelOptions, discovering, onChange, 
       : "https://api.openai.com";
 
   return <div className={styles.editor}>
+    <CursorPresetChips type={draft.model.type} baseUrl={draft.model.base_url} onPick={applyPreset} />
     <div className={styles.grid}>
       <FormField label={t("模型类型")}><Select ariaLabel={t("模型类型")} value={draft.model.type} options={[
         { value: "openai", label: "OpenAI", icon: openAiIcon },
@@ -87,7 +141,7 @@ export function CursorModelEditor({ draft, modelOptions, discovering, onChange, 
       </div>
       <FormField label="API Key" hint={t("访问模型服务所需的密钥。")}> <SecretTextInput placeholder="sk-xxxxxx" autoComplete="off" value={draft.model.api_key} onChange={(event) => setModel({ api_key: event.target.value })} /></FormField>
 
-      <FormField label={t("模型名称")} hint={t("可以直接输入模型标识，也可以读取接口返回的模型列表。")}> <Combobox value={draft.model.model_id} options={modelOptions} placeholder="gpt-5" append={<Button className={styles.discoverButton} disabled={discovering || !canDiscover} onClick={onDiscover}>{discovering ? t("获取中…") : t("获取模型")}</Button>} onChange={(model_id) => setModel({ model_id, display_name: draft.model.display_name || model_id })} /></FormField>
+      <FormField label={t("模型名称")} hint={t("可以直接输入模型标识，也可以读取接口返回的模型列表。")}> <Combobox value={draft.model.model_id} options={combinedOptions} placeholder="gpt-5" append={<Button className={styles.discoverButton} disabled={discovering || !canDiscover} onClick={onDiscover}>{discovering ? t("获取中…") : t("获取模型")}</Button>} onChange={(model_id) => setModel({ model_id, display_name: draft.model.display_name || model_id })} /></FormField>
       <FormField label={t("显示名称")} hint={t("仅用于界面展示，不会改变发送给模型服务的模型名称。")}> <TextInput placeholder={t("例如：主力模型")} value={draft.model.display_name} onChange={(event) => setModel({ display_name: event.target.value })} /></FormField>
       <FormField className={styles.fullWidth} label={t("备注")} hint={t("显示在 Cursor 模型说明中。")}> <TextInput placeholder={t("请输入模型备注")} value={draft.model.tooltip_data} onChange={(event) => setModel({ tooltip_data: event.target.value })} /></FormField>
 

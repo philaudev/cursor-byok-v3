@@ -88,6 +88,7 @@ pub(crate) struct PendingExec {
     pub stdout: String,
     pub stderr: String,
     pub stage: ExecStage,
+    pub transport_closed: bool,
 }
 
 pub(crate) enum ExecStage {
@@ -111,6 +112,8 @@ pub struct ExecContext {
     pub root_conversation_id: String,
     pub default_subagent_model: String,
     pub subagent_model: Option<SubagentModel>,
+    pub subagent_models: HashMap<String, SubagentModel>,
+    pub custom_subagents: Vec<pb::CustomSubagent>,
     pub allow_subagents: bool,
     pub subagents_disabled: bool,
     pub terminals_folder: String,
@@ -138,7 +141,18 @@ impl ExecContext {
         if !call.name.eq_ignore_ascii_case("Task") {
             return false;
         }
-        self.subagents_disabled || matches!(self.subagent_model, Some(SubagentModel::Disabled))
+        if self.subagents_disabled || matches!(self.subagent_model, Some(SubagentModel::Disabled)) {
+            return true;
+        }
+        let subagent_type = call
+            .arguments
+            .get("subagent_type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("generalPurpose");
+        matches!(
+            self.subagent_models.get(subagent_type),
+            Some(SubagentModel::Disabled)
+        )
     }
 
     pub fn prepare_call(&self, call: &ToolCall) -> Result<ToolCall> {
@@ -162,15 +176,35 @@ impl ExecContext {
         if self.task_disabled(&prepared) {
             return Ok(prepared);
         }
-        let model = match &self.subagent_model {
+        let custom_subagent = self
+            .custom_subagents
+            .iter()
+            .find(|agent| agent.name == subagent_type);
+        let model = match self.subagent_models.get(subagent_type) {
             Some(SubagentModel::Model(model)) => model.clone(),
-            Some(SubagentModel::Disabled) => unreachable!("disabled Task returned above"),
-            None => arguments
-                .get("model")
-                .and_then(serde_json::Value::as_str)
-                .filter(|model| *model != "inherit")
-                .unwrap_or(&self.default_subagent_model)
-                .to_string(),
+            Some(SubagentModel::Disabled) => return Ok(prepared),
+            None => match self.subagent_models.get("explore") {
+                Some(SubagentModel::Model(model)) => model.clone(),
+                _ => match custom_subagent {
+                    Some(agent)
+                        if !agent.force_default_model && valid_custom_model(&agent.model) =>
+                    {
+                        agent.model.clone()
+                    }
+                    _ => match &self.subagent_model {
+                        Some(SubagentModel::Model(model)) => model.clone(),
+                        Some(SubagentModel::Disabled) => {
+                            unreachable!("disabled Task returned above")
+                        }
+                        None => arguments
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|model| *model != "inherit")
+                            .unwrap_or(&self.default_subagent_model)
+                            .to_string(),
+                    },
+                },
+            },
         };
         if model.is_empty() {
             return Err(Error::Protocol(format!(
@@ -184,6 +218,10 @@ impl ExecContext {
             .insert("model".into(), serde_json::Value::String(model));
         Ok(prepared)
     }
+}
+
+fn valid_custom_model(value: &str) -> bool {
+    !value.trim().is_empty() && value != "inherit"
 }
 
 fn normalize_shell_block_until_ms(call: &mut ToolCall) -> Result<()> {
@@ -331,6 +369,7 @@ impl CursorToolRuntime {
                 stdout: String::new(),
                 stderr: String::new(),
                 stage,
+                transport_closed: false,
             },
         );
         Ok(id)
@@ -517,6 +556,34 @@ impl CursorToolRuntime {
             .map(|entry| entry.call.clone())
     }
 
+    pub(crate) async fn mark_transport_closed(&self, id: u32) -> bool {
+        let mut entries = self.execs.lock().await;
+        let Some(entry) = entries.get_mut(&id) else {
+            return false;
+        };
+        if entry.transport_closed {
+            return false;
+        }
+        entry.transport_closed = true;
+        true
+    }
+
+    pub(crate) async fn take_transport_closed(&self, id: u32) -> Option<PendingExec> {
+        let mut entries = self.execs.lock().await;
+        let should_take = entries.get(&id).is_some_and(|entry| entry.transport_closed);
+        if !should_take {
+            return None;
+        }
+        let pending = entries.remove(&id);
+        drop(entries);
+        if let Some(pending) = &pending {
+            self.completed
+                .lock()
+                .await
+                .insert(id, pending.call.call_id.clone());
+        }
+        pending
+    }
     pub async fn append_stdout(&self, id: u32, data: &str) -> bool {
         let mut entries = self.execs.lock().await;
         let Some(entry) = entries.get_mut(&id) else {
@@ -721,6 +788,64 @@ mod tests {
             context.prepare_call(&call).unwrap().arguments["model"],
             "child-model"
         );
+    }
+
+    #[test]
+    fn custom_subagent_model_and_named_override_take_precedence() {
+        let context = ExecContext {
+            default_subagent_model: "parent-model".into(),
+            custom_subagents: vec![pb::CustomSubagent {
+                name: "advisor".into(),
+                model: "advisor-model".into(),
+                ..Default::default()
+            }],
+            ..ExecContext::default()
+        };
+        let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "advisor-model"
+        );
+
+        let context = ExecContext {
+            subagent_models: HashMap::from([(
+                "explore".into(),
+                SubagentModel::Model("explore-model".into()),
+            )]),
+            ..context
+        };
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "explore-model"
+        );
+
+        let context = ExecContext {
+            subagent_models: HashMap::from([(
+                "advisor".into(),
+                SubagentModel::Model("override-model".into()),
+            )]),
+            ..context
+        };
+        assert_eq!(
+            context.prepare_call(&call).unwrap().arguments["model"],
+            "override-model"
+        );
+    }
+
+    #[test]
+    fn disabled_named_subagent_is_not_prepared() {
+        let context = ExecContext {
+            subagent_models: HashMap::from([("advisor".into(), SubagentModel::Disabled)]),
+            ..ExecContext::default()
+        };
+        let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
+        assert!(context.task_disabled(&call));
+        assert!(context
+            .prepare_call(&call)
+            .unwrap()
+            .arguments
+            .get("model")
+            .is_none());
     }
 
     #[test]

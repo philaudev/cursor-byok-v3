@@ -161,6 +161,25 @@ impl CheckpointBuilder {
         presentation: &PresentationDelta,
     ) -> Result<pb::ConversationStateStructure> {
         self.record_background_subagents(presentation);
+        for message in messages {
+            if let Some(event_id) = &message.runtime_event_id {
+                if let Some(rest) =
+                    event_id.strip_prefix("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:")
+                {
+                    if let Some(tool_call_id) = rest.split(':').nth(1) {
+                        if let Some(state) = self
+                            .base
+                            .subagent_runs_by_parent_tool_call_id
+                            .get_mut(tool_call_id)
+                        {
+                            state.status = pb::SubagentRunStatus::Success as i32;
+                            state.completed_timestamp_ms =
+                                Some(crate::cursor::tools::runtime::now_ms());
+                        }
+                    }
+                }
+            }
+        }
         let root_ids = self.project_roots(messages).await?;
         let turn_ids = self.project_turns(mode, presentation).await?;
         let (todo_ids, plan_id) = self.build_derived_state(messages).await?;
@@ -253,7 +272,7 @@ impl CheckpointBuilder {
                     parent_tool_call_id: tool_call_id.clone(),
                     subagent_id: Some(agent_id.clone()),
                     environment: args.environment,
-                    status: pb::SubagentRunStatus::Backgrounded as i32,
+                    status: pb::SubagentRunStatus::Running as i32,
                     title: Some(args.description.clone()),
                     detail: success.result_suffix.clone(),
                     transcript_path: success.transcript_path.clone(),
@@ -263,6 +282,42 @@ impl CheckpointBuilder {
                 },
             );
         }
+    }
+
+    pub fn record_background_completions(&mut self, action: &pb::BackgroundTaskCompletionAction) {
+        for completion in &action.completions {
+            if completion.kind == pb::BackgroundTaskKind::Subagent as i32 {
+                if let Some(tool_call_id) =
+                    completion.tool_call_id.as_ref().filter(|id| !id.is_empty())
+                {
+                    let run_status = match completion.status() {
+                        pb::BackgroundTaskStatus::Success => pb::SubagentRunStatus::Success,
+                        pb::BackgroundTaskStatus::Error => pb::SubagentRunStatus::Error,
+                        pb::BackgroundTaskStatus::Aborted => pb::SubagentRunStatus::Aborted,
+                        _ => pb::SubagentRunStatus::Success,
+                    };
+                    if let Some(state) = self
+                        .base
+                        .subagent_runs_by_parent_tool_call_id
+                        .get_mut(tool_call_id)
+                    {
+                        state.status = run_status as i32;
+                        if let Some(detail) = &completion.detail {
+                            state.detail = Some(detail.clone());
+                        }
+                        state.completed_timestamp_ms =
+                            Some(crate::cursor::tools::runtime::now_ms());
+                        state.completion_reason = Some(completion.reason);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn is_background_subagent(&self, tool_call_id: &str) -> bool {
+        self.base
+            .subagent_runs_by_parent_tool_call_id
+            .contains_key(tool_call_id)
     }
 
     pub async fn publish(

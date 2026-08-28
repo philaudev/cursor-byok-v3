@@ -9,8 +9,8 @@ use crate::{
         StateCommitted,
     },
     model::{
-        CanonicalMessage, MessageContent, Origin, PreparedRun, Role, RunAction, ToolRoundAssistant,
-        ToolRoundId, Usage,
+        CanonicalMessage, ContentPart, MessageContent, Origin, PreparedRun, Role, RunAction,
+        ToolRoundAssistant, ToolRoundId, Usage,
     },
     provider::Provider,
     store::{RunStatus, Store},
@@ -452,13 +452,14 @@ impl RunEngine {
                     Err(error) => return (RunOutcome::Failed(error.into()), usage),
                 };
                 if !pending_insertions.is_empty() {
+                    let insertions = std::mem::take(&mut pending_insertions);
                     let inserted = match append_insertions(
                         &self.store,
                         prepared,
                         client,
                         cancellation,
                         revision,
-                        pending_insertions,
+                        insertions,
                     )
                     .await
                     {
@@ -472,6 +473,120 @@ impl RunEngine {
                         continue 'model;
                     }
                 }
+                let current_messages = match self.store.load_revision_messages(revision).await {
+                    Ok(messages) => messages,
+                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                };
+                if has_pending_background_subagents(&current_messages) {
+                    let (barrier, ready) = CommitBarrier::before_continue();
+                    if emit(
+                        client,
+                        ClientEvent::StateCommitted(StateCommitted {
+                            revision_id: revision,
+                            tool_round_version: 0,
+                            cause: CommitCause::FinalTurn,
+                            barrier,
+                        }),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return (client_failure(), usage);
+                    }
+                    if let Err(outcome) = wait_for_state_ready(ready, cancellation).await {
+                        return (outcome, usage);
+                    }
+
+                    loop {
+                        tokio::select! {
+                            _ = cancellation.cancelled() => {
+                                return (RunOutcome::Cancelled, usage);
+                            }
+                            command = client.commands.recv() => {
+                                match command {
+                                    Some(ClientCommand::InsertMessages(insertion)) => {
+                                        pending_insertions.push(insertion);
+                                        break;
+                                    }
+                                    Some(ClientCommand::RuntimeMessage(message)) => {
+                                        let appended = match append_runtime_message(
+                                            &self.store,
+                                            prepared,
+                                            client,
+                                            cancellation,
+                                            revision,
+                                            message,
+                                        )
+                                        .await
+                                        {
+                                            Ok((next, _)) => next,
+                                            Err(outcome) => return (outcome, usage),
+                                        };
+                                        revision = appended;
+                                        continue 'model;
+                                    }
+                                    Some(ClientCommand::RuntimeEvent(event)) => {
+                                        let appended = match append_runtime_message(
+                                            &self.store,
+                                            prepared,
+                                            client,
+                                            cancellation,
+                                            revision,
+                                            event.into_message(),
+                                        )
+                                        .await
+                                        {
+                                            Ok((next, _)) => next,
+                                            Err(outcome) => return (outcome, usage),
+                                        };
+                                        revision = appended;
+                                        continue 'model;
+                                    }
+                                    Some(ClientCommand::Cancel) => {
+                                        return (RunOutcome::Cancelled, usage);
+                                    }
+                                    Some(ClientCommand::ClientClosed { error }) => {
+                                        return (RunOutcome::Failed(RunFailure::Client(error)), usage);
+                                    }
+                                    Some(ClientCommand::ToolResult(_)) => {
+                                        return (
+                                            RunOutcome::Failed(RunFailure::Protocol(
+                                                "received a tool result while waiting for background tasks".into(),
+                                            )),
+                                            usage,
+                                        );
+                                    }
+                                    None => {
+                                        return (client_failure(), usage);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !pending_insertions.is_empty() {
+                        let insertions = std::mem::take(&mut pending_insertions);
+                        let inserted = match append_insertions(
+                            &self.store,
+                            prepared,
+                            client,
+                            cancellation,
+                            revision,
+                            insertions,
+                        )
+                        .await
+                        {
+                            Ok((next, inserted)) => {
+                                revision = next;
+                                inserted
+                            }
+                            Err(outcome) => return (outcome, usage),
+                        };
+                        if inserted {
+                            continue 'model;
+                        }
+                    }
+                }
+
                 let (barrier, ready) = CommitBarrier::before_continue();
                 if emit(
                     client,
@@ -720,22 +835,82 @@ fn estimate_context_tokens(
     prompt: &crate::model::PromptSpec,
     messages: &[CanonicalMessage],
 ) -> u64 {
-    let serialized = serde_json::to_string(&(prompt, messages)).unwrap_or_default();
-    estimate_serialized_tokens(&serialized)
+    let mut total = estimate_prompt_tokens(prompt);
+    total = total.saturating_add(estimate_message_tokens(messages));
+    total
+}
+
+fn estimate_prompt_tokens(prompt: &crate::model::PromptSpec) -> u64 {
+    let mut total = estimate_text_tokens(&prompt.instructions);
+    for tool in &prompt.tools {
+        let serialized = serde_json::to_string(tool).unwrap_or_default();
+        total = total.saturating_add(estimate_text_tokens(&serialized));
+    }
+    total
 }
 
 fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u64 {
-    let serialized = serde_json::to_string(messages).unwrap_or_default();
-    estimate_serialized_tokens(&serialized)
+    let mut total = 0_u64;
+    for message in messages {
+        total = total.saturating_add(8); // estimatedTokensPerMessageOverhead
+        match &message.content {
+            crate::model::MessageContent::Parts { parts } => {
+                for part in parts {
+                    match part {
+                        crate::model::ContentPart::Text { text } => {
+                            total = total.saturating_add(estimate_text_tokens(text));
+                        }
+                        crate::model::ContentPart::Image { .. } => {
+                            total = total.saturating_add(1024);
+                        }
+                    }
+                }
+            }
+            crate::model::MessageContent::Assistant {
+                text,
+                thinking,
+                tool_calls,
+                ..
+            } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+                total = total.saturating_add(estimate_text_tokens(thinking));
+                for call in tool_calls {
+                    total = total.saturating_add(6); // estimatedTokensPerToolCallOverhead
+                    total = total.saturating_add(estimate_text_tokens(&call.name));
+                    let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
+                    total = total.saturating_add(estimate_text_tokens(&arguments));
+                }
+            }
+            crate::model::MessageContent::ToolResult(result) => {
+                total = total.saturating_add(estimate_text_tokens(&result.content));
+                for part in &result.provider_parts {
+                    match part {
+                        crate::model::ContentPart::Text { text } => {
+                            total = total.saturating_add(estimate_text_tokens(text));
+                        }
+                        crate::model::ContentPart::Image { .. } => {
+                            total = total.saturating_add(1024);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    total
 }
 
-fn estimate_serialized_tokens(serialized: &str) -> u64 {
-    serialized
-        .chars()
-        .fold(0_u64, |units, character| {
-            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
-        })
-        .div_ceil(1_000)
+fn estimate_text_tokens(text: &str) -> u64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+    let char_count = trimmed.chars().count() as u64;
+    if char_count == 0 {
+        return 0;
+    }
+    let newlines = trimmed.chars().filter(|&c| c == '\n').count() as u64;
+    let estimated = ((char_count + 3) / 4).saturating_add(newlines);
+    estimated.max(1)
 }
 
 fn fallback_summary(messages: &[CanonicalMessage]) -> String {
@@ -888,6 +1063,71 @@ fn failure_message(failure: &RunFailure) -> String {
     }
 }
 
+fn has_pending_background_subagents(messages: &[CanonicalMessage]) -> bool {
+    let mut launched_agents = HashSet::new();
+    let mut completed_agents = HashSet::new();
+
+    for message in messages {
+        match &message.content {
+            MessageContent::Assistant { tool_calls, .. } => {
+                for call in tool_calls {
+                    if call.name == "Task"
+                        && call
+                            .arguments
+                            .get("run_in_background")
+                            .and_then(|v| v.as_bool())
+                            == Some(true)
+                    {
+                        launched_agents.insert(call.call_id.clone());
+                    }
+                }
+            }
+            MessageContent::ToolResult(result) => {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.content) {
+                    if value.get("is_background").and_then(|v| v.as_bool()) == Some(true) {
+                        launched_agents.insert(result.call_id.clone());
+                    }
+                } else if result.content.contains("\"is_background\":true")
+                    || result.content.contains("\"is_background\": true")
+                {
+                    launched_agents.insert(result.call_id.clone());
+                }
+            }
+            MessageContent::Parts { parts } => {
+                for part in parts {
+                    if let ContentPart::Text { text } = part {
+                        if text.contains("<system_notification>") && text.contains("kind: subagent")
+                        {
+                            if let Some(event_id) = &message.runtime_event_id {
+                                if let Some(rest) = event_id.strip_prefix(
+                                    "background-completed:BACKGROUND_TASK_KIND_SUBAGENT:",
+                                ) {
+                                    if let Some(tool_call_id) = rest.split(':').nth(1) {
+                                        completed_agents.insert(tool_call_id.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(event_id) = &message.runtime_event_id {
+            if let Some(rest) =
+                event_id.strip_prefix("background-completed:BACKGROUND_TASK_KIND_SUBAGENT:")
+            {
+                if let Some(tool_call_id) = rest.split(':').nth(1) {
+                    completed_agents.insert(tool_call_id.to_string());
+                }
+            }
+        }
+    }
+
+    launched_agents
+        .iter()
+        .any(|id| !completed_agents.contains(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -967,7 +1207,7 @@ mod tests {
 
         assert_eq!(
             estimate_context_tokens(&prepared.prompt, &messages),
-            190_813
+            174_683
         );
         assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
     }
@@ -980,7 +1220,7 @@ mod tests {
             "runtime:current",
             Role::User,
             Origin::Runtime,
-            "x".repeat(190_000),
+            "x".repeat(210_000),
         );
         let messages = vec![old_history, current_runtime.clone()];
         let prepared = PreparedRun {

@@ -75,6 +75,16 @@ pub fn subagent_kind(value: &str) -> SubagentKind {
     }
 }
 
+pub fn override_for<'a>(
+    overrides: &'a [(SubagentKind, SubagentModelOverride)],
+    subagent_type: &str,
+) -> Option<&'a SubagentModelOverride> {
+    let kind = subagent_kind(subagent_type);
+    overrides
+        .iter()
+        .find_map(|(candidate, selection)| (candidate == &kind).then_some(selection))
+}
+
 fn from_requested(
     model: &pb::RequestedModel,
     details: Option<&pb::ModelDetails>,
@@ -234,6 +244,36 @@ mod tests {
             &overrides[2],
             (SubagentKind::Named(name), SubagentModelOverride::Disabled) if name == "shell"
         ));
+    }
+
+    #[test]
+    fn override_for_matches_only_the_requested_subagent_type() {
+        let request = pb::AgentRunRequest {
+            subagent_model_overrides: vec![
+                pb::SubagentModelOverride {
+                    subagent_type: "advisor".into(),
+                    selection: Some(pb::subagent_model_override::Selection::Model(requested(
+                        "advisor-model",
+                        &[],
+                    ))),
+                },
+                pb::SubagentModelOverride {
+                    subagent_type: "planner".into(),
+                    selection: Some(pb::subagent_model_override::Selection::Disabled(true)),
+                },
+            ],
+            ..Default::default()
+        };
+        let values = overrides(&request).unwrap();
+        assert!(matches!(
+            override_for(&values, "advisor"),
+            Some(SubagentModelOverride::Explicit(model)) if model.model_id == "advisor-model"
+        ));
+        assert!(matches!(
+            override_for(&values, "planner"),
+            Some(SubagentModelOverride::Disabled)
+        ));
+        assert!(override_for(&values, "explore").is_none());
     }
 
     #[test]

@@ -166,7 +166,11 @@ pub async fn get_teams(
     Extension(upstream): Extension<proxy::CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    forward_or(upstream, request, || proto(Empty {})).await
+    forward_or(upstream, request, || empty()).await
+}
+
+fn empty() -> Result<Response<Body>> {
+    proto(Empty {})
 }
 
 pub async fn get_user_profile(

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use uuid::Uuid;
@@ -156,13 +156,13 @@ pub(crate) async fn prepare(
         configured_model.configure(&mut model);
     }
     let dynamic = context::dynamic_mcp(request, &request_context)?;
+    let custom_subagent = selected_custom_subagent(request, &request_context);
     let subagent_model_overrides = model::overrides(request)?;
-    let subagents_disabled = subagent_model_overrides
-        .first()
-        .is_some_and(|(_, selection)| {
+    let subagents_disabled = model::override_for(&subagent_model_overrides, "generalPurpose")
+        .is_some_and(|selection| {
             matches!(selection, crate::model::SubagentModelOverride::Disabled)
         });
-    let mut checkpoint_prompt = compiler.prompt_spec(
+    let mut checkpoint_prompt = compiler.prompt_spec_with_custom_instructions(
         checkpoint_mode,
         &model,
         &dynamic
@@ -170,7 +170,11 @@ pub(crate) async fn prepare(
             .map(|(_, definition)| definition.clone())
             .collect::<Vec<_>>(),
         request.suppress_subagent_progress_update_tool == Some(true),
+        custom_subagent.map(|agent| agent.prompt.as_str()),
     )?;
+    if let Some(agent) = custom_subagent.filter(|agent| !agent.tools.is_empty()) {
+        restrict_tools(&mut checkpoint_prompt, &agent.tools)?;
+    }
     if subagents_disabled {
         checkpoint_prompt.tools.retain(|tool| tool.name != "Task");
     }
@@ -343,7 +347,7 @@ pub(crate) async fn prepare(
         };
         RunAction::Resume { pending_tool_round }
     };
-    let kind = run_kind(request.subagent_type_name.as_deref(), parent)?;
+    let kind = run_kind(request.subagent_type_name.as_deref(), parent, checkpoint)?;
     let exec = exec_context(
         request,
         &request_context,
@@ -382,9 +386,13 @@ pub(crate) async fn prepare(
 }
 
 fn needs_history_restore(
-    _state: Option<&pb::ConversationStateStructure>,
+    state: Option<&pb::ConversationStateStructure>,
     root_message_count: usize,
 ) -> bool {
+    let has_summary = state.and_then(|state| state.summary.as_ref()).is_some();
+    if has_summary {
+        return false;
+    }
     root_message_count <= 1
 }
 
@@ -549,15 +557,22 @@ fn runtime_message_text(message: &CanonicalMessage) -> Result<String> {
     Ok(text.clone())
 }
 
-fn run_kind(subagent_type_name: Option<&str>, parent: Option<(RunId, String)>) -> Result<RunKind> {
+fn run_kind(
+    subagent_type_name: Option<&str>,
+    parent: Option<(RunId, String)>,
+    checkpoint: &CheckpointBuilder,
+) -> Result<RunKind> {
     match (subagent_type_name, parent) {
         (None | Some("side-chat"), _) => Ok(RunKind::Root),
-        (Some(name), Some((parent_run_id, parent_tool_call_id))) => Ok(RunKind::Subagent {
-            parent_run_id,
-            parent_tool_call_id,
-            kind: model::subagent_kind(name),
-            background: false,
-        }),
+        (Some(name), Some((parent_run_id, parent_tool_call_id))) => {
+            let background = checkpoint.is_background_subagent(&parent_tool_call_id);
+            Ok(RunKind::Subagent {
+                parent_run_id,
+                parent_tool_call_id,
+                kind: model::subagent_kind(name),
+                background,
+            })
+        }
         (Some(_), None) => Err(Error::Protocol(
             "subagent Run is missing its parent Run and tool call".into(),
         )),
@@ -769,6 +784,36 @@ pub(super) fn mode_from_proto(mode: i32) -> Result<Mode> {
     }
 }
 
+fn selected_custom_subagent<'a>(
+    request: &pb::AgentRunRequest,
+    request_context: &'a pb::RequestContext,
+) -> Option<&'a pb::CustomSubagent> {
+    request.subagent_type_name.as_deref().and_then(|name| {
+        request_context
+            .custom_subagents
+            .iter()
+            .find(|agent| agent.name == name)
+    })
+}
+
+fn restrict_tools(prompt: &mut PromptSpec, allowed: &[String]) -> Result<()> {
+    let allowed = allowed.iter().map(String::as_str).collect::<HashSet<_>>();
+    let unknown = allowed
+        .iter()
+        .filter(|name| !prompt.tools.iter().any(|tool| tool.name == **name))
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(Error::Protocol(format!(
+            "custom subagent declares unavailable tools: {}",
+            unknown.into_iter().copied().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    prompt
+        .tools
+        .retain(|tool| allowed.contains(tool.name.as_str()));
+    Ok(())
+}
+
 fn exec_context(
     request: &pb::AgentRunRequest,
     request_context: &pb::RequestContext,
@@ -780,7 +825,33 @@ fn exec_context(
         crate::model::SubagentModelOverride,
     )],
 ) -> ExecContext {
-    let subagent_model = overrides.first().map(|(_, value)| match value {
+    let subagent_models = overrides
+        .iter()
+        .map(|(kind, selection)| {
+            let name = match kind {
+                crate::model::SubagentKind::GeneralPurpose => "generalPurpose".to_string(),
+                crate::model::SubagentKind::Named(name) => name.clone(),
+            };
+            let model = match selection {
+                crate::model::SubagentModelOverride::Explicit(model) => {
+                    SubagentModel::Model(model.model_id.clone())
+                }
+                crate::model::SubagentModelOverride::Inherit => {
+                    SubagentModel::Model(model_id.into())
+                }
+                crate::model::SubagentModelOverride::Disabled => SubagentModel::Disabled,
+            };
+            (name, model)
+        })
+        .collect();
+    let subagent_model = model::override_for(
+        overrides,
+        request
+            .subagent_type_name
+            .as_deref()
+            .unwrap_or("generalPurpose"),
+    )
+    .map(|value| match value {
         crate::model::SubagentModelOverride::Explicit(model) => {
             SubagentModel::Model(model.model_id.clone())
         }
@@ -795,6 +866,8 @@ fn exec_context(
             .unwrap_or_else(|| conversation_id.to_string()),
         default_subagent_model: model_id.into(),
         subagent_model,
+        subagent_models,
+        custom_subagents: request_context.custom_subagents.clone(),
         allow_subagents: request.subagent_type_name.is_none() && !subagents_disabled,
         subagents_disabled,
         terminals_folder: request_context
@@ -820,7 +893,8 @@ mod tests {
         };
 
         assert!(!needs_history_restore(Some(&compacted), 2));
-        assert!(needs_history_restore(Some(&compacted), 1));
+        assert!(!needs_history_restore(Some(&compacted), 1));
+        assert!(needs_history_restore(None, 1));
     }
 
     #[test]
