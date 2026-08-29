@@ -180,6 +180,28 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
     ))
 }
 
+pub(crate) fn await_read_request(
+    id: u32,
+    call: &ToolCall,
+    context: &ExecContext,
+) -> Result<pb::AgentServerMessage> {
+    let shell_id = call
+        .arguments
+        .get("shell_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Protocol("AwaitShell is missing shell_id".into()))?;
+    Ok(server_message(
+        id,
+        call,
+        pb::exec_server_message::Message::ReadArgs(pb::ReadArgs {
+            path: format!("{}/{}.txt", context.terminals_folder.trim_end_matches('/'), shell_id),
+            tool_call_id: call.call_id.clone(),
+            ..Default::default()
+        }),
+        Some(true),
+    ))
+}
+
 pub(crate) fn edit_read_request(id: u32, call: &ToolCall) -> Result<pb::AgentServerMessage> {
     Ok(server_message(
         id,
@@ -190,32 +212,6 @@ pub(crate) fn edit_read_request(id: u32, call: &ToolCall) -> Result<pb::AgentSer
             ..Default::default()
         }),
         Some(true),
-    ))
-}
-
-pub(crate) fn await_read_request(
-    id: u32,
-    call: &ToolCall,
-    context: &ExecContext,
-) -> Result<pb::AgentServerMessage> {
-    let task_id = call
-        .arguments
-        .get("shell_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Protocol("AwaitShell is missing shell_id".into()))?;
-    Ok(server_message(
-        id,
-        call,
-        pb::exec_server_message::Message::ReadArgs(pb::ReadArgs {
-            path: format!(
-                "{}/{}.txt",
-                context.terminals_folder.trim_end_matches('/'),
-                task_id
-            ),
-            tool_call_id: call.call_id.clone(),
-            ..Default::default()
-        }),
-        Some(false),
     ))
 }
 

@@ -1,9 +1,10 @@
 use crate::Result;
 use axum::{extract::State, Json};
+use serde::Deserialize;
 
 use crate::store::{
     DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage,
-    TabSettings,
+    StatisticsStorageScope, TabSettings,
 };
 
 use super::{ControlService, ObservabilitySettings};
@@ -36,8 +37,20 @@ pub async fn get_storage(State(service): State<ControlService>) -> Result<Json<S
 
 pub async fn clear_storage(
     State(service): State<ControlService>,
+    input: Option<Json<ClearStorageInput>>,
 ) -> Result<Json<StatisticsStorage>> {
-    Ok(Json(service.clear_statistics_storage().await?))
+    let scope = input.map(|Json(input)| input.scope).unwrap_or_default();
+    let storage = match scope {
+        StatisticsStorageScope::Details => service.clear_statistics_storage().await?,
+        StatisticsStorageScope::All => service.clear_all_statistics_storage().await?,
+    };
+    Ok(Json(storage))
+}
+
+#[derive(Deserialize)]
+pub struct ClearStorageInput {
+    #[serde(default)]
+    pub scope: StatisticsStorageScope,
 }
 
 pub async fn get_proxy(State(service): State<ControlService>) -> Result<Json<ProxySettings>> {

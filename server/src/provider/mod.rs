@@ -4,6 +4,7 @@ mod normalize;
 mod openai_chat;
 mod openai_responses;
 mod recorder;
+mod retry;
 mod router;
 
 use std::pin::Pin;

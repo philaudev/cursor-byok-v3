@@ -21,7 +21,7 @@ use crate::{
     store::Store,
 };
 
-use super::{inbox::OrderedInbox, CursorCommand, CursorSessionHandle};
+use super::{inbox::OrderedInbox, lifecycle, CursorCommand, CursorSessionHandle};
 
 pub struct CursorActor;
 
@@ -58,13 +58,14 @@ impl CursorActor {
                 let command = match receiver.recv().await {
                     Some(command) => command,
                     None => {
-                        handle.cancel();
+                        lifecycle::cancel(&handle).ok();
                         break;
                     }
                 };
                 match command {
                     CursorCommand::Abort => {
-                        handle.cancel();
+                        handle.mark_conversation_cancelled();
+                        lifecycle::cancel(&handle).ok();
                     }
                     CursorCommand::Finished => {
                         break;
@@ -76,6 +77,24 @@ impl CursorActor {
                                     Some(pb::agent_client_message::Message::RunRequest(
                                         request,
                                     )) => {
+                                        if let Some(conversation_id) =
+                                            request.conversation_id.as_deref()
+                                        {
+                                            if let Err(error) =
+                                                handle.set_conversation_id(conversation_id)
+                                            {
+                                                tracing::error!(
+                                                    request_id = handle.request_id(),
+                                                    %error,
+                                                    "invalid Cursor conversation id"
+                                                );
+                                                let _ =
+                                                    crate::cursor::lifecycle::fail(&handle, &error);
+                                                let _ =
+                                                    handle.command(CursorCommand::Finished).await;
+                                                return;
+                                            }
+                                        }
                                         if let Some((results, runtime_actions, dependencies)) =
                                             run_resources.take()
                                         {
@@ -309,6 +328,10 @@ impl CursorActor {
                                                 {
                                                     continue;
                                                 }
+                                                if tool_runtime.is_interrupted(throw.id).await {
+                                                    tool_runtime.discard_exec(throw.id).await;
+                                                    continue;
+                                                }
                                                 match tool_runtime.take_exec(throw.id).await {
                                                     Some(pending) => results_tx.send_error(
                                                         crate::Error::Protocol(format!(
@@ -376,9 +399,24 @@ impl CursorActor {
                                         ),
                                     ) => match action.action {
                                         Some(
-                                            pb::conversation_action::Action::UserMessageAction(_),
-                                        )
-                                        | Some(pb::conversation_action::Action::CancelAction(_)) => {
+                                            pb::conversation_action::Action::UserMessageAction(
+                                                action,
+                                            ),
+                                        ) => {
+                                            if runtime_actions_tx
+                                                .send(RuntimeAction::UserMessage(
+                                                    action,
+                                                ))
+                                                .is_err()
+                                            {
+                                                results_tx.send_error(crate::Error::Protocol(
+                                                    "UserMessageAction arrived without an active Run"
+                                                        .into(),
+                                                ));
+                                            }
+                                        }
+                                        Some(pb::conversation_action::Action::CancelAction(_)) => {
+                                            handle.mark_conversation_cancelled();
                                             handle.cancel();
                                         }
                                         Some(
@@ -387,7 +425,7 @@ impl CursorActor {
                                             ),
                                         ) => {
                                             if runtime_actions_tx
-                                                .send(RuntimeAction::InjectContext(action))
+                                                .send(RuntimeAction::Inject(action))
                                                 .is_err()
                                             {
                                                 results_tx.send_error(crate::Error::Protocol(
@@ -402,7 +440,7 @@ impl CursorActor {
                                             ),
                                         ) => {
                                             if runtime_actions_tx
-                                                .send(RuntimeAction::BackgroundTaskCompletion(action.clone()))
+                                                                                                .send(RuntimeAction::BackgroundTaskCompletion(action.clone()))
                                                 .is_err()
                                             {
                                                 tool_runtime

@@ -13,9 +13,7 @@ pub enum CommitCause {
         assistant: ToolRoundAssistant,
         calls: Vec<ToolCall>,
     },
-    ToolResult {
-        call_id: String,
-    },
+    ToolResult { call_id: String, interrupted: bool },
     FinalTurn,
     Compaction {
         summary: String,

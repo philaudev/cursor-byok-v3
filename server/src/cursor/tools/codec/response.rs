@@ -28,6 +28,12 @@ pub async fn client_event(
     message: &pb::ExecClientMessage,
     pending: &CursorToolRuntime,
 ) -> Result<ClientExecEvent> {
+    if pending.is_interrupted(message.id).await {
+        if message.message.as_ref().is_some_and(is_terminal) {
+            pending.discard_exec(message.id).await;
+        }
+        return Ok(ClientExecEvent::Pending);
+    }
     let call = match pending.exec_call(message.id).await {
         Some(call) => call,
         None if pending
@@ -241,6 +247,10 @@ pub(crate) async fn recover_transport_closed(
 }
 
 pub async fn stream_closed(id: u32, pending: &CursorToolRuntime) -> Result<Option<ToolCompletion>> {
+    if pending.is_interrupted(id).await {
+        pending.discard_exec(id).await;
+        return Ok(None);
+    }
     if pending
         .exec_call(id)
         .await
@@ -488,6 +498,22 @@ async fn advance_await(
     Ok(ClientExecEvent::Message(Box::new(await_read_request(
         id, &call, &context,
     )?)))
+}
+
+fn is_terminal(message: &pb::exec_client_message::Message) -> bool {
+    use pb::{exec_client_message::Message, shell_stream::Event};
+
+    match message {
+        Message::ShellStream(stream) => matches!(
+            stream.event.as_ref(),
+            Some(Event::Exit(_))
+                | Some(Event::Backgrounded(_))
+                | Some(Event::Rejected(_))
+                | Some(Event::PermissionDenied(_))
+                | Some(Event::SandboxUnsupported(_))
+        ),
+        _ => true,
+    }
 }
 
 async fn advance_edit(

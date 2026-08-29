@@ -88,6 +88,11 @@ export function CallTable({ calls, onDetails }: { calls: LlmCall[]; onDetails: (
       render: (call) => milliseconds(call.ttfb_ms),
     },
     {
+      key: "ttfr",
+      header: "TTFR",
+      render: (call) => milliseconds(call.ttfr_ms),
+    },
+    {
       key: "ttft",
       header: "TTFT",
       render: (call) => milliseconds(call.ttft_ms),

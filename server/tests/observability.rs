@@ -225,6 +225,7 @@ async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
     assert_eq!(call.request_url, format!("http://{address}/proxy/generate"));
     assert_eq!(call.total_tokens, Some(12));
     assert!(call.ttfb_ms.is_some());
+    assert!(call.ttfr_ms.is_some());
     assert!(call.ttft_ms.is_some());
     let request = store.llm_call_request("call-1").await.unwrap().unwrap();
     assert_eq!(request.body["model"], "actual-model");

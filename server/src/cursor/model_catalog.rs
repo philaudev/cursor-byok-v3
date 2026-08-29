@@ -387,7 +387,7 @@ fn model_parameters(contexts: &[(String, String)]) -> Vec<ModelParameterDefiniti
             is_cycleable_by_hotkey: Some(false),
         },
         ModelParameterDefinition {
-            id: "effort".into(),
+            id: "reasoning".into(),
             name: "Effort".into(),
             markdown_tooltip: Some("Effort the model uses to generate its response.".into()),
             parameter_type: Some(ModelParameterType {
@@ -478,7 +478,7 @@ fn model_variant(
                 value: context.into(),
             },
             ModelParameterValue {
-                id: "effort".into(),
+                id: "reasoning".into(),
                 value: effort.into(),
             },
             ModelParameterValue {
@@ -493,7 +493,7 @@ fn model_variant(
         tooltip_data: Some(model_tooltip(model)),
         display_name_outside_picker: Some(display_name),
         variant_string_representation: Some(format!(
-            "{}[context={context},effort={effort},fast={fast}]",
+            "{}[context={context},reasoning={effort},fast={fast}]",
             model.model_hash
         )),
         legacy_slug: Some(format!(
@@ -615,12 +615,12 @@ mod tests {
             custom_context.display_name.as_deref(),
             Some("272K (Custom)")
         );
-        let effort = mapped
+        let reasoning = mapped
             .parameter_definitions
             .iter()
-            .find(|parameter| parameter.id == "effort")
+            .find(|parameter| parameter.id == "reasoning")
             .unwrap();
-        assert!(effort
+        assert!(reasoning
             .parameter_type
             .as_ref()
             .unwrap()
@@ -642,7 +642,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             default.variant_string_representation.as_deref(),
-            Some("33ceed20[context=200k,effort=high,fast=false]")
+            Some("33ceed20[context=200k,reasoning=high,fast=false]")
+        );
+        assert_eq!(
+            default
+                .parameter_values
+                .iter()
+                .map(|parameter| parameter.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["context", "reasoning", "fast"]
         );
         assert_eq!(mapped.vendor.unwrap().display_name, "Cursor");
         assert!(usable_model(&model).thinking_details.is_some());

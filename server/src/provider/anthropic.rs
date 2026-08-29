@@ -11,8 +11,10 @@ use crate::{
 };
 
 use super::{
-    merge_extra_params, recorder::recorded_headers, CallRecorder, FinishReason, ModelEvent,
-    Provider, ProviderStream,
+    merge_extra_params,
+    recorder::recorded_headers,
+    retry::{send_with_retry, Attempt, RetryPolicy},
+    CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
 };
 
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 65_000;
@@ -49,40 +51,57 @@ impl Provider for AnthropicProvider {
         let recorder = self.recorder.clone();
         Box::pin(try_stream! {
             let ModelInvocation { call_id, request, .. } = invocation;
-            let messages = anthropic_messages(&request.history)?;
+            let mut messages = anthropic_messages(&request.history)?;
+            mark_cache_breakpoint(&mut messages);
+            let system = if request.prompt.instructions.is_empty() {
+                Value::String(String::new())
+            } else {
+                json!([{
+                    "type": "text",
+                    "text": request.prompt.instructions,
+                    "cache_control": {"type": "ephemeral"}
+                }])
+            };
             let max_tokens = request.model.max_output_tokens.or(config.max_output_tokens)
                 .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
             let mut body = json!({
-                "model": request.model.model_id, "system": request.prompt.instructions, "messages": messages,
-                "max_tokens": max_tokens, "stream": true,
-                "tools": request.prompt.tools.iter().map(|tool| json!({
-                    "name": tool.name, "description": tool.description, "input_schema": tool.parameters
-                })).collect::<Vec<_>>()
+                "model": request.model.model_id, "system": system, "messages": messages,
+                "max_tokens": max_tokens, "stream": true
             });
+            if !request.prompt.tools.is_empty() {
+                let tool_count = request.prompt.tools.len();
+                body["tools"] = json!(request.prompt.tools.iter().enumerate().map(|(index, tool)| {
+                    let mut value = json!({
+                        "name": tool.name, "description": tool.description, "input_schema": tool.parameters
+                    });
+                    if index + 1 == tool_count {
+                        value["cache_control"] = json!({"type": "ephemeral"});
+                    }
+                    value
+                }).collect::<Vec<_>>());
+            }
             apply_model(&mut body, &request.model)?;
             merge_extra_params(&mut body, &request.model.extra_params)?;
+            let request_headers = recorded_headers(
+                &config,
+                &[("content-type", "application/json"), ("anthropic-version", "2023-06-01")],
+            );
             if let Some(recorder) = &recorder {
-                recorder.request(recorded_headers(&config, &[("content-type", "application/json"), ("anthropic-version", "2023-06-01")]), &body).await?;
+                recorder.request(request_headers.clone(), &body).await?;
             }
-            let request = client.post(&config.request_url)
-                .header("x-api-key", &config.api_key).header("anthropic-version", "2023-06-01")
-                .headers(config.custom_headers.clone())
-                .json(&body).send();
-            let response = tokio::select! {
-                _ = cancellation.cancelled() => return,
-                response = request => response,
-            };
-            let response = response?;
-            if let Some(recorder) = &recorder {
-                recorder.response_headers(response.status().as_u16()).await?;
-            }
-            if !response.status().is_success() {
-                let status = response.status(); let bytes = response.bytes().await?;
-                if let Some(recorder) = &recorder { recorder.response_chunk(&bytes).await?; }
-                let text = String::from_utf8_lossy(&bytes);
-                Err(Error::Provider(format!("Anthropic {status}: {text}")))?;
-                return;
-            }
+            let attempt = send_with_retry(
+                "Anthropic",
+                || client.post(&config.request_url)
+                    .header("x-api-key", &config.api_key).header("anthropic-version", "2023-06-01")
+                    .headers(config.custom_headers.clone())
+                    .json(&body),
+                RetryPolicy::default(),
+                &cancellation,
+                recorder.as_ref(),
+                request_headers,
+                &body,
+            ).await?;
+            let Attempt::Response(response) = attempt else { return };
             yield ModelEvent::Start { model_call_id: call_id };
             let chunk_recorder = recorder.clone();
             let chunks = response.bytes_stream()
@@ -370,6 +389,29 @@ fn anthropic_messages(messages: &[ProjectedMessage]) -> Result<Vec<Value>> {
         }
     }
     Ok(output)
+}
+
+fn mark_cache_breakpoint(messages: &mut [Value]) {
+    let Some(message) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+    else {
+        return;
+    };
+    let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in content.iter_mut().rev() {
+        let kind = block.get("type").and_then(Value::as_str);
+        if !matches!(kind, Some("text" | "image" | "tool_result")) {
+            continue;
+        }
+        if let Some(block) = block.as_object_mut() {
+            block.insert("cache_control".into(), json!({"type": "ephemeral"}));
+            return;
+        }
+    }
 }
 
 fn anthropic_parts(role: &Role, parts: &[ContentPart]) -> Result<Vec<Value>> {

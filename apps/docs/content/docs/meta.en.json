@@ -1,0 +1,5 @@
+{
+  "title": "User Guide",
+  "root": true,
+  "pages": ["index", "installation", "model-configuration", "tab-service", "faq"]
+}

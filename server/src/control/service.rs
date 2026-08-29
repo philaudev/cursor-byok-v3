@@ -24,7 +24,7 @@ use crate::{
         ModelRequest, ModelSpec, ModelType, Overview, ProjectedContent, ProjectedMessage,
         PromptSpec, ProviderType, Role,
     },
-    provider::{ModelEvent, Provider},
+    provider::{is_valid_response_event, ModelEvent, Provider},
     store::{
         DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage, Store,
         TabSettings,
@@ -95,7 +95,7 @@ fn empty_json_object_ref() -> &'static serde_json::Value {
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelConnectivityResult {
     pub duration_ms: u64,
-    pub first_text_ms: Option<u64>,
+    pub first_valid_response_ms: Option<u64>,
     pub output_tokens: u64,
     pub tokens_per_second: f64,
     pub tokens_estimated: bool,
@@ -323,7 +323,7 @@ impl ControlService {
             },
         };
         let started = Instant::now();
-        let mut first_text_at = None;
+        let mut first_valid_response_at = None;
         let mut output_tokens = None;
         let mut output = String::new();
         let stream = self.provider.stream(invocation, cancellation.clone());
@@ -331,11 +331,12 @@ impl ControlService {
             futures_util::pin_mut!(stream);
             let mut finished = false;
             while let Some(event) = stream.next().await {
-                match event? {
+                let event = event?;
+                if first_valid_response_at.is_none() && is_valid_response_event(&event) {
+                    first_valid_response_at = Some(Instant::now());
+                }
+                match event {
                     ModelEvent::TextDelta(delta) => {
-                        if first_text_at.is_none() && !delta.trim().is_empty() {
-                            first_text_at = Some(Instant::now());
-                        }
                         output.push_str(&delta);
                     }
                     ModelEvent::Usage(usage) => {
@@ -381,16 +382,16 @@ impl ControlService {
         }
         let elapsed = started.elapsed();
         let output = output.trim().to_string();
-        if first_text_at.is_none() {
+        if first_valid_response_at.is_none() {
             return Err(Error::Provider(
-                "model connectivity test received no text output".into(),
+                "model connectivity test received no valid response".into(),
             ));
         }
         let tokens_estimated = output_tokens.is_none();
         let output_tokens = output_tokens.unwrap_or_else(|| estimate_output_tokens(&output));
         Ok(ModelConnectivityResult {
             duration_ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
-            first_text_ms: first_text_at.map(|first| {
+            first_valid_response_ms: first_valid_response_at.map(|first| {
                 first
                     .duration_since(started)
                     .as_millis()
@@ -566,6 +567,10 @@ impl ControlService {
         self.store.clear_statistics_storage().await
     }
 
+    pub async fn clear_all_statistics_storage(&self) -> Result<StatisticsStorage> {
+        self.store.clear_all_statistics_storage().await
+    }
+
     pub async fn proxy_settings(&self) -> Result<ProxySettings> {
         self.store.proxy_settings().await
     }
@@ -625,10 +630,12 @@ fn official_call(trace: CursorRunTraceSummary) -> CallSummary {
             response_headers_at_ms: trace.first_response_at_ms,
             first_event_at_ms: trace.first_response_at_ms,
             first_text_at_ms: None,
+            first_valid_response_at_ms: None,
             finished_at_ms: trace.finished_at_ms,
             queue_ms: None,
             ttfb_ms: ttfb,
             ttft_ms: None,
+            ttfr_ms: None,
             duration_ms: duration,
             input_tokens: None,
             output_tokens: None,
@@ -1129,6 +1136,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.output, "OK");
+        assert!(result.first_valid_response_ms.is_some());
         assert_eq!(result.output_tokens, 2);
         assert!(!result.tokens_estimated);
         assert!(result.tokens_per_second > 0.0);

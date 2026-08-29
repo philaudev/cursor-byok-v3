@@ -14,7 +14,9 @@ use crate::{
         presentation::Presentation,
         prompting::PromptCompiler,
         proto::agent::v1 as pb,
-        request::CursorRunContext,
+        request::{
+            compile_injection, compile_user_message_action, CursorRunContext,
+        },
         tools::{
             codec,
             result::{ToolCompletion, ToolResultReceiver},
@@ -53,8 +55,17 @@ struct PendingInjection {
 }
 
 pub(crate) enum RuntimeAction {
-    InjectContext(pb::InjectContextAction),
+    Inject(pb::InjectContextAction),
+    UserMessage(pb::UserMessageAction),
     BackgroundTaskCompletion(pb::BackgroundTaskCompletionAction),
+}
+
+struct InjectionState<'a> {
+    active_round: Option<&'a ToolRoundId>,
+    active_tool_calls: &'a HashSet<String>,
+    completions: &'a HashMap<String, ToolCompletion>,
+    interrupted_rounds: &'a mut HashSet<ToolRoundId>,
+    interrupted_tool_calls: &'a mut HashSet<String>,
 }
 
 pub(crate) struct CursorSessionRuntime {
@@ -127,6 +138,9 @@ impl CursorSession {
         let mut response_text = String::new();
         let mut response_thinking = String::new();
         let mut active_round = None::<ToolRoundId>;
+        let mut active_tool_calls = HashSet::<String>::new();
+        let mut interrupted_rounds = HashSet::<ToolRoundId>::new();
+        let mut interrupted_tool_calls = HashSet::<String>::new();
         let mut final_checkpoint = None::<FinalCheckpoints>;
         let mut compaction_checkpoint = None::<pb::ConversationStateStructure>;
         let mut turn_usage = None::<Usage>;
@@ -135,13 +149,16 @@ impl CursorSession {
         let mut presentation = Presentation::default();
 
         loop {
-            let input = if let Some(completion) = ready.pop_front() {
+            let input = if let Ok(action) = self.runtime_actions.try_recv() {
+                Input::RuntimeAction(Some(Box::new(action)))
+            } else if let Some(completion) = ready.pop_front() {
                 Input::Completion(completion)
             } else {
                 tokio::select! {
+                    biased;
+                    action = self.runtime_actions.recv() => Input::RuntimeAction(action.map(Box::new)),
                     event = self.core.events.recv() => Input::Event(event),
                     completion = self.results.recv() => Input::CompletionResult(completion),
-                    action = self.runtime_actions.recv() => Input::RuntimeAction(action),
                     failure = worker.failures.recv(), if checkpoint_worker_open => Input::CheckpointFailure(failure),
                 }
             };
@@ -152,15 +169,16 @@ impl CursorSession {
                 }
                 Input::Completion(completion) => {
                     if let Some(completion) = self
-                        .forward_completion(completion, &mut completions)
+                        .forward_completion(completion, &mut completions, &interrupted_tool_calls)
                         .await?
                     {
                         ready.push_back(completion);
                     }
                 }
                 Input::CompletionResult(Some(result)) => {
-                    if let Some(completion) =
-                        self.forward_completion(result?, &mut completions).await?
+                    if let Some(completion) = self
+                        .forward_completion(result?, &mut completions, &interrupted_tool_calls)
+                        .await?
                     {
                         ready.push_back(completion);
                     }
@@ -168,12 +186,33 @@ impl CursorSession {
                 Input::CompletionResult(None) => {
                     return Err(Error::Protocol("tool result channel closed".into()));
                 }
-                Input::RuntimeAction(Some(RuntimeAction::InjectContext(action))) => {
-                    self.forward_injection(action).await?;
-                }
-                Input::RuntimeAction(Some(RuntimeAction::BackgroundTaskCompletion(action))) => {
-                    self.forward_background_completion(action).await?;
-                }
+                Input::RuntimeAction(Some(action)) => match *action {
+                    RuntimeAction::Inject(action) => {
+                        self.forward_injection(
+                            action,
+                            active_round.as_ref(),
+                            &active_tool_calls,
+                            &completions,
+                            &mut interrupted_rounds,
+                            &mut interrupted_tool_calls,
+                        )
+                        .await?;
+                    }
+                    RuntimeAction::UserMessage(action) => {
+                        self.forward_user_message(
+                            action,
+                            active_round.as_ref(),
+                            &active_tool_calls,
+                            &completions,
+                            &mut interrupted_rounds,
+                            &mut interrupted_tool_calls,
+                        )
+                        .await?;
+                    }
+                    RuntimeAction::BackgroundTaskCompletion(action) => {
+                        self.forward_background_completion(action).await?;
+                    }
+                },
                 Input::RuntimeAction(None) => {
                     return Err(Error::Protocol("runtime action channel closed".into()));
                 }
@@ -291,7 +330,23 @@ impl CursorSession {
                         round_id,
                         calls: round_calls,
                     } => {
-                        active_round = Some(round_id);
+                        active_round = Some(round_id.clone());
+                        active_tool_calls = round_calls
+                            .iter()
+                            .map(|call| call.call_id.clone())
+                            .collect();
+                        // Runtime actions are deliberately prioritized over core events. An
+                        // injection can therefore be observed before the already-queued
+                        // ToolRoundStarted event reaches this session. In that case the
+                        // accepted injection is still pending delivery and this round must be
+                        // detached without starting any root tools.
+                        if interrupted_rounds.contains(&round_id)
+                            || !self.pending_injections.is_empty()
+                        {
+                            interrupted_rounds.insert(round_id.clone());
+                            interrupted_tool_calls.extend(active_tool_calls.iter().cloned());
+                            continue;
+                        }
                         for dispatched in self
                             .tools
                             .start_batch(
@@ -356,12 +411,11 @@ impl CursorSession {
                             active_round = Some(round_id.clone());
                         }
                         let mut tool_round_settled = false;
-                        if let CommitCause::ToolResult { call_id } = &state.cause {
-                            let completion = completions.remove(call_id).ok_or_else(|| {
-                                Error::Protocol(format!(
-                                    "core committed a tool result without typed Cursor state: {call_id}"
-                                ))
-                            })?;
+                        if let CommitCause::ToolResult {
+                            call_id,
+                            interrupted,
+                        } = &state.cause
+                        {
                             let snapshot = self
                                 .store
                                 .tool_round(active_round.as_ref().ok_or_else(|| {
@@ -380,9 +434,16 @@ impl CursorSession {
                                         "committed call is absent from tool round: {call_id}"
                                     ))
                                 })?;
-                            self.handle
-                                .emit(&interaction::tool_completed(call, &completion))?;
-                            presentation.tool_completed(&completion);
+                            if !interrupted {
+                                let completion = completions.remove(call_id).ok_or_else(|| {
+                                    Error::Protocol(format!(
+                                        "core committed a tool result without typed Cursor state: {call_id}"
+                                    ))
+                                })?;
+                                self.handle
+                                    .emit(&interaction::tool_completed(call, &completion))?;
+                                presentation.tool_completed(&completion);
+                            }
                             completed.insert(call_id.clone());
                             tool_round_settled = snapshot.status == ToolRoundStatus::Settled;
                         }
@@ -514,7 +575,10 @@ impl CursorSession {
                                     return Err(error);
                                 }
                             }
-                            active_round = None;
+                            if let Some(round_id) = active_round.take() {
+                                interrupted_rounds.remove(&round_id);
+                            }
+                            active_tool_calls.clear();
                             self.tool_runtime.clear_completed().await;
                         } else if !matches!(&state.cause, CommitCause::ToolResult { .. }) {
                             let requires_ready = state.barrier.is_required();
@@ -608,7 +672,11 @@ impl CursorSession {
         &self,
         mut completion: ToolCompletion,
         completions: &mut HashMap<String, ToolCompletion>,
+        interrupted_tool_calls: &HashSet<String>,
     ) -> Result<Option<ToolCompletion>> {
+        if interrupted_tool_calls.contains(&completion.result().call_id) {
+            return Ok(None);
+        }
         if let Some(image) = completion.take_read_image() {
             let blob_id = self.store.put_blob(&image.data, &[]).await?;
             completion.persist_read_image(&blob_id, &image)?;
@@ -657,19 +725,68 @@ impl CursorSession {
             .map_err(|_| Error::RunNotFound(self.context.request_id.clone()))
     }
 
-    async fn forward_injection(&mut self, action: pb::InjectContextAction) -> Result<()> {
+    async fn forward_user_message(
+        &mut self,
+        action: pb::UserMessageAction,
+        active_round: Option<&ToolRoundId>,
+        active_tool_calls: &HashSet<String>,
+        completions: &HashMap<String, ToolCompletion>,
+        interrupted_rounds: &mut HashSet<ToolRoundId>,
+        interrupted_tool_calls: &mut HashSet<String>,
+    ) -> Result<()> {
+        let user_message = action.user_message.clone().ok_or_else(|| {
+            Error::Protocol("Cursor user message action has no UserMessage".into())
+        })?;
+        let injection_id = format!("user-message:{}", user_message.message_id);
+        let message = compile_user_message_action(
+            &action,
+            self.context.mode,
+            &self.compiler,
+            &self.blob_sync,
+        )
+        .await?;
+        self.queue_injection(
+            injection_id,
+            Some(user_message),
+            message,
+            InjectionState {
+                active_round,
+                active_tool_calls,
+                completions,
+                interrupted_rounds,
+                interrupted_tool_calls,
+            },
+        )
+        .await
+    }
+
+    async fn forward_injection(
+        &mut self,
+        action: pb::InjectContextAction,
+        active_round: Option<&ToolRoundId>,
+        active_tool_calls: &HashSet<String>,
+        completions: &HashMap<String, ToolCompletion>,
+        interrupted_rounds: &mut HashSet<ToolRoundId>,
+        interrupted_tool_calls: &mut HashSet<String>,
+    ) -> Result<()> {
         if action.injection_id.is_empty() {
             return Err(Error::Protocol(
                 "InjectContextAction has no injection_id".into(),
             ));
         }
+        if self.injection_ids.contains(&action.injection_id) {
+            return Ok(());
+        }
         if action.expected_run_id != self.context.request_id {
-            return Err(Error::Protocol(format!(
+            let reason = format!(
                 "InjectContextAction expected run {}, active run is {}",
                 action.expected_run_id, self.context.request_id
-            )));
-        }
-        if self.injection_ids.contains(&action.injection_id) {
+            );
+            self.handle.emit(&interaction::context_injection_rejected(
+                action.injection_id.clone(),
+                reason,
+            ))?;
+            self.injection_ids.insert(action.injection_id);
             return Ok(());
         }
         let user_message = match action.payload.as_ref() {
@@ -678,14 +795,30 @@ impl CursorSession {
             }
             _ => None,
         };
-        let message = crate::cursor::request::compile_injection(
-            &action,
-            self.context.mode,
-            &self.compiler,
-            &self.blob_sync,
+        let message =
+            compile_injection(&action, self.context.mode, &self.compiler, &self.blob_sync).await?;
+        self.queue_injection(
+            action.injection_id,
+            user_message,
+            message,
+            InjectionState {
+                active_round,
+                active_tool_calls,
+                completions,
+                interrupted_rounds,
+                interrupted_tool_calls,
+            },
         )
-        .await?;
-        let injection_id = action.injection_id;
+        .await
+    }
+
+    async fn queue_injection(
+        &mut self,
+        injection_id: String,
+        user_message: Option<pb::UserMessage>,
+        message: crate::model::CanonicalMessage,
+        state: InjectionState<'_>,
+    ) -> Result<()> {
         let delivery_batch_id = injection_id.clone();
         self.injection_ids.insert(injection_id.clone());
         self.pending_injections.insert(
@@ -697,25 +830,32 @@ impl CursorSession {
         );
         self.handle
             .emit(&interaction::context_injection_queued(injection_id.clone()))?;
+        state.interrupted_tool_calls.extend(
+            state
+                .active_tool_calls
+                .iter()
+                .filter(|call_id| !state.completions.contains_key(*call_id))
+                .cloned(),
+        );
+        if let Some(round_id) = state.active_round {
+            state.interrupted_rounds.insert(round_id.clone());
+        }
+        self.interrupt_execs().await;
         if self
             .core
             .commands
-            .send(ClientCommand::RuntimeMessage(message))
+            .send(ClientCommand::InterruptWithMessage(message))
             .await
             .is_err()
         {
             self.pending_injections.remove(&injection_id);
             return Err(Error::RunNotFound(self.context.request_id.clone()));
         }
-        self.interrupt_execs().await;
         Ok(())
     }
 
     async fn interrupt_execs(&self) {
-        // Keep runtime entries until Cursor returns the aborted result. The core tool
-        // round needs that terminal result before it can append the injected context
-        // after the complete assistant/tool pair and continue the same Run.
-        for id in self.tool_runtime.running_exec_ids().await {
+        for id in self.tools.interrupt_for_message().await {
             let _ = self.handle.emit(&codec::abort(id));
         }
     }
@@ -738,7 +878,7 @@ enum Input {
     Event(Option<ClientEvent>),
     Completion(ToolCompletion),
     CompletionResult(Option<Result<ToolCompletion>>),
-    RuntimeAction(Option<RuntimeAction>),
+    RuntimeAction(Option<Box<RuntimeAction>>),
     CheckpointFailure(Option<Error>),
 }
 

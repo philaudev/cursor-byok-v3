@@ -23,6 +23,11 @@ pub(super) struct DeferredEdit {
 }
 
 impl EditSchedule {
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        self.active_paths.clear();
+    }
+
     pub fn start_or_defer(&mut self, path: String, edit: DeferredEdit) -> Option<DeferredEdit> {
         if let Some(queue) = self.paths.get_mut(&path) {
             queue.waiting.push_back(edit);

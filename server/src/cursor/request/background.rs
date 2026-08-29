@@ -117,7 +117,7 @@ pub(crate) fn project_background_completion(
     let (first, _) = completions
         .values()
         .next()
-        .expect("background completion action was validated as non-empty");
+        .ok_or_else(|| Error::Protocol("background task notification contains no finished task".into()))?;
     let text = match (has_shell, has_subagent) {
         (true, false) => SHELL_FOLLOW_UP.into(),
         (false, true) => FOLLOW_UP.into(),
@@ -396,8 +396,25 @@ mod tests {
             pb::AgentMode::Agent as i32
         )
         .unwrap_err()
-        .to_string()
         .contains("unspecified reason"));
+    }
+
+    #[test]
+    fn progress_notifications_batched_with_a_finish_are_ignored() {
+        let mut progress = completion();
+        progress.task_id = "child-id:task_progress:1".into();
+        progress.reason = pb::BackgroundTaskCompletionReason::TaskProgress as i32;
+        let projection = project(
+            &pb::BackgroundTaskCompletionAction {
+                completions: vec![progress, completion()],
+            },
+            pb::AgentMode::Agent as i32,
+        )
+        .unwrap();
+
+        assert!(projection.context.contains("agent_id: child-id"));
+        assert!(!projection.context.contains("task_progress"));
+        assert_eq!(projection.turn_user.text, FOLLOW_UP);
     }
 
     fn completion() -> pb::BackgroundTaskCompletion {

@@ -177,6 +177,14 @@ export const appStore = {
     }
   },
 
+  async refreshCalls() {
+    try {
+      update({ calls: await api.calls() });
+    } catch (cause) {
+      update({ error: cause instanceof Error ? cause.message : String(cause) });
+    }
+  },
+
   async openCallDetails(callId: string) {
     await perform(() => api.openCallDetails(callId));
   },

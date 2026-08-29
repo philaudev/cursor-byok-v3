@@ -32,6 +32,7 @@ export function CallDetails({ detail }: { detail: CallDetail }) {
     ["Created At", `${call.created_at_ms} · ${new Date(call.created_at_ms).toLocaleString()}`],
     [t("耗时"), timing(call.duration_ms)],
     ["TTFB", timing(call.ttfb_ms)],
+    ["TTFR", timing(call.ttfr_ms)],
     ["TTFT", timing(call.ttft_ms)],
     ["Input Token", show(call.input_tokens)],
     ["Output Token", show(call.output_tokens)],

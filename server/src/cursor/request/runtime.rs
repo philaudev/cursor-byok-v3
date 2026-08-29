@@ -16,6 +16,57 @@ use crate::{
 
 use super::{context, images};
 
+pub(crate) enum RuntimeAction {
+    Inject(pb::InjectContextAction),
+    UserMessage(pb::UserMessageAction),
+}
+
+pub(crate) async fn compile_user_message_action(
+    action: &pb::UserMessageAction,
+    current_mode: i32,
+    compiler: &PromptCompiler,
+    blobs: &BlobSynchronizer,
+) -> Result<CanonicalMessage> {
+    let user = action
+        .user_message
+        .as_ref()
+        .ok_or_else(|| Error::Protocol("Cursor user message action has no UserMessage".into()))?;
+    if user.message_id.is_empty() {
+        return Err(Error::Protocol(
+            "Cursor user message action has no message_id".into(),
+        ));
+    }
+    let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
+        current_mode
+    } else {
+        user.mode
+    };
+    let mut action_context = action
+        .prepend_user_messages
+        .iter()
+        .map(|message| message.text.trim())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    action_context.extend(
+        user.subagent_system_reminder
+            .iter()
+            .filter(|text| !text.is_empty())
+            .cloned(),
+    );
+    let empty_context = pb::RequestContext::default();
+    compile(
+        format!("user-message:{}", user.message_id),
+        super::prepare::mode_from_proto(mode)?,
+        user,
+        action.request_context.as_ref().unwrap_or(&empty_context),
+        &action_context.join("\\n\\n"),
+        compiler,
+        blobs,
+    )
+    .await
+}
+
 pub(crate) async fn compile_injection(
     injection: &pb::InjectContextAction,
     mode: i32,

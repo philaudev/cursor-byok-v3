@@ -158,7 +158,6 @@ fn tool_identifier(name: &str, dynamic_tools: &HashSet<String>) -> String {
         return name.into();
     }
     match name {
-        "AwaitShell" => "AWAIT".into(),
         "CallMcpTool" | "SembleSearch" | "SembleFindRelated" => "MCP".into(),
         "CreatePlan" => "CREATE_PLAN_V2".into(),
         "UpdateCurrentStep" => "COMMUNICATE_UPDATE".into(),

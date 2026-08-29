@@ -192,10 +192,14 @@ impl RunEngine {
                 Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
+            let history = match crate::model::project_messages(&messages) {
+                Ok(history) => history,
+                Err(error) => return (RunOutcome::Failed(error.into()), usage),
+            };
             let history_grew_since_auto_compaction =
                 should_repeat_auto_compaction(last_auto_compaction_message_count, messages.len());
             if history_grew_since_auto_compaction
-                && should_auto_compact(prepared, &messages, context_anchor)
+                && should_auto_compact(prepared, &messages, &history, context_anchor)
             {
                 match self
                     .auto_compact(prepared, revision, &messages, client, cancellation)
@@ -227,10 +231,7 @@ impl RunEngine {
                     Err(error) => return (RunOutcome::Failed(error.into()), usage),
                 }
             } else {
-                match crate::model::project_messages(&messages) {
-                    Ok(history) => history,
-                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
-                }
+                history
             };
             if let Err(error) = hydrate_tool_images(&self.store, &mut history).await {
                 return (RunOutcome::Failed(error.into()), usage);
@@ -259,14 +260,14 @@ impl RunEngine {
             let mut pending_insertions = Vec::new();
             let cycle = loop {
                 tokio::select! {
-                    result = &mut cycle => break result,
+                    biased;
                     command = client.commands.recv() => {
                         let message = match command {
                             Some(ClientCommand::InsertMessages(insertion)) => {
                                 pending_insertions.push(insertion);
                                 continue;
                             }
-                            Some(ClientCommand::RuntimeMessage(message)) => message,
+                            Some(ClientCommand::InterruptWithMessage(message)) => message,
                             Some(ClientCommand::RuntimeEvent(event)) => event.into_message(),
                             Some(ClientCommand::Cancel) => {
                                 cycle_cancellation.cancel();
@@ -331,7 +332,8 @@ impl RunEngine {
                             Err(outcome) => return (outcome, usage),
                         };
                         continue 'model;
-                    }
+                    },
+                    result = &mut cycle => break result,
                 }
             };
             let cycle = match cycle {
@@ -504,7 +506,7 @@ impl RunEngine {
                                         pending_insertions.push(insertion);
                                         break;
                                     }
-                                    Some(ClientCommand::RuntimeMessage(message)) => {
+                                    Some(ClientCommand::InterruptWithMessage(message)) => {
                                         let appended = match append_runtime_message(
                                             &self.store,
                                             prepared,
@@ -684,23 +686,68 @@ impl RunEngine {
         let cycle_cancellation = cancellation.child_token();
         let (silent_events, mut discarded_events) = tokio::sync::mpsc::channel(256);
         let drain = tokio::spawn(async move { while discarded_events.recv().await.is_some() {} });
-        let cycle = consume_model_cycle(
-            self.provider.stream(invocation, cycle_cancellation.clone()),
-            &silent_events,
-            &cycle_cancellation,
-        )
-        .await;
+        let mut pending_insertions = Vec::new();
+        let mut interrupted_message = None;
+        let cycle = {
+            let cycle = consume_model_cycle(
+                self.provider.stream(invocation, cycle_cancellation.clone()),
+                &silent_events,
+                &cycle_cancellation,
+            );
+            tokio::pin!(cycle);
+            loop {
+                tokio::select! {
+                    biased;
+                    command = client.commands.recv() => match command {
+                        Some(ClientCommand::InsertMessages(insertion)) => {
+                            pending_insertions.push(insertion);
+                        }
+                        Some(ClientCommand::InterruptWithMessage(message)) => {
+                            cycle_cancellation.cancel();
+                            interrupted_message = Some(message);
+                            break cycle.await;
+                        }
+                        Some(ClientCommand::RuntimeEvent(event)) => {
+                            cycle_cancellation.cancel();
+                            interrupted_message = Some(event.into_message());
+                            break cycle.await;
+                        }
+                        Some(ClientCommand::Cancel) => {
+                            cycle_cancellation.cancel();
+                            return Err(RunOutcome::Cancelled);
+                        }
+                        Some(ClientCommand::ClientClosed { error }) => {
+                            cycle_cancellation.cancel();
+                            return Err(RunOutcome::Failed(RunFailure::Client(error)));
+                        }
+                        Some(ClientCommand::ToolResult(_)) => {
+                            cycle_cancellation.cancel();
+                            return Err(RunOutcome::Failed(RunFailure::Protocol(
+                                "received a tool result while automatic compaction was running".into(),
+                            )));
+                        }
+                        None => {
+                            cycle_cancellation.cancel();
+                            return Err(client_failure());
+                        }
+                    },
+                    result = &mut cycle => break result,
+                }
+            }
+        };
         drop(silent_events);
         let _ = drain.await;
-        let (summary, compaction_usage) = match cycle {
-            Ok(cycle) if cycle.calls.is_empty() && !cycle.text.trim().is_empty() => {
+        let (summary, compaction_usage) = match (interrupted_message.is_some(), cycle) {
+            (true, Ok(cycle)) => (fallback_summary(&compactable), cycle.usage),
+            (true, Err(failure)) => (fallback_summary(&compactable), failure.usage),
+            (false, Ok(cycle)) if cycle.calls.is_empty() && !cycle.text.trim().is_empty() => {
                 (cycle.text.trim().to_string(), cycle.usage)
             }
-            Ok(cycle) => {
+            (false, Ok(cycle)) => {
                 tracing::warn!("automatic compaction returned no usable summary; using fallback");
                 (fallback_summary(&compactable), cycle.usage)
             }
-            Err(failure) => {
+            (false, Err(failure)) => {
                 tracing::warn!(error = ?failure.failure, "automatic compaction model failed; using fallback");
                 (fallback_summary(&compactable), failure.usage)
             }
@@ -721,7 +768,7 @@ impl RunEngine {
         replacement.push(summary_message);
         replacement.extend(prepared.initial_messages.iter().cloned());
         let replacement_message_count = replacement.len();
-        let revision = self
+        let mut revision = self
             .store
             .replace_revision(
                 &prepared.conversation_id,
@@ -747,6 +794,28 @@ impl RunEngine {
         emit(client, ClientEvent::AutoCompactionCompleted)
             .await
             .map_err(|_| client_failure())?;
+        revision = append_insertions(
+            &self.store,
+            prepared,
+            client,
+            cancellation,
+            revision,
+            pending_insertions,
+        )
+        .await?
+        .0;
+        if let Some(message) = interrupted_message {
+            revision = append_runtime_message(
+                &self.store,
+                prepared,
+                client,
+                cancellation,
+                revision,
+                message,
+            )
+            .await?
+            .0;
+        }
         Ok((revision, compaction_usage, replacement_message_count))
     }
 }
@@ -801,6 +870,7 @@ impl ContextUsageAnchor {
 fn should_auto_compact(
     prepared: &PreparedRun,
     messages: &[CanonicalMessage],
+    projected_messages: &[crate::model::ProjectedMessage],
     anchor: Option<ContextUsageAnchor>,
 ) -> bool {
     if prepared.action == RunAction::Compact {
@@ -816,13 +886,13 @@ fn should_auto_compact(
     }
     let estimated_input = anchor
         .filter(|anchor| {
-            anchor.message_count <= messages.len()
+            anchor.message_count <= projected_messages.len()
                 && anchor.tool_count == prepared.prompt.tools.len()
         })
         .map(|anchor| {
-            anchor
-                .input_tokens
-                .saturating_add(estimate_message_tokens(&messages[anchor.message_count..]))
+            anchor.input_tokens.saturating_add(estimate_message_tokens(
+                &projected_messages[anchor.message_count..],
+            ))
         })
         .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, messages));
     estimated_input > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
@@ -846,54 +916,9 @@ fn estimate_prompt_tokens(prompt: &crate::model::PromptSpec) -> u64 {
     total
 }
 
-fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u64 {
-    let mut total = 0_u64;
-    for message in messages {
-        total = total.saturating_add(8); // estimatedTokensPerMessageOverhead
-        match &message.content {
-            crate::model::MessageContent::Parts { parts } => {
-                for part in parts {
-                    match part {
-                        crate::model::ContentPart::Text { text } => {
-                            total = total.saturating_add(estimate_text_tokens(text));
-                        }
-                        crate::model::ContentPart::Image { .. } => {
-                            total = total.saturating_add(1024);
-                        }
-                    }
-                }
-            }
-            crate::model::MessageContent::Assistant {
-                text,
-                thinking,
-                tool_calls,
-                ..
-            } => {
-                total = total.saturating_add(estimate_text_tokens(text));
-                total = total.saturating_add(estimate_text_tokens(thinking));
-                for call in tool_calls {
-                    total = total.saturating_add(6); // estimatedTokensPerToolCallOverhead
-                    total = total.saturating_add(estimate_text_tokens(&call.name));
-                    let arguments = serde_json::to_string(&call.arguments).unwrap_or_default();
-                    total = total.saturating_add(estimate_text_tokens(&arguments));
-                }
-            }
-            crate::model::MessageContent::ToolResult(result) => {
-                total = total.saturating_add(estimate_text_tokens(&result.content));
-                for part in &result.provider_parts {
-                    match part {
-                        crate::model::ContentPart::Text { text } => {
-                            total = total.saturating_add(estimate_text_tokens(text));
-                        }
-                        crate::model::ContentPart::Image { .. } => {
-                            total = total.saturating_add(1024);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    total
+fn estimate_message_tokens<T: serde::Serialize>(messages: &[T]) -> u64 {
+    let serialized = serde_json::to_string(messages).unwrap_or_default();
+    estimate_text_tokens(&serialized)
 }
 
 fn estimate_text_tokens(text: &str) -> u64 {
@@ -1136,9 +1161,10 @@ mod tests {
     };
     use crate::{
         model::{
-            CanonicalMessage, ContentPart, ConversationId, ModelSpec, Origin, PreparedRun,
-            ProjectedContent, ProjectedMessage, PromptSpec, RevisionId, Role, RunAction, RunId,
-            RunKind, ToolImageReference, ToolResultContent,
+            CanonicalMessage, ContentPart, ConversationId, MessageContent, ModelSpec, Origin,
+            PreparedRun, ProjectedContent, ProjectedMessage, PromptSpec, RevisionId, Role,
+            RunAction, RunId, RunKind, ToolCallContent, ToolImageReference, ToolResultContent,
+            ToolRoundId,
         },
         store::Store,
     };
@@ -1209,7 +1235,13 @@ mod tests {
             estimate_context_tokens(&prepared.prompt, &messages),
             211_733
         );
-        assert!(!should_auto_compact(&prepared, &messages, Some(anchor)));
+        let projected = crate::model::project_messages(&messages).unwrap();
+        assert!(!should_auto_compact(
+            &prepared,
+            &messages,
+            &projected,
+            Some(anchor)
+        ));
     }
 
     #[test]
@@ -1250,7 +1282,88 @@ mod tests {
             tool_count: 0,
         };
 
-        assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
+        let projected = crate::model::project_messages(&messages).unwrap();
+        assert!(should_auto_compact(
+            &prepared,
+            &messages,
+            &projected,
+            Some(anchor)
+        ));
+    }
+
+    #[test]
+    fn projected_anchor_does_not_recount_canonical_tool_round_fragments() {
+        let assistant = |message_id: &str, call_id: &str, text: String, index| CanonicalMessage {
+            message_id: message_id.into(),
+            role: Role::Assistant,
+            origin: Origin::Assistant,
+            content: MessageContent::Assistant {
+                text,
+                thinking: String::new(),
+                tool_round_id: Some(ToolRoundId::new("round")),
+                replay_state: None,
+                tool_calls: vec![ToolCallContent {
+                    index,
+                    call_id: call_id.into(),
+                    name: "Shell".into(),
+                    arguments: serde_json::json!({}),
+                }],
+            },
+            runtime_event_id: None,
+        };
+        let result = |message_id: &str, call_id: &str| CanonicalMessage {
+            message_id: message_id.into(),
+            role: Role::Tool,
+            origin: Origin::Tool,
+            content: MessageContent::ToolResult(ToolResultContent {
+                call_id: call_id.into(),
+                name: "Shell".into(),
+                content: "ok".into(),
+                is_error: false,
+                image: None,
+                provider_parts: Vec::new(),
+            }),
+            runtime_event_id: None,
+        };
+        let messages = vec![
+            assistant("assistant-1", "call-1", "first".into(), 0),
+            result("result-1", "call-1"),
+            assistant("assistant-2", "call-2", "x".repeat(100_000), 1),
+            result("result-2", "call-2"),
+        ];
+        let projected = crate::model::project_messages(&messages).unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(projected.len(), 3);
+
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"),
+            cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"),
+            kind: RunKind::Root,
+            model: ModelSpec {
+                context_window_tokens: Some(20_000),
+                ..ModelSpec::new("model")
+            },
+            prompt: PromptSpec {
+                instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            initial_messages: Vec::new(),
+            action: RunAction::Start,
+            base_revision_id: RevisionId(1),
+        };
+        let anchor = ContextUsageAnchor {
+            input_tokens: 1_000,
+            message_count: 1,
+            tool_count: 0,
+        };
+
+        assert!(!should_auto_compact(
+            &prepared,
+            &messages,
+            &projected,
+            Some(anchor)
+        ));
     }
 
     #[test]

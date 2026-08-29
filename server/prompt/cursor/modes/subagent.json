@@ -17,6 +17,7 @@
     "AwaitShell",
     "GetMcpTools",
     "FetchMcpResource",
+    "SwitchMode",
     "UpdateCurrentStep",
     "CallMcpTool",
     "SembleSearch",

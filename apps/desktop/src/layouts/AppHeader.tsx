@@ -3,6 +3,7 @@ import appIcon from "../../src-tauri/icons/32x32.png";
 import { currentAppVersion } from "../native/appLifecycle";
 import type { DesktopPlatform } from "../native/platform";
 import { WindowControls } from "./WindowControls";
+import { MacTrafficLights } from "./MacTrafficLights";
 import styles from "./AppHeader.module.scss";
 
 type AppHeaderProps = {
@@ -11,6 +12,7 @@ type AppHeaderProps = {
 };
 
 export function AppHeader({ platform, nativeDesktop }: AppHeaderProps) {
+  const showMacTrafficLights = !nativeDesktop && platform === "macos";
   const showNativeUi = nativeDesktop && platform !== "macos";
   const [version, setVersion] = useState("…");
 
@@ -25,6 +27,7 @@ export function AppHeader({ platform, nativeDesktop }: AppHeaderProps) {
   return <header className={styles.root}>
     <div className={styles.dragLayer} data-tauri-drag-region aria-hidden="true" />
     <div className={styles.uiLayer}>
+      {showMacTrafficLights && <MacTrafficLights />}
       {showNativeUi && <>
         <div className={styles.identity} aria-label="Cursor BYOK">
           <img src={appIcon} alt="" />

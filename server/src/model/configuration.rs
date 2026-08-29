@@ -184,6 +184,11 @@ impl ModelConfig {
         model.max_output_tokens = self.max_output_tokens().or(model.max_output_tokens);
         model.extra_params = self.extra_params().clone();
         model.display_name = Some(self.display_name.clone());
+        // A request-selected context is authoritative.  Use the saved model
+        // value only when Cursor did not send a context parameter.
+        if model.context_window_tokens.is_none() {
+            model.context_window_tokens = self.context_window_tokens;
+        }
         if model.reasoning.effort.is_none() {
             model.reasoning.effort = match self.model_type {
                 ModelType::OpenAi => self.reasoning_effort.clone(),
@@ -550,5 +555,78 @@ mod tests {
             resolve_request_url(ModelType::Anthropic, "https://example.com/v1", "", false).unwrap(),
             "https://example.com/v1/messages"
         );
+    }
+
+    #[test]
+    fn configured_context_window_does_not_override_the_client_request() {
+        let input = input();
+        let config = ModelConfig {
+            model_hash: "hash".into(),
+            sort_order: input.sort_order,
+            display_name: input.display_name,
+            model_type: input.model_type,
+            base_url: input.base_url,
+            use_full_url: input.use_full_url,
+            api_key: input.api_key,
+            tooltip_data: input.tooltip_data,
+            model_id: input.model_id,
+            reasoning_effort: input.reasoning_effort,
+            openai_endpoint: input.openai_endpoint,
+            openai_extra_params_enabled: input.openai_extra_params_enabled,
+            openai_extra_params: input.openai_extra_params,
+            custom_headers_enabled: input.custom_headers_enabled,
+            custom_headers: input.custom_headers,
+            anthropic_extra_params_enabled: input.anthropic_extra_params_enabled,
+            anthropic_extra_params: input.anthropic_extra_params,
+            context_window_tokens: Some(350_000),
+            max_completion_tokens: input.max_completion_tokens,
+            anthropic_max_tokens: input.anthropic_max_tokens,
+            anthropic_thinking_effort: input.anthropic_thinking_effort,
+            thinking_budget_tokens: input.thinking_budget_tokens,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let mut requested = super::super::ModelSpec::new("model-a");
+        requested.context_window_tokens = Some(200_000);
+
+        config.configure(&mut requested);
+
+        assert_eq!(requested.context_window_tokens, Some(200_000));
+    }
+
+    #[test]
+    fn configured_context_window_fills_missing_client_value() {
+        let input = input();
+        let config = ModelConfig {
+            model_hash: "hash".into(),
+            sort_order: input.sort_order,
+            display_name: input.display_name,
+            model_type: input.model_type,
+            base_url: input.base_url,
+            use_full_url: input.use_full_url,
+            api_key: input.api_key,
+            tooltip_data: input.tooltip_data,
+            model_id: input.model_id,
+            reasoning_effort: input.reasoning_effort,
+            openai_endpoint: input.openai_endpoint,
+            openai_extra_params_enabled: input.openai_extra_params_enabled,
+            openai_extra_params: input.openai_extra_params,
+            custom_headers_enabled: input.custom_headers_enabled,
+            custom_headers: input.custom_headers,
+            anthropic_extra_params_enabled: input.anthropic_extra_params_enabled,
+            anthropic_extra_params: input.anthropic_extra_params,
+            context_window_tokens: Some(350_000),
+            max_completion_tokens: input.max_completion_tokens,
+            anthropic_max_tokens: input.anthropic_max_tokens,
+            anthropic_thinking_effort: input.anthropic_thinking_effort,
+            thinking_budget_tokens: input.thinking_budget_tokens,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let mut requested = super::super::ModelSpec::new("model-a");
+
+        config.configure(&mut requested);
+
+        assert_eq!(requested.context_window_tokens, Some(350_000));
     }
 }

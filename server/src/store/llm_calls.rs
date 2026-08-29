@@ -204,6 +204,21 @@ impl Store {
         Ok(())
     }
 
+    pub async fn record_llm_first_valid_response(
+        &self,
+        call_id: &str,
+        elapsed_ms: i64,
+    ) -> Result<()> {
+        let _write = self.writes.lock().await;
+        sqlx::query("UPDATE llm_calls SET first_valid_response_at_ms = COALESCE(first_valid_response_at_ms, ?), ttfr_ms = COALESCE(ttfr_ms, ?) WHERE call_id = ?")
+            .bind(now_ms())
+            .bind(elapsed_ms)
+            .bind(call_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn record_llm_first_text(&self, call_id: &str, elapsed_ms: i64) -> Result<()> {
         let _write = self.writes.lock().await;
         sqlx::query("UPDATE llm_calls SET first_text_at_ms = COALESCE(first_text_at_ms, ?), ttft_ms = COALESCE(ttft_ms, ?) WHERE call_id = ?")
@@ -369,10 +384,12 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
         response_headers_at_ms: row.try_get("response_headers_at_ms")?,
         first_event_at_ms: row.try_get("first_event_at_ms")?,
         first_text_at_ms: row.try_get("first_text_at_ms")?,
+        first_valid_response_at_ms: row.try_get("first_valid_response_at_ms")?,
         finished_at_ms: row.try_get("finished_at_ms")?,
         queue_ms: row.try_get("queue_ms")?,
         ttfb_ms: row.try_get("ttfb_ms")?,
         ttft_ms: row.try_get("ttft_ms")?,
+        ttfr_ms: row.try_get("ttfr_ms")?,
         duration_ms: row.try_get("duration_ms")?,
         input_tokens: row.try_get("input_tokens")?,
         output_tokens: row.try_get("output_tokens")?,

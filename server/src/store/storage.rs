@@ -1,6 +1,6 @@
 //! Storage accounting and cleanup for disposable observability data.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Result;
 
@@ -11,6 +11,14 @@ pub struct StatisticsStorage {
     pub bytes: i64,
     pub call_count: i64,
     pub trace_count: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatisticsStorageScope {
+    #[default]
+    Details,
+    All,
 }
 
 impl Store {
@@ -56,6 +64,15 @@ impl Store {
     pub async fn clear_statistics_storage(&self) -> Result<StatisticsStorage> {
         let _write = self.writes.lock().await;
         let mut transaction = self.pool.begin().await?;
+        Self::clear_detail_storage_tx(&mut transaction).await?;
+        transaction.commit().await?;
+        self.statistics_storage().await
+    }
+
+    pub async fn clear_all_statistics_storage(&self) -> Result<StatisticsStorage> {
+        let _write = self.writes.lock().await;
+        let mut transaction = self.pool.begin().await?;
+        Self::clear_trace_artifacts_tx(&mut transaction).await?;
         sqlx::query("DELETE FROM llm_calls")
             .execute(&mut *transaction)
             .await?;
@@ -65,6 +82,59 @@ impl Store {
         transaction.commit().await?;
         self.statistics_storage().await
     }
+
+    async fn clear_detail_storage_tx(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM llm_call_requests")
+            .execute(&mut **transaction)
+            .await?;
+        sqlx::query("DELETE FROM llm_call_response_chunks")
+            .execute(&mut **transaction)
+            .await?;
+        Self::clear_trace_artifacts_tx(transaction).await
+    }
+
+    async fn clear_trace_artifacts_tx(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ) -> Result<()> {
+        sqlx::query(
+            "CREATE TEMP TABLE IF NOT EXISTS clear_statistics_blob_ids(
+                blob_id BLOB PRIMARY KEY
+             )",
+        )
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query("DELETE FROM clear_statistics_blob_ids")
+            .execute(&mut **transaction)
+            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO clear_statistics_blob_ids(blob_id)
+             SELECT blob_id FROM cursor_run_trace_artifacts",
+        )
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query("DELETE FROM cursor_run_trace_artifacts")
+            .execute(&mut **transaction)
+            .await?;
+        sqlx::query(
+            "DELETE FROM blobs
+             WHERE blob_id IN (SELECT blob_id FROM clear_statistics_blob_ids)
+               AND NOT EXISTS (
+                   SELECT 1 FROM cursor_run_trace_artifacts a WHERE a.blob_id = blobs.blob_id
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM blob_edges e
+                   WHERE e.parent_blob_id = blobs.blob_id OR e.child_blob_id = blobs.blob_id
+               )",
+        )
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query("DROP TABLE clear_statistics_blob_ids")
+            .execute(&mut **transaction)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -73,7 +143,7 @@ mod tests {
     use crate::model::{ModelConfigInput, ModelType, OPENAI_CHAT_ENDPOINT};
 
     #[tokio::test]
-    async fn clears_observability_without_removing_configuration() {
+    async fn clears_detail_storage_without_removing_configuration() {
         let store = Store::connect("sqlite::memory:").await.unwrap();
         store
             .create_model(&ModelConfigInput {
@@ -106,12 +176,16 @@ mod tests {
 
         assert!(store.statistics_storage().await.unwrap().bytes > 0);
         let cleared = store.clear_statistics_storage().await.unwrap();
-        assert_eq!(cleared.bytes, 0);
-        assert_eq!(cleared.call_count, 0);
+        assert_eq!(cleared.call_count, 1);
+        assert_eq!(cleared.trace_count, 0);
+        assert!(cleared.bytes > 0);
+        assert!(store.llm_call_request("call-1").await.unwrap().is_none());
+        assert!(store.llm_call_chunks("call-1").await.unwrap().is_empty());
         let model_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM model_configs")
             .fetch_one(store.pool())
             .await
             .unwrap();
+
         assert_eq!(model_count, 1);
 
         store
@@ -127,5 +201,11 @@ mod tests {
             .record_llm_chunk("call-1", 0, 1, b"data", true)
             .await
             .unwrap();
+
+        assert!(store.llm_call_request("call-1").await.unwrap().is_some());
+        assert_eq!(store.llm_call_chunks("call-1").await.unwrap().len(), 1);
+        let cleared = store.clear_all_statistics_storage().await.unwrap();
+        assert_eq!(cleared.bytes, 0);
+        assert_eq!(cleared.call_count, 0);
     }
 }

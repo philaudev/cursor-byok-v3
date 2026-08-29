@@ -43,6 +43,32 @@ impl DecodedAppend {
         request.conversation_id.as_deref()
     }
 
+    pub fn is_background_task_completion(&self) -> bool {
+        let Some(agent::agent_client_message::Message::RunRequest(request)) =
+            self.message.message.as_ref()
+        else {
+            return false;
+        };
+        matches!(
+            request
+                .action
+                .as_ref()
+                .and_then(|action| action.action.as_ref()),
+            Some(agent::conversation_action::Action::BackgroundTaskCompletionAction(_))
+        )
+    }
+
+    fn is_runtime_cancellation(&self) -> bool {
+        matches!(
+            self.message.message.as_ref(),
+            Some(agent::agent_client_message::Message::ConversationAction(action))
+                if matches!(
+                    action.action.as_ref(),
+                    Some(agent::conversation_action::Action::CancelAction(_))
+                )
+        )
+    }
+
     pub fn trace_metadata(&self) -> serde_json::Value {
         let Some(message) = self.message.message.as_ref() else {
             return serde_json::json!({
@@ -163,7 +189,29 @@ pub async fn append(
     request: DecodedAppend,
     parent: Option<CursorParent>,
 ) -> Result<ai::BidiAppendResponse> {
+    if let Some(conversation_id) = request.conversation_id() {
+        if request.is_background_task_completion()
+            && registry.conversation_cancelled(conversation_id)
+        {
+            tracing::info!(
+                request_id = %request.request_id,
+                %conversation_id,
+                "dropping background task completion for cancelled conversation"
+            );
+            return Ok(ai::BidiAppendResponse {});
+        }
+        if !request.is_background_task_completion() {
+            registry.clear_conversation_cancelled(conversation_id);
+        }
+    }
     let handle = registry.get_or_create(&request.request_id).await?;
+    if let Some(conversation_id) = request.conversation_id() {
+        handle.set_conversation_id(conversation_id)?;
+    }
+    if request.is_runtime_cancellation() {
+        handle.mark_conversation_cancelled();
+        handle.cancel();
+    }
     if let Some(parent) = parent {
         handle.set_parent(parent)?;
     }
@@ -224,5 +272,22 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(decoded.model_id(), Some("grok-4.6"));
+    }
+
+    #[test]
+    fn detects_background_task_completion_actions() {
+        let decoded = decode(&encoded(agent::AgentRunRequest {
+            action: Some(agent::ConversationAction {
+                action: Some(
+                    agent::conversation_action::Action::BackgroundTaskCompletionAction(
+                        agent::BackgroundTaskCompletionAction::default(),
+                    ),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(decoded.is_background_task_completion());
     }
 }
