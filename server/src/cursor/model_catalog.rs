@@ -201,7 +201,14 @@ const EFFORTS: [(&str, &str); 5] = [
     ("xhigh", "Extra High"),
     ("max", "Max"),
 ];
-const DEFAULT_CONTEXT: &str = "200k";
+const FALLBACK_CONTEXT: &str = "200k";
+
+fn default_context(model: &ModelConfig) -> String {
+    model
+        .context_window_tokens
+        .map(|tokens| tokens.to_string())
+        .unwrap_or_else(|| FALLBACK_CONTEXT.into())
+}
 
 fn context_options(model: &ModelConfig) -> Vec<(String, String)> {
     let mut contexts = CONTEXTS
@@ -322,7 +329,8 @@ fn unary_payload(body: &Bytes) -> Result<(bool, &[u8])> {
 
 fn available_model(model: &ModelConfig) -> AvailableModel {
     let contexts = context_options(model);
-    let variants = model_variants(model, &contexts);
+    let default_context = default_context(model);
+    let variants = model_variants(model, &contexts, &default_context);
     let legacy_slugs = variants
         .iter()
         .filter_map(|variant| variant.legacy_slug.clone())
@@ -430,7 +438,11 @@ fn model_parameters(contexts: &[(String, String)]) -> Vec<ModelParameterDefiniti
     ]
 }
 
-fn model_variants(model: &ModelConfig, contexts: &[(String, String)]) -> Vec<ModelVariant> {
+fn model_variants(
+    model: &ModelConfig,
+    contexts: &[(String, String)],
+    default_context: &str,
+) -> Vec<ModelVariant> {
     let mut variants = Vec::with_capacity(contexts.len() * EFFORTS.len() * 2);
     for (context, context_name) in contexts {
         for (effort, effort_name) in EFFORTS {
@@ -439,6 +451,7 @@ fn model_variants(model: &ModelConfig, contexts: &[(String, String)]) -> Vec<Mod
                     model,
                     context,
                     context_name,
+                    default_context,
                     effort,
                     effort_name,
                     fast,
@@ -453,12 +466,13 @@ fn model_variant(
     model: &ModelConfig,
     context: &str,
     context_name: &str,
+    default_context: &str,
     effort: &str,
     effort_name: &str,
     fast: bool,
 ) -> ModelVariant {
     let mut suffix = Vec::with_capacity(3);
-    if context != DEFAULT_CONTEXT {
+    if context != default_context {
         suffix.push(context_name);
     }
     suffix.push(effort_name);
@@ -470,7 +484,7 @@ fn model_variant(
         "{} <span style=\"color: var(--cursor-text-tertiary);\">{suffix}</span>",
         model.display_name
     );
-    let is_default = context == DEFAULT_CONTEXT && effort == "high" && !fast;
+    let is_default = context == default_context && effort == "high" && !fast;
     ModelVariant {
         parameter_values: vec![
             ModelParameterValue {
@@ -632,9 +646,6 @@ mod tests {
             .any(|value| value.value == "max"));
         assert_eq!(mapped.variants.len(), 50);
         assert_eq!(mapped.legacy_slugs.len(), 50);
-        assert_eq!(mapped.model_picker_badges.len(), 1);
-        assert_eq!(mapped.model_picker_badges[0].label, "OpenAI");
-        assert!(!mapped.model_picker_badges[0].dismiss_on_selection);
         let default = mapped
             .variants
             .iter()
@@ -642,8 +653,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             default.variant_string_representation.as_deref(),
-            Some("33ceed20[context=200k,reasoning=high,fast=false]")
+            Some("33ceed20[context=272000,reasoning=high,fast=false]")
         );
+        assert_eq!(mapped.model_picker_badges.len(), 1);
+        assert_eq!(mapped.model_picker_badges[0].label, "OpenAI");
+        assert!(!mapped.model_picker_badges[0].dismiss_on_selection);
         assert_eq!(
             default
                 .parameter_values

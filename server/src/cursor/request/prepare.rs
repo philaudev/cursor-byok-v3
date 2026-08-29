@@ -403,11 +403,11 @@ fn hydrate_context_window_from_checkpoint(
     request_context_window: Option<u64>,
     state: Option<&pb::ConversationStateStructure>,
 ) {
-    // The request-selected context is authoritative. On a continued conversation
-    // Cursor may omit it while preserving the UI meter's limit; in that case use
-    // the checkpoint rather than the saved default, which can describe a smaller
-    // context variant than the one that created the conversation.
-    if request_context_window.is_none() {
+    // A context selected in Cursor is authoritative. When Cursor omits the
+    // parameter, retain the saved model setting so a runtime config update is
+    // reflected in the next checkpoint. The previous checkpoint is only a
+    // fallback for models without a configured context window.
+    if request_context_window.is_none() && model.context_window_tokens.is_none() {
         if let Some(tokens) = state
             .and_then(|state| state.token_details.as_ref())
             .map(|details| details.max_tokens as u64)
@@ -934,11 +934,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn continued_conversation_checkpoint_overrides_saved_context_default() {
+    fn configured_context_overrides_stale_checkpoint_limit() {
         let mut model = crate::model::ModelSpec {
             context_window_tokens: Some(200_000),
             ..crate::model::ModelSpec::new("model")
         };
+        let checkpoint = pb::ConversationStateStructure {
+            token_details: Some(pb::ConversationTokenDetails {
+                max_tokens: 280_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        hydrate_context_window_from_checkpoint(&mut model, None, Some(&checkpoint));
+
+        assert_eq!(model.context_window_tokens, Some(200_000));
+    }
+
+    #[test]
+    fn checkpoint_context_fills_missing_configured_context() {
+        let mut model = crate::model::ModelSpec::new("model");
         let checkpoint = pb::ConversationStateStructure {
             token_details: Some(pb::ConversationTokenDetails {
                 max_tokens: 280_000,
