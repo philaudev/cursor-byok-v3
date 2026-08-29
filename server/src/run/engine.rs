@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{
     client::{
@@ -780,7 +781,7 @@ impl RunEngine {
                 (fallback_summary(&compactable), failure.usage)
             }
         };
-        let event_id = format!("summary:auto:{}", prepared.run_id);
+        let event_id = format!("summary:auto:{}:{}", prepared.run_id, &Uuid::new_v4().simple().to_string()[..8]);
         let summary_message = CanonicalMessage {
             message_id: format!("runtime:{event_id}"),
             role: Role::User,
@@ -795,7 +796,7 @@ impl RunEngine {
         let mut replacement = retained_request_context.into_iter().collect::<Vec<_>>();
         replacement.push(summary_message);
         replacement.extend(prepared.initial_messages.iter().cloned());
-        let replacement_message_count = replacement.len();
+        let mut replacement_message_count = replacement.len();
         let mut revision = self
             .store
             .replace_revision(
@@ -833,7 +834,7 @@ impl RunEngine {
         .await?
         .0;
         if let Some(message) = interrupted_message {
-            revision = append_runtime_message(
+            let (next_revision, _) = append_runtime_message(
                 &self.store,
                 prepared,
                 client,
@@ -841,8 +842,9 @@ impl RunEngine {
                 revision,
                 message,
             )
-            .await?
-            .0;
+            .await?;
+            revision = next_revision;
+            replacement_message_count = replacement_message_count.saturating_add(1);
         }
         Ok((revision, compaction_usage, replacement_message_count))
     }

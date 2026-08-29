@@ -860,7 +860,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
     assert!(requests[1]
         .prompt
         .instructions
-        .starts_with("Summarize the conversation for the next model turn."));
+        .starts_with("You are compacting conversation history for future model turns."));
     assert!(!serde_json::to_string(&requests[1].history)
         .unwrap()
         .contains("injected follow-up"));

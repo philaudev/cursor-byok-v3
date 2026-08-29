@@ -238,7 +238,7 @@ mod tests {
 
         assert!(started.messages.is_empty());
         assert!(completion.result().is_error);
-        assert!(completion.result().content.contains("older version"));
+        assert!(completion.result().content.contains("no longer available"));
     }
 
     #[test]

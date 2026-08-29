@@ -183,7 +183,7 @@ impl ModelConfig {
         model.max_output_tokens = self.max_output_tokens().or(model.max_output_tokens);
         model.extra_params = self.extra_params().clone();
         model.display_name = Some(self.display_name.clone());
-        // A request-selected context is authoritative.  Use the saved model
+        // A request-selected context is authoritative. Use the saved model
         // value only when Cursor did not send a context parameter.
         if model.context_window_tokens.is_none() {
             model.context_window_tokens = self.context_window_tokens;
@@ -452,9 +452,9 @@ mod tests {
     }
 
     #[test]
-    fn configured_context_window_overrides_the_cursor_catalog() {
+    fn configured_context_window_fills_missing_cursor_catalog_value() {
         let mut requested = ModelSpec {
-            context_window_tokens: Some(272_000),
+            context_window_tokens: None,
             max_output_tokens: Some(4_096),
             extra_params: serde_json::json!({"from_cursor": true}),
             ..ModelSpec::new("model-a")

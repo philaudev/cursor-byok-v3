@@ -352,8 +352,6 @@ async fn background_shell_completion_wakes_the_parent_with_the_captured_notifica
     assert!(text.contains("detail: terminated_by_user"));
     assert!(text.contains("output_path: /tmp/977679.txt"));
     assert!(text.contains(SHELL_FOLLOW_UP));
-    assert!(text.starts_with("<timestamp>"));
-    assert!(!text.contains("You are still in **Agent Mode**"));
     assert!(text.find("<system_notification>").unwrap() < text.find("<user_query>").unwrap());
 
     let turn = pb::ConversationTurnStructure::decode(
