@@ -127,15 +127,17 @@ impl RunActor {
         let action = pb::BackgroundTaskCompletionAction {
             completions: vec![completion],
         };
-        let projection = match crate::cursor::request::project_background_completion(
+        let Some(projection) = (match crate::cursor::request::project_background_completion(
             &action,
             pb::AgentMode::Multitask as i32,
         ) {
-            Ok(p) => p,
+            Ok(projection) => projection,
             Err(err) => {
                 tracing::warn!(%err, "failed to project subagent background completion");
                 return;
             }
+        }) else {
+            return;
         };
         let event = crate::model::RuntimeEvent {
             event_id: projection.turn_user.message_id,

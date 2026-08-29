@@ -28,7 +28,7 @@ pub(crate) struct Projection {
 pub(crate) fn project_background_completion(
     action: &pb::BackgroundTaskCompletionAction,
     mode: i32,
-) -> Result<Projection> {
+) -> Result<Option<Projection>> {
     if action.completions.is_empty() {
         return Err(Error::Protocol(
             "background task completion action contains no completion".into(),
@@ -55,11 +55,14 @@ pub(crate) fn project_background_completion(
                     completion.reason
                 ))
             })?;
-        if reason != pb::BackgroundTaskCompletionReason::TaskFinished {
-            return Err(Error::Protocol(format!(
-                "background task notification is not a finished task: {}",
-                reason.as_str_name()
-            )));
+        match reason {
+            pb::BackgroundTaskCompletionReason::TaskFinished => {}
+            pb::BackgroundTaskCompletionReason::TaskProgress => continue,
+            pb::BackgroundTaskCompletionReason::Unspecified => {
+                return Err(Error::Protocol(
+                    "background task completion has unspecified reason".into(),
+                ));
+            }
         }
         if completion.task_id.is_empty() || completion.title.is_empty() {
             return Err(Error::Protocol(
@@ -107,6 +110,10 @@ pub(crate) fn project_background_completion(
         }
     }
 
+    if completions.is_empty() {
+        return Ok(None);
+    }
+
     let (first, _) = completions
         .values()
         .next()
@@ -117,7 +124,7 @@ pub(crate) fn project_background_completion(
         (true, true) => format!("{SHELL_FOLLOW_UP}\n\n{FOLLOW_UP}"),
         (false, false) => unreachable!(),
     };
-    Ok(Projection {
+    Ok(Some(Projection {
         context: completions
             .values()
             .map(|(_, context)| context.as_str())
@@ -139,7 +146,7 @@ pub(crate) fn project_background_completion(
             }),
             ..Default::default()
         },
-    })
+    }))
 }
 
 fn status(completion: &pb::BackgroundTaskCompletion) -> Result<pb::BackgroundTaskStatus> {
@@ -220,7 +227,9 @@ mod tests {
             completions: vec![completion()],
         };
         let projection =
-            project_background_completion(&action, pb::AgentMode::Multitask as i32).unwrap();
+            project_background_completion(&action, pb::AgentMode::Multitask as i32)
+                .unwrap()
+                .expect("finished completion must project");
 
         assert!(projection.context.contains("kind: subagent"));
         assert!(projection.context.contains("agent_id: child-id"));
@@ -240,7 +249,9 @@ mod tests {
             completions: vec![shell_completion()],
         };
         let projection =
-            project_background_completion(&action, pb::AgentMode::Agent as i32).unwrap();
+            project_background_completion(&action, pb::AgentMode::Agent as i32)
+                .unwrap()
+                .expect("finished completion must project");
 
         assert_eq!(projection.turn_user.text, SHELL_FOLLOW_UP);
         assert_eq!(
@@ -282,7 +293,8 @@ mod tests {
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completions must project");
 
         assert!(projection.context.contains("kind: shell"));
         assert!(projection.context.contains("agent_id: child-id"));
@@ -303,14 +315,16 @@ mod tests {
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completions must project");
         let reversed = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![second, first],
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completions must project");
 
         assert_eq!(forward.turn_user, reversed.turn_user);
         assert_eq!(forward.context, reversed.context);
@@ -324,7 +338,8 @@ mod tests {
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completions must project");
         let mut resumed = completion();
         resumed.tool_call_id = Some("task-call-2".into());
         let second = project_background_completion(
@@ -333,11 +348,26 @@ mod tests {
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completions must project");
 
         assert_ne!(first.turn_user.message_id, second.turn_user.message_id);
         assert!(first.turn_user.message_id.ends_with(":task-call"));
         assert!(second.turn_user.message_id.ends_with(":task-call-2"));
+    }
+
+    #[test]
+    fn task_progress_is_ignored_without_starting_a_turn() {
+        let mut progress = completion();
+        progress.reason = pb::BackgroundTaskCompletionReason::TaskProgress as i32;
+        assert!(project_background_completion(
+            &pb::BackgroundTaskCompletionAction {
+                completions: vec![progress],
+            },
+            pb::AgentMode::Agent as i32,
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
@@ -353,9 +383,12 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("subagent_id"));
+    }
 
+    #[test]
+    fn unspecified_completion_reason_is_rejected() {
         let mut value = completion();
-        value.reason = pb::BackgroundTaskCompletionReason::TaskProgress as i32;
+        value.reason = pb::BackgroundTaskCompletionReason::Unspecified as i32;
         assert!(project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![value]
@@ -364,7 +397,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("not a finished task"));
+        .contains("unspecified reason"));
     }
 
     fn completion() -> pb::BackgroundTaskCompletion {

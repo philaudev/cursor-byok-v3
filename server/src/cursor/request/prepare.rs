@@ -683,7 +683,18 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
             })
         }
         pb::conversation_action::Action::BackgroundTaskCompletionAction(action) => {
-            let projection = background::project_background_completion(action, mode)?;
+            let Some(projection) = background::project_background_completion(action, mode)? else {
+                return Ok(ActionProjection {
+                    mode,
+                    turn_user: None,
+                    action_context: String::new(),
+                    event_id: None,
+                    input_id: None,
+                    starts_turn: false,
+                    compacting: false,
+                    background_completion: false,
+                });
+            };
             let event_id = projection.turn_user.message_id.clone();
             Ok(ActionProjection {
                 mode,

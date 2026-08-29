@@ -647,7 +647,9 @@ impl CursorSession {
         self.tool_runtime
             .observe_background_task_completion(&action)
             .await;
-        let event = background_completion_event(action, self.context.mode)?;
+        let Some(event) = background_completion_event(action, self.context.mode)? else {
+            return Ok(());
+        };
         self.core
             .commands
             .send(ClientCommand::RuntimeEvent(event))
@@ -743,12 +745,14 @@ enum Input {
 fn background_completion_event(
     action: pb::BackgroundTaskCompletionAction,
     mode: i32,
-) -> Result<crate::model::RuntimeEvent> {
-    let projection = crate::cursor::request::project_background_completion(&action, mode)?;
-    Ok(crate::model::RuntimeEvent {
+) -> Result<Option<crate::model::RuntimeEvent>> {
+    let Some(projection) = crate::cursor::request::project_background_completion(&action, mode)? else {
+        return Ok(None);
+    };
+    Ok(Some(crate::model::RuntimeEvent {
         event_id: projection.turn_user.message_id,
         text: format!("{}\n\n{}", projection.context, projection.turn_user.text),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -773,7 +777,8 @@ mod tests {
             },
             pb::AgentMode::Multitask as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completion must become an event");
 
         assert_eq!(
             event.event_id,
