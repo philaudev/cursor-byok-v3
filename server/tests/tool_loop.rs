@@ -39,6 +39,7 @@ fn call(id: &str, name: &str) -> ToolCall {
 
 fn exec_context() -> ExecContext {
     ExecContext {
+        workspace_paths: Vec::new(),
         conversation_id: "conversation".into(),
         root_conversation_id: "conversation".into(),
         default_subagent_model: "model".into(),

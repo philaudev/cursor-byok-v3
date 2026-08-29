@@ -67,6 +67,8 @@ impl Provider for ProviderRouter {
                 reasoning_effort: invocation.request.model.reasoning.effort.clone(),
                 fast: invocation.request.model.latency == ModelLatency::Fast,
                 message_count: invocation.canonical_message_count,
+                projected_message_count: invocation.projected_message_count,
+                history_fingerprint: invocation.history_fingerprint.clone(),
                 tool_count: invocation.request.prompt.tools.len(),
                 detailed: false,
             }).await?;

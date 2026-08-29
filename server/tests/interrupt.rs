@@ -64,6 +64,7 @@ async fn a_replaced_run_cannot_overwrite_its_cancelled_status() {
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("model"),
+        checkpoint_context_tokens: None,
         prompt: PromptSpec {
             instructions: String::new(),
             tools: Vec::new(),

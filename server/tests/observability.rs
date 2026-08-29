@@ -201,6 +201,8 @@ async fn records_one_summary_and_raw_payloads_for_one_provider_request() {
                 conversation_id: "conversation-1".into(),
                 provider_call_index: 0,
                 canonical_message_count: 0,
+                projected_message_count: 0,
+                history_fingerprint: String::new(),
                 request: ModelRequest {
                     prompt: PromptSpec {
                         instructions: "system".into(),

@@ -18,15 +18,18 @@ pub struct NewLlmCall {
     pub reasoning_effort: Option<String>,
     pub fast: bool,
     pub message_count: usize,
+    pub projected_message_count: usize,
+    pub history_fingerprint: String,
     pub tool_count: usize,
     pub detailed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LlmCallUsageAnchor {
     pub request_type: ProviderType,
     pub usage: Usage,
-    pub message_count: usize,
+    pub projected_message_count: usize,
+    pub history_fingerprint: String,
     pub tool_count: usize,
 }
 

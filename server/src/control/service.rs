@@ -307,6 +307,8 @@ impl ControlService {
             conversation_id: call_id.clone(),
             provider_call_index: 0,
             canonical_message_count: 1,
+            projected_message_count: 1,
+            history_fingerprint: String::new(),
             request: ModelRequest {
                 prompt: PromptSpec {
                     instructions: String::new(),

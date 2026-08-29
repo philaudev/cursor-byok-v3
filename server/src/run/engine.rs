@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -173,6 +175,10 @@ impl RunEngine {
         // compacting again. The baseline must be the replacement history size, not
         // the pre-compaction size: compaction deliberately shrinks that history.
         let mut last_auto_compaction_message_count = None;
+        // UI usage is authoritative for the initial pre-provider decision. Once
+        // this run has a provider anchor, or replaces history with a summary,
+        // the old checkpoint snapshot must not be reused.
+        let mut checkpoint_context_tokens = prepared.checkpoint_context_tokens;
         'model: loop {
             if cancellation.is_cancelled() {
                 return (RunOutcome::Cancelled, usage);
@@ -192,6 +198,12 @@ impl RunEngine {
                 Ok(anchor) => anchor.and_then(ContextUsageAnchor::from_llm_call),
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
+            // Store filters legacy rows without a persisted identity. A provider
+            // anchor from this schema supersedes the pre-run UI checkpoint even
+            // when a later revision makes that anchor incompatible.
+            if context_anchor.is_some() {
+                checkpoint_context_tokens = None;
+            }
             let history = match crate::model::project_messages(&messages) {
                 Ok(history) => history,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
@@ -199,7 +211,13 @@ impl RunEngine {
             let history_grew_since_auto_compaction =
                 should_repeat_auto_compaction(last_auto_compaction_message_count, messages.len());
             if history_grew_since_auto_compaction
-                && should_auto_compact(prepared, &messages, &history, context_anchor)
+                && should_auto_compact(
+                    prepared,
+                    &messages,
+                    &history,
+                    context_anchor,
+                    checkpoint_context_tokens,
+                )
             {
                 match self
                     .auto_compact(prepared, revision, &messages, client, cancellation)
@@ -207,6 +225,7 @@ impl RunEngine {
                 {
                     Ok((next_revision, compaction_usage, replacement_message_count)) => {
                         revision = next_revision;
+                        checkpoint_context_tokens = None;
                         last_auto_compaction_message_count = Some(replacement_message_count);
                         if let Some(compaction_usage) = compaction_usage {
                             accumulate_usage(&mut usage, compaction_usage);
@@ -233,9 +252,12 @@ impl RunEngine {
             } else {
                 history
             };
+            crate::model::normalize_provider_tool_call_ids(&mut history);
             if let Err(error) = hydrate_tool_images(&self.store, &mut history).await {
                 return (RunOutcome::Failed(error.into()), usage);
             }
+            let history_fingerprint = prompt_history_fingerprint(&prepared.prompt, &history);
+            let projected_message_count = history.len();
             let request = crate::model::ModelRequest {
                 prompt: prepared.prompt.clone(),
                 model: prepared.model.clone(),
@@ -247,6 +269,8 @@ impl RunEngine {
                 conversation_id: prepared.conversation_id.to_string(),
                 provider_call_index,
                 canonical_message_count: messages.len(),
+                projected_message_count,
+                history_fingerprint,
                 request,
             };
             let cycle_cancellation = cancellation.child_token();
@@ -664,6 +688,11 @@ impl RunEngine {
             .map_err(|error| RunOutcome::Failed(error.into()))?;
         let history = crate::model::project_compaction_messages(&compactable)
             .map_err(|error| RunOutcome::Failed(error.into()))?;
+        let prompt = crate::model::PromptSpec {
+            instructions: prepared.compaction_prompt.instructions.clone(),
+            tools: Vec::new(),
+        };
+        let history_fingerprint = prompt_history_fingerprint(&prompt, &history);
         let mut model = prepared.model.clone();
         model.max_output_tokens = Some(COMPACTION_OUTPUT_TOKENS);
         model.reasoning.enabled = false;
@@ -674,11 +703,10 @@ impl RunEngine {
             conversation_id: prepared.conversation_id.to_string(),
             provider_call_index,
             canonical_message_count: compactable.len(),
+            projected_message_count: history.len(),
+            history_fingerprint,
             request: crate::model::ModelRequest {
-                prompt: crate::model::PromptSpec {
-                    instructions: prepared.compaction_prompt.instructions.clone(),
-                    tools: Vec::new(),
-                },
+                prompt,
                 model,
                 history,
             },
@@ -850,10 +878,11 @@ fn auto_compaction_partition(
     (compactable, retained)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ContextUsageAnchor {
     input_tokens: u64,
-    message_count: usize,
+    projected_message_count: usize,
+    history_fingerprint: String,
     tool_count: usize,
 }
 
@@ -861,10 +890,20 @@ impl ContextUsageAnchor {
     fn from_llm_call(anchor: crate::model::LlmCallUsageAnchor) -> Option<Self> {
         Some(Self {
             input_tokens: anchor.usage.context_input_tokens(anchor.request_type)?,
-            message_count: anchor.message_count,
+            projected_message_count: anchor.projected_message_count,
+            history_fingerprint: anchor.history_fingerprint,
             tool_count: anchor.tool_count,
         })
     }
+}
+
+fn prompt_history_fingerprint(
+    prompt: &crate::model::PromptSpec,
+    messages: &[crate::model::ProjectedMessage],
+) -> String {
+    let serialized = serde_json::to_vec(&(prompt.instructions.as_str(), messages, &prompt.tools))
+        .unwrap_or_default();
+    hex::encode(Sha256::digest(serialized))
 }
 
 fn should_auto_compact(
@@ -872,11 +911,13 @@ fn should_auto_compact(
     messages: &[CanonicalMessage],
     projected_messages: &[crate::model::ProjectedMessage],
     anchor: Option<ContextUsageAnchor>,
+    checkpoint_context_tokens: Option<u64>,
 ) -> bool {
     if prepared.action == RunAction::Compact {
         return false;
     }
     let Some(context_window) = prepared.model.context_window_tokens else {
+        tracing::debug!("automatic compaction skipped: effective context window is unavailable");
         return false;
     };
     if context_window <= COMPACTION_RESERVE_TOKENS
@@ -884,18 +925,41 @@ fn should_auto_compact(
     {
         return false;
     }
-    let estimated_input = anchor
-        .filter(|anchor| {
-            anchor.message_count <= projected_messages.len()
-                && anchor.tool_count == prepared.prompt.tools.len()
-        })
+    let compatible_anchor = anchor.as_ref().filter(|anchor| {
+        anchor.projected_message_count <= projected_messages.len()
+            && anchor.history_fingerprint
+                == prompt_history_fingerprint(
+                    &prepared.prompt,
+                    &projected_messages[..anchor.projected_message_count],
+                )
+            && anchor.tool_count == prepared.prompt.tools.len()
+    });
+    let estimated_input = compatible_anchor
         .map(|anchor| {
             anchor.input_tokens.saturating_add(estimate_message_tokens(
-                &projected_messages[anchor.message_count..],
+                &projected_messages[anchor.projected_message_count..],
             ))
         })
+        .or_else(|| {
+            checkpoint_context_tokens.map(|tokens| {
+                tokens.saturating_add(estimate_message_tokens(&prepared.initial_messages))
+            })
+        })
         .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, messages));
-    estimated_input > context_window.saturating_sub(COMPACTION_RESERVE_TOKENS)
+    let budget = context_window.saturating_sub(COMPACTION_RESERVE_TOKENS);
+    let should_compact = estimated_input >= budget;
+    tracing::debug!(
+        context_window,
+        reserve_tokens = COMPACTION_RESERVE_TOKENS,
+        estimated_input,
+        budget,
+        anchor_available = anchor.is_some(),
+        checkpoint_context_tokens,
+        projected_message_count = anchor.as_ref().map(|anchor| anchor.projected_message_count),
+        should_compact,
+        "automatic compaction decision"
+    );
+    should_compact
 }
 
 fn estimate_context_tokens(
@@ -1157,7 +1221,8 @@ fn has_pending_background_subagents(messages: &[CanonicalMessage]) -> bool {
 mod tests {
     use super::{
         auto_compaction_partition, estimate_context_tokens, hydrate_tool_images,
-        should_auto_compact, should_repeat_auto_compaction, ContextUsageAnchor,
+        prompt_history_fingerprint, should_auto_compact, should_repeat_auto_compaction,
+        ContextUsageAnchor,
     };
     use crate::{
         model::{
@@ -1213,6 +1278,7 @@ mod tests {
                 context_window_tokens: Some(200_000),
                 ..ModelSpec::new("model")
             },
+            checkpoint_context_tokens: None,
             prompt: PromptSpec {
                 instructions: "system".into(),
                 tools: Vec::new(),
@@ -1225,22 +1291,19 @@ mod tests {
             action: RunAction::Start,
             base_revision_id: RevisionId(1),
         };
+        let projected = crate::model::project_messages(&messages).unwrap();
         let anchor = ContextUsageAnchor {
             input_tokens: 140_649,
-            message_count: 1,
+            projected_message_count: 1,
+            history_fingerprint: prompt_history_fingerprint(&prepared.prompt, &projected[..1]),
             tool_count: 0,
         };
-
-        assert_eq!(
-            estimate_context_tokens(&prepared.prompt, &messages),
-            211_733
-        );
-        let projected = crate::model::project_messages(&messages).unwrap();
         assert!(!should_auto_compact(
             &prepared,
             &messages,
             &projected,
-            Some(anchor)
+            Some(anchor),
+            None,
         ));
     }
 
@@ -1264,6 +1327,7 @@ mod tests {
                 context_window_tokens: Some(200_000),
                 ..ModelSpec::new("model")
             },
+            checkpoint_context_tokens: None,
             prompt: PromptSpec {
                 instructions: "system".into(),
                 tools: Vec::new(),
@@ -1276,18 +1340,19 @@ mod tests {
             action: RunAction::Start,
             base_revision_id: RevisionId(1),
         };
+        let projected = crate::model::project_messages(&messages).unwrap();
         let anchor = ContextUsageAnchor {
             input_tokens: 140_649,
-            message_count: 1,
+            projected_message_count: 1,
+            history_fingerprint: prompt_history_fingerprint(&prepared.prompt, &projected[..1]),
             tool_count: 0,
         };
-
-        let projected = crate::model::project_messages(&messages).unwrap();
         assert!(should_auto_compact(
             &prepared,
             &messages,
             &projected,
-            Some(anchor)
+            Some(anchor),
+            None,
         ));
     }
 
@@ -1344,8 +1409,13 @@ mod tests {
                 context_window_tokens: Some(20_000),
                 ..ModelSpec::new("model")
             },
+            checkpoint_context_tokens: None,
             prompt: PromptSpec {
                 instructions: "system".into(),
+                tools: Vec::new(),
+            },
+            compaction_prompt: PromptSpec {
+                instructions: "compaction".into(),
                 tools: Vec::new(),
             },
             initial_messages: Vec::new(),
@@ -1354,7 +1424,8 @@ mod tests {
         };
         let anchor = ContextUsageAnchor {
             input_tokens: 1_000,
-            message_count: 1,
+            projected_message_count: 1,
+            history_fingerprint: prompt_history_fingerprint(&prepared.prompt, &projected[..1]),
             tool_count: 0,
         };
 
@@ -1362,19 +1433,24 @@ mod tests {
             &prepared,
             &messages,
             &projected,
-            Some(anchor)
+            Some(anchor),
+            None,
         ));
     }
 
     #[test]
-    fn auto_compaction_triggers_for_resume_action_when_threshold_exceeded() {
-        let old_history =
-            CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+    fn auto_compaction_does_not_trigger_with_78k_remaining() {
+        let old_history = CanonicalMessage::text(
+            "old-history",
+            Role::User,
+            Origin::User,
+            "old history",
+        );
         let current_runtime = CanonicalMessage::text(
             "runtime:current",
             Role::User,
             Origin::Runtime,
-            "x".repeat(210_000),
+            "current request",
         );
         let messages = vec![old_history, current_runtime.clone()];
         let prepared = PreparedRun {
@@ -1383,9 +1459,10 @@ mod tests {
             conversation_id: ConversationId::new("conversation"),
             kind: RunKind::Root,
             model: ModelSpec {
-                context_window_tokens: Some(200_000),
+                context_window_tokens: Some(280_000),
                 ..ModelSpec::new("model")
             },
+            checkpoint_context_tokens: Some(202_000),
             prompt: PromptSpec {
                 instructions: "system".into(),
                 tools: Vec::new(),
@@ -1395,18 +1472,101 @@ mod tests {
                 tools: Vec::new(),
             },
             initial_messages: vec![current_runtime],
-            action: RunAction::Resume {
-                pending_tool_round: None,
-            },
+            action: RunAction::Start,
             base_revision_id: RevisionId(1),
         };
+        let projected = crate::model::project_messages(&messages).unwrap();
         let anchor = ContextUsageAnchor {
-            input_tokens: 140_649,
-            message_count: 1,
+            input_tokens: 275_000,
+            projected_message_count: projected.len() + 1,
+            history_fingerprint: String::new(),
             tool_count: 0,
         };
 
-        assert!(should_auto_compact(&prepared, &messages, Some(anchor)));
+        assert!(!should_auto_compact(
+            &prepared,
+            &messages,
+            &projected,
+            Some(anchor),
+            Some(202_000),
+        ));
+    }
+
+    #[test]
+    fn auto_compaction_triggers_when_remaining_equals_reserve() {
+        let old_history = CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text("runtime:current", Role::User, Origin::Runtime, "current request");
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"), cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"), kind: RunKind::Root,
+            model: ModelSpec { context_window_tokens: Some(280_000), ..ModelSpec::new("model") },
+            checkpoint_context_tokens: Some(270_000),
+            prompt: PromptSpec { instructions: "system".into(), tools: Vec::new() },
+            compaction_prompt: PromptSpec { instructions: "compaction".into(), tools: Vec::new() },
+            initial_messages: vec![current_runtime], action: RunAction::Start, base_revision_id: RevisionId(1),
+        };
+        let projected = crate::model::project_messages(&messages).unwrap();
+        let anchor = ContextUsageAnchor {
+            input_tokens: 202_000,
+            projected_message_count: projected.len() + 1,
+            history_fingerprint: String::new(),
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, &projected, Some(anchor), Some(270_000)));
+    }
+
+    #[test]
+    fn provider_anchor_replaces_checkpoint_usage_after_a_tool_round() {
+        let old_history = CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text("runtime:current", Role::User, Origin::Runtime, "current request");
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"), cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"), kind: RunKind::Root,
+            model: ModelSpec { context_window_tokens: Some(280_000), ..ModelSpec::new("model") },
+            checkpoint_context_tokens: Some(202_000),
+            prompt: PromptSpec { instructions: "system".into(), tools: Vec::new() },
+            compaction_prompt: PromptSpec { instructions: "compaction".into(), tools: Vec::new() },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Resume { pending_tool_round: None }, base_revision_id: RevisionId(1),
+        };
+        let projected = crate::model::project_messages(&messages).unwrap();
+        let anchor = ContextUsageAnchor {
+            input_tokens: 270_000,
+            projected_message_count: projected.len(),
+            history_fingerprint: prompt_history_fingerprint(&prepared.prompt, &projected),
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, &projected, Some(anchor), None));
+    }
+
+    #[test]
+    fn auto_compaction_triggers_for_resume_action_when_threshold_exceeded() {
+        let old_history = CanonicalMessage::text("old-history", Role::User, Origin::User, "old history");
+        let current_runtime = CanonicalMessage::text("runtime:current", Role::User, Origin::Runtime, "x".repeat(210_000));
+        let messages = vec![old_history, current_runtime.clone()];
+        let prepared = PreparedRun {
+            run_id: RunId::new("run"), cursor_request_id: None,
+            conversation_id: ConversationId::new("conversation"), kind: RunKind::Root,
+            model: ModelSpec { context_window_tokens: Some(200_000), ..ModelSpec::new("model") },
+            checkpoint_context_tokens: None,
+            prompt: PromptSpec { instructions: "system".into(), tools: Vec::new() },
+            compaction_prompt: PromptSpec { instructions: "compaction".into(), tools: Vec::new() },
+            initial_messages: vec![current_runtime],
+            action: RunAction::Resume { pending_tool_round: None }, base_revision_id: RevisionId(1),
+        };
+        let projected = crate::model::project_messages(&messages).unwrap();
+        let anchor = ContextUsageAnchor {
+            input_tokens: 140_649,
+            projected_message_count: 1,
+            history_fingerprint: prompt_history_fingerprint(&prepared.prompt, &projected[..1]),
+            tool_count: 0,
+        };
+
+        assert!(should_auto_compact(&prepared, &messages, &projected, Some(anchor), None));
     }
 
     #[test]

@@ -392,6 +392,8 @@ mod tests {
             reasoning_effort: None,
             fast: false,
             message_count: 0,
+            projected_message_count: 0,
+            history_fingerprint: String::new(),
             tool_count: 0,
             detailed,
         };

@@ -109,6 +109,8 @@ impl CursorSessionHandle {
             commands,
             output: Arc::new(OutputHub::default()),
             cancellation: CancellationToken::new(),
+            conversation_id: Arc::new(OnceLock::new()),
+            cancelled_conversations: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             parent: Arc::new(OnceLock::new()),
             trace: None,
         }

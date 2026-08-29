@@ -113,6 +113,8 @@ async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
         reasoning_effort: Some("high".into()),
         fast: true,
         message_count: 2,
+        projected_message_count: 2,
+        history_fingerprint: "history".into(),
         tool_count: 3,
         detailed: false,
     };
@@ -125,6 +127,7 @@ async fn call_summary_is_always_stored_and_payloads_follow_detailed_setting() {
             conversation_id,
             kind: RunKind::Root,
             model: ModelSpec::new(call.model_hash.clone()),
+            checkpoint_context_tokens: None,
             prompt: PromptSpec {
                 instructions: String::new(),
                 tools: Vec::new(),

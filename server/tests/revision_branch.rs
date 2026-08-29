@@ -16,6 +16,7 @@ fn prepared(
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("test-model"),
+        checkpoint_context_tokens: None,
         prompt: PromptSpec {
             instructions: "test".into(),
             tools: Vec::new(),

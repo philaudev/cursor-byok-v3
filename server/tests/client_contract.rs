@@ -285,6 +285,7 @@ async fn prepared(store: &cursor_server::store::Store) -> PreparedRun {
         conversation_id,
         kind: RunKind::Root,
         model: ModelSpec::new("model"),
+        checkpoint_context_tokens: None,
         prompt: PromptSpec {
             instructions: "system".into(),
             tools: vec![ToolDefinition {

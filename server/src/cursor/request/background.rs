@@ -396,6 +396,7 @@ mod tests {
             pb::AgentMode::Agent as i32
         )
         .unwrap_err()
+        .to_string()
         .contains("unspecified reason"));
     }
 
@@ -404,13 +405,14 @@ mod tests {
         let mut progress = completion();
         progress.task_id = "child-id:task_progress:1".into();
         progress.reason = pb::BackgroundTaskCompletionReason::TaskProgress as i32;
-        let projection = project(
+        let projection = project_background_completion(
             &pb::BackgroundTaskCompletionAction {
                 completions: vec![progress, completion()],
             },
             pb::AgentMode::Agent as i32,
         )
-        .unwrap();
+        .unwrap()
+        .expect("finished completion must project");
 
         assert!(projection.context.contains("agent_id: child-id"));
         assert!(!projection.context.contains("task_progress"));

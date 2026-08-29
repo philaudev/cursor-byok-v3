@@ -70,8 +70,9 @@ impl Store {
                 call_id, run_id, conversation_id, provider_call_index, model_hash,
                 provider_type, provider_url, request_type, request_url, model_id, display_name,
                 reasoning_effort, fast, status,
-                created_at_ms, request_started_at_ms, queue_ms, message_count, tool_count, detailed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?)"#,
+                created_at_ms, request_started_at_ms, queue_ms, message_count, projected_message_count,
+                history_fingerprint, tool_count, detailed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?, ?, ?)"#,
         )
         .bind(&call.call_id)
         .bind(&call.run_id)
@@ -89,6 +90,8 @@ impl Store {
         .bind(now)
         .bind(now)
         .bind(call.message_count as i64)
+        .bind(call.projected_message_count as i64)
+        .bind(&call.history_fingerprint)
         .bind(call.tool_count as i64)
         .bind(call.detailed)
         .execute(&self.pool)
@@ -293,13 +296,14 @@ impl Store {
         model_hash: &str,
     ) -> Result<Option<LlmCallUsageAnchor>> {
         let row = sqlx::query(
-            r#"SELECT request_type, usage_json, message_count, tool_count
+            r#"SELECT request_type, usage_json, projected_message_count, history_fingerprint, tool_count
                FROM llm_calls
                WHERE conversation_id = ?
                  AND model_hash = ?
                  AND status = 'completed'
                  AND input_tokens IS NOT NULL
                  AND usage_json IS NOT NULL
+                 AND history_fingerprint != ''
                ORDER BY rowid DESC
                LIMIT 1"#,
         )
@@ -308,14 +312,18 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
-            let message_count =
-                usize::try_from(row.try_get::<i64, _>("message_count")?).unwrap_or(usize::MAX);
+            let projected_message_count = usize::try_from(
+                row.try_get::<i64, _>("projected_message_count")?,
+            )
+            .unwrap_or(usize::MAX);
+            let history_fingerprint = row.try_get("history_fingerprint")?;
             let tool_count =
                 usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
             Ok(LlmCallUsageAnchor {
                 request_type: ProviderType::from_str(row.try_get("request_type")?)?,
                 usage: serde_json::from_str(row.try_get("usage_json")?)?,
-                message_count,
+                projected_message_count,
+                history_fingerprint,
                 tool_count,
             })
         })
@@ -574,6 +582,7 @@ mod tests {
             ("completed-old", "completed", 120_000, 10),
             ("failed-newer", "error", 180_000, 11),
             ("completed-latest", "completed", 140_649, 12),
+            ("completed-legacy", "completed", 180_000, 13),
         ] {
             store
                 .start_llm_call(&NewLlmCall {
@@ -591,6 +600,8 @@ mod tests {
                     reasoning_effort: None,
                     fast: false,
                     message_count,
+                    projected_message_count: message_count,
+                    history_fingerprint: format!("history-{message_count}"),
                     tool_count: 7,
                     detailed: false,
                 })
@@ -613,6 +624,11 @@ mod tests {
                 .unwrap();
         }
 
+        sqlx::query("UPDATE llm_calls SET history_fingerprint = '' WHERE call_id = 'completed-legacy'")
+            .execute(store.pool())
+            .await
+            .unwrap();
+
         let anchor = store
             .latest_llm_call_usage_anchor(&conversation_id, &model.model_hash)
             .await
@@ -621,7 +637,8 @@ mod tests {
 
         assert_eq!(anchor.request_type, ProviderType::OpenAiResponses);
         assert_eq!(anchor.usage.input_tokens, Some(140_649));
-        assert_eq!(anchor.message_count, 12);
+        assert_eq!(anchor.projected_message_count, 12);
+        assert_eq!(anchor.history_fingerprint, "history-12");
         assert_eq!(anchor.tool_count, 7);
     }
 
@@ -671,6 +688,8 @@ mod tests {
                 reasoning_effort: None,
                 fast: false,
                 message_count: 2,
+                projected_message_count: 2,
+                history_fingerprint: "history".into(),
                 tool_count: 3,
                 detailed: true,
             })

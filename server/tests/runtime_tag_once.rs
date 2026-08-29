@@ -16,6 +16,7 @@ async fn runtime_event_is_appended_exactly_once() {
         conversation_id: conversation_id.clone(),
         kind: RunKind::Root,
         model: ModelSpec::new("model"),
+        checkpoint_context_tokens: None,
         prompt: PromptSpec {
             instructions: String::new(),
             tools: Vec::new(),

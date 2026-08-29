@@ -727,6 +727,7 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
         conversation_id: parent_conversation_id.clone(),
         kind: cursor_server::model::RunKind::Root,
         model: cursor_server::model::ModelSpec::new("parent-model"),
+        checkpoint_context_tokens: None,
         prompt: cursor_server::model::PromptSpec {
             instructions: "You are the parent".into(),
             tools: Vec::new(),
@@ -767,6 +768,7 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
             background: true,
         },
         model: cursor_server::model::ModelSpec::new("child-model"),
+        checkpoint_context_tokens: None,
         prompt: cursor_server::model::PromptSpec {
             instructions: "You are subagent".into(),
             tools: Vec::new(),
