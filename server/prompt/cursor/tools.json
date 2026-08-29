@@ -463,6 +463,32 @@
     {
       "type": "function",
       "function": {
+        "name": "Ls",
+        "description": "Lists files and directories under a directory path.\n\nUse this tool when you need directory structure, especially top-level project layout or immediate children of a folder. Do not use Glob(\"*\") or recursive Glob patterns to list a directory; use Ls instead.\n\nYou may provide ignore globs for large or irrelevant directories such as .git, node_modules, dist, build, target, or logs.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ignore": {
+              "description": "Optional ignore globs for directories or files that should be skipped while listing.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "path": {
+              "description": "The absolute path of the directory to list.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Grep",
         "description": "A search tool built on ripgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
         "parameters": {

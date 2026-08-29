@@ -6,6 +6,7 @@
     "FetchMcpResource",
     "InspectChanges",
     "Glob",
+    "Ls",
     "Grep",
     "Read",
     "ReadLints",

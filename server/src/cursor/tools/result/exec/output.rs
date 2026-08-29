@@ -12,6 +12,7 @@ pub(super) fn output(
         Message::DeleteResult(value) => delete(value),
         Message::GrepResult(value) => grep(value),
         Message::DiagnosticsResult(value) => diagnostics(value),
+        Message::LsResult(value) => ls(value),
         Message::McpResult(value) => mcp(value),
         Message::ReadMcpResourceExecResult(value) => read_mcp(value),
         Message::SubagentResult(value) => task(value, call),
@@ -294,6 +295,46 @@ fn diagnostic_severity(value: i32) -> &'static str {
         Ok(pb::DiagnosticSeverity::Hint) => "hint",
         Ok(pb::DiagnosticSeverity::Unspecified) | Err(_) => "diagnostic",
     }
+}
+
+fn ls(value: &pb::LsResult) -> Result<(String, bool)> {
+    use pb::ls_result::Result as R;
+    match value.result.as_ref().ok_or_else(|| missing("ls"))? {
+        R::Success(value) => {
+            let root = value.directory_tree_root.as_ref();
+            let summary = format_directory_tree(root);
+            Ok((summary, false))
+        }
+        R::Error(value) => Ok((value.error.clone(), true)),
+        R::Rejected(value) => Ok((value.reason.clone(), true)),
+        R::Timeout(value) => {
+            let root = value.directory_tree_root.as_ref();
+            let path = root.map(|r| r.abs_path.as_str()).unwrap_or("unknown");
+            Ok((format!("ls timed out in {path}"), true))
+        }
+    }
+}
+
+fn format_directory_tree(root: Option<&pb::LsDirectoryTreeNode>) -> String {
+    let Some(root) = root else {
+        return "empty directory".into();
+    };
+    let mut lines = Vec::new();
+    lines.push(format!("{}:", root.abs_path));
+    for dir in &root.children_dirs {
+        let name = dir.abs_path.trim_end_matches(['/', '\\']);
+        lines.push(format!("  {name}/"));
+    }
+    for file in &root.children_files {
+        lines.push(format!("  {}", file.name));
+    }
+    if !root.children_were_processed {
+        lines.push("  [truncated: directory listing was limited]".into());
+    }
+    if lines.len() == 1 {
+        lines.push("  (empty)".into());
+    }
+    lines.join("\n")
 }
 
 fn mcp(value: &pb::McpResult) -> Result<(String, bool)> {

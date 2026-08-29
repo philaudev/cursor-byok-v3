@@ -2,6 +2,7 @@
   "tools": [
     "Shell",
     "Glob",
+    "Ls",
     "Grep",
     "Read",
     "InspectChanges",

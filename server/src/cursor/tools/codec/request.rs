@@ -107,6 +107,22 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             tool_call_id: call.call_id.clone(),
             ..Default::default()
         }),
+        "ls" => Message::LsArgs(pb::LsArgs {
+            path: string("path")?.trim().to_string(),
+            ignore: call
+                .arguments
+                .get("ignore")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            tool_call_id: call.call_id.clone(),
+            sandbox_policy: None,
+            timeout_ms: None,
+        }),
         "readlints" => Message::DiagnosticsArgs(pb::DiagnosticsArgs {
             path: call
                 .arguments

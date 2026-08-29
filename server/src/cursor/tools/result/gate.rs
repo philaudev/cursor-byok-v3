@@ -37,6 +37,7 @@ pub(super) fn tool_completion(
         Tool::ShellToolCall(tool) => gate_shell(tool),
         Tool::GrepToolCall(tool) => gate_grep(tool),
         Tool::GlobToolCall(tool) => gate_glob(tool),
+        Tool::LsToolCall(tool) => gate_ls(tool),
         Tool::ReadToolCall(tool) => gate_read(tool),
         Tool::EditToolCall(tool) => gate_edit(tool_name, tool),
         Tool::McpToolCall(tool) => gate_mcp(tool),
@@ -57,7 +58,32 @@ pub(super) fn exec_message(message: &mut pb::exec_client_message::Message) {
         Message::ShellResult(result) | Message::MiniSweAgentBashResult(result) => {
             gate_shell_result(result)
         }
+        Message::LsResult(result) => gate_ls_result(result),
         _ => {}
+    }
+}
+
+pub(super) fn gate_ls_result(result: &mut pb::LsResult) {
+    let Some(pb::ls_result::Result::Success(success)) = result.result.as_mut() else {
+        return;
+    };
+    let Some(root) = success.directory_tree_root.as_mut() else {
+        return;
+    };
+    let total_dirs = root.children_dirs.len();
+    let total_files = root.children_files.len();
+    let max_each = GLOB_FILE_LIMIT / 2;
+    let mut truncated = false;
+    if total_dirs > max_each {
+        root.children_dirs.truncate(max_each);
+        truncated = true;
+    }
+    if total_files > max_each {
+        root.children_files.truncate(max_each);
+        truncated = true;
+    }
+    if truncated {
+        root.children_were_processed = false;
     }
 }
 
@@ -142,6 +168,12 @@ fn gate_glob(tool: &mut pb::GlobToolCall) {
     success.files.truncate(GLOB_FILE_LIMIT);
     success.total_files = success.total_files.max(original as i32);
     success.client_truncated = true;
+}
+
+fn gate_ls(tool: &mut pb::LsToolCall) {
+    if let Some(result) = tool.result.as_mut() {
+        gate_ls_result(result);
+    }
 }
 
 fn gate_grep(tool: &mut pb::GrepToolCall) {
@@ -970,5 +1002,52 @@ mod tests {
         assert!(success.stderr.starts_with("ERROR_HEAD"));
         assert!(success.stderr.ends_with("ERROR_TAIL"));
         assert!(success.interleaved_output.unwrap().len() <= SHELL_INTERLEAVED_LIMIT);
+    }
+
+    #[test]
+    fn ls_results_are_gated_and_marked_truncated() {
+        let mut children_dirs = Vec::new();
+        for i in 0..150 {
+            children_dirs.push(pb::LsDirectoryTreeNode {
+                abs_path: format!("dir_{i}"),
+                ..Default::default()
+            });
+        }
+        let mut children_files = Vec::new();
+        for i in 0..150 {
+            children_files.push(pb::ls_directory_tree_node::File {
+                name: format!("file_{i}.txt"),
+                terminal_metadata: None,
+            });
+        }
+
+        let mut tool = pb::tool_call::Tool::LsToolCall(pb::LsToolCall {
+            result: Some(pb::LsResult {
+                result: Some(pb::ls_result::Result::Success(pb::LsSuccess {
+                    directory_tree_root: Some(pb::LsDirectoryTreeNode {
+                        abs_path: "/workspace/large".into(),
+                        children_dirs,
+                        children_files,
+                        children_were_processed: true,
+                        ..Default::default()
+                    }),
+                })),
+            }),
+            ..Default::default()
+        });
+        let mut content = "ls content".into();
+
+        tool_completion("Ls", &mut tool, &mut content);
+
+        let pb::tool_call::Tool::LsToolCall(tool) = tool else {
+            panic!("expected LsToolCall");
+        };
+        let Some(pb::ls_result::Result::Success(success)) = tool.result.and_then(|r| r.result) else {
+            panic!("expected LsSuccess");
+        };
+        let root = success.directory_tree_root.unwrap();
+        assert_eq!(root.children_dirs.len(), 100);
+        assert_eq!(root.children_files.len(), 100);
+        assert!(!root.children_were_processed);
     }
 }
