@@ -180,7 +180,6 @@ impl ModelConfig {
     }
 
     pub fn configure(&self, model: &mut super::ModelSpec) {
-        model.context_window_tokens = self.context_window_tokens.or(model.context_window_tokens);
         model.max_output_tokens = self.max_output_tokens().or(model.max_output_tokens);
         model.extra_params = self.extra_params().clone();
         model.display_name = Some(self.display_name.clone());

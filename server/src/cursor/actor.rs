@@ -179,6 +179,15 @@ impl CursorActor {
                                                     context.dynamic_tools.keys().cloned().collect(),
                                                     context.turn_user.clone(),
                                                 );
+                                                if let Some(checkpoint_state) = checkpoint.context_limit_update(context.mode) {
+                                                    if let Err(error) = checkpoint.publish(&handle, &checkpoint_state).await {
+                                                        tracing::warn!(
+                                                            request_id = handle.request_id(),
+                                                            %error,
+                                                            "failed to publish updated Cursor context limit"
+                                                        );
+                                                    }
+                                                }
                                                 if context.background_completion
                                                     && dependencies
                                                         .run_registry

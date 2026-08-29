@@ -84,6 +84,12 @@ impl CheckpointBuilder {
     ) {
         self.model = model;
         self.max_context_tokens = max_context_tokens;
+        if let Some(max_context_tokens) = max_context_tokens {
+            let details = self.base.token_details.get_or_insert_with(Default::default);
+            details.max_tokens = max_context_tokens.min(u32::MAX as u64) as u32;
+            details.prompt_context_usage_tree = None;
+            details.prompt_context_usage_snapshot_blob_id = None;
+        }
         self.instructions = instructions;
         self.allowed_tools = tool_definitions
             .iter()
@@ -92,6 +98,17 @@ impl CheckpointBuilder {
         self.tool_definitions = tool_definitions;
         self.dynamic_tools = dynamic_tools;
         self.turn_user = turn_user;
+    }
+
+    pub(crate) fn context_limit_update(
+        &self,
+        mode: i32,
+    ) -> Option<pb::ConversationStateStructure> {
+        self.max_context_tokens.map(|_| {
+            let mut checkpoint = self.base.clone();
+            checkpoint.mode = Some(mode);
+            checkpoint
+        })
     }
 
     pub(crate) fn record_context_tokens(&mut self, used_tokens: Option<u64>) {
