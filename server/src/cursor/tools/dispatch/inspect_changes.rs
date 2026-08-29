@@ -2,7 +2,8 @@
 //! Inspects uncommitted git status and diffs in a token-safe manner.
 
 use std::{
-    path::Path,
+    collections::HashMap,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -22,6 +23,8 @@ use crate::cursor::tools::{
 
 const MAX_OUTPUT_CHARS: usize = 8_000;
 const MAX_UNTRACKED_FILE_LINES: usize = 40;
+const MAX_FILE_READ_BYTES: u64 = 5_000_000;
+const MAX_CHANGED_FILES_SUMMARY: usize = 100;
 
 #[derive(Debug, Deserialize)]
 struct InspectChangesArgs {
@@ -33,6 +36,10 @@ struct ChangedFile {
     path: String,
     status: String,
     staged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    added: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleted: Option<usize>,
 }
 
 pub(super) fn start(
@@ -142,50 +149,159 @@ fn get_branch_name(workspace: &str) -> Option<String> {
         })
 }
 
-fn inspect_single_file(workspace: &str, target_path: &str) -> std::result::Result<Value, String> {
-    let branch = get_branch_name(workspace);
-    let diff_output = Command::new("git")
-        .args([
+fn to_repo_relative_path(workspace: &str, target_path: &str) -> String {
+    let ws_path = Path::new(workspace);
+    let target = Path::new(target_path);
+
+    if target.is_relative() {
+        return target_path.replace('\\', "/");
+    }
+
+    if let Ok(rel) = target.strip_prefix(ws_path) {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
+
+    // Try canonicalized forms if possible
+    if let (Ok(can_ws), Ok(can_target)) = (ws_path.canonicalize(), target.canonicalize()) {
+        if let Ok(rel) = can_target.strip_prefix(&can_ws) {
+            let rel_str = rel.to_string_lossy();
+            return rel_str.trim_start_matches(r"\\?\").replace('\\', "/");
+        }
+    }
+
+    target_path.replace('\\', "/")
+}
+
+fn run_git_diff(workspace: &str, file_rel_path: Option<&str>) -> std::result::Result<String, String> {
+    let mut args = vec![
+        "-C",
+        workspace,
+        "diff",
+        "HEAD",
+        "--ignore-space-at-eol",
+        "--ignore-cr-at-eol",
+        "-U3",
+    ];
+
+    if let Some(file) = file_rel_path {
+        args.push("--");
+        args.push(file);
+    }
+
+    let out = Command::new("git")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("failed to spawn git diff: {e}"))?;
+
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        if !s.is_empty() {
+            return Ok(s);
+        }
+        // Check unstaged diff if HEAD comparison was empty
+        let mut unstaged_args = vec![
             "-C",
             workspace,
             "diff",
-            "HEAD",
             "--ignore-space-at-eol",
             "--ignore-cr-at-eol",
             "-U3",
-            "--",
-            target_path,
-        ])
-        .output();
-
-    let diff_text = match diff_output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).to_string();
-            if !s.is_empty() {
-                s
-            } else {
-                // If HEAD comparison is empty, try unstaged diff
-                Command::new("git")
-                    .args([
-                        "-C",
-                        workspace,
-                        "diff",
-                        "--ignore-space-at-eol",
-                        "--ignore-cr-at-eol",
-                        "-U3",
-                        "--",
-                        target_path,
-                    ])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default()
-            }
+        ];
+        if let Some(file) = file_rel_path {
+            unstaged_args.push("--");
+            unstaged_args.push(file);
         }
-        _ => String::new(),
+        let unstaged_out = Command::new("git")
+            .args(&unstaged_args)
+            .output()
+            .map_err(|e| format!("failed to spawn git diff: {e}"))?;
+        if unstaged_out.status.success() {
+            return Ok(String::from_utf8_lossy(&unstaged_out.stdout).to_string());
+        }
+    }
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // If repository has no commits yet (bad revision 'HEAD'), fallback to diff --cached and unstaged diff
+    if stderr.contains("bad revision 'HEAD'") || stderr.contains("unknown revision") {
+        let mut cached_args = vec![
+            "-C",
+            workspace,
+            "diff",
+            "--cached",
+            "--ignore-space-at-eol",
+            "--ignore-cr-at-eol",
+            "-U3",
+        ];
+        if let Some(file) = file_rel_path {
+            cached_args.push("--");
+            cached_args.push(file);
+        }
+        let cached_out = Command::new("git")
+            .args(&cached_args)
+            .output()
+            .map_err(|e| format!("failed to spawn git diff --cached: {e}"))?;
+        let cached_str = if cached_out.status.success() {
+            String::from_utf8_lossy(&cached_out.stdout).to_string()
+        } else {
+            String::new()
+        };
+
+        let mut unstaged_args = vec![
+            "-C",
+            workspace,
+            "diff",
+            "--ignore-space-at-eol",
+            "--ignore-cr-at-eol",
+            "-U3",
+        ];
+        if let Some(file) = file_rel_path {
+            unstaged_args.push("--");
+            unstaged_args.push(file);
+        }
+        let unstaged_out = Command::new("git")
+            .args(&unstaged_args)
+            .output()
+            .map_err(|e| format!("failed to spawn git diff: {e}"))?;
+        let unstaged_str = if unstaged_out.status.success() {
+            String::from_utf8_lossy(&unstaged_out.stdout).to_string()
+        } else {
+            String::new()
+        };
+
+        let combined = format!("{cached_str}{unstaged_str}");
+        return Ok(combined);
+    }
+
+    Err(format!("git diff error: {stderr}"))
+}
+
+fn inspect_single_file(workspace: &str, target_path: &str) -> std::result::Result<Value, String> {
+    let branch = get_branch_name(workspace);
+    let workspace_path = Path::new(workspace);
+    let rel_path = to_repo_relative_path(workspace, target_path);
+    let full_path = if Path::new(target_path).is_absolute() {
+        PathBuf::from(target_path)
+    } else {
+        workspace_path.join(&rel_path)
     };
 
+    let diff_text = run_git_diff(workspace, Some(&rel_path))?;
+
     if !diff_text.is_empty() {
-        let is_truncated = diff_text.len() > MAX_OUTPUT_CHARS;
+        if is_noise_file(target_path) {
+            return Ok(json!({
+                "is_git_repo": true,
+                "branch": branch,
+                "path": workspace,
+                "target_file": target_path,
+                "has_changes": true,
+                "status": "Modified (Noise/Binary file)",
+                "diff": format!("+++ {target_path} (Noise or binary file changed, full diff suppressed)"),
+                "truncated": false
+            }));
+        }
+
+        let is_truncated = diff_text.chars().count() > MAX_OUTPUT_CHARS;
         let final_diff = if is_truncated {
             diff_text.chars().take(MAX_OUTPUT_CHARS).collect::<String>()
         } else {
@@ -202,43 +318,9 @@ fn inspect_single_file(workspace: &str, target_path: &str) -> std::result::Resul
         }));
     }
 
-    // Check if it's an untracked file
-    let full_path = if Path::new(target_path).is_absolute() {
-        target_path.to_string()
-    } else {
-        format!("{workspace}/{target_path}")
-    };
-
-    if let Ok(content) = std::fs::read_to_string(&full_path) {
-        let lines: Vec<&str> = content.lines().take(MAX_UNTRACKED_FILE_LINES).collect();
-        let untracked_preview = lines.join("\n");
-        let is_truncated = content.lines().count() > MAX_UNTRACKED_FILE_LINES;
-        return Ok(json!({
-            "is_git_repo": true,
-            "branch": branch,
-            "path": workspace,
-            "target_file": target_path,
-            "has_changes": true,
-            "status": "Untracked (New file)",
-            "diff": format!("+++ {target_path}\n@@ -0,0 +1,{} @@\n{}", lines.len(), untracked_preview),
-            "truncated": is_truncated
-        }));
-    }
-
-    Ok(json!({
-        "is_git_repo": true,
-        "branch": branch,
-        "path": workspace,
-        "target_file": target_path,
-        "has_changes": false,
-        "message": "No changes found for this file."
-    }))
-}
-
-fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
-    let branch = get_branch_name(workspace);
+    // Check git status specifically for this file to avoid false positives on clean or ignored files
     let status_output = Command::new("git")
-        .args(["-C", workspace, "status", "--porcelain"])
+        .args(["-C", workspace, "status", "--porcelain=v1", "-z", "--", &rel_path])
         .output()
         .map_err(|e| format!("git status failed: {e}"))?;
 
@@ -249,43 +331,232 @@ fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
         ));
     }
 
-    let status_str = String::from_utf8_lossy(&status_output.stdout);
-    let mut files = Vec::new();
-    let mut untracked_files = Vec::new();
+    let stdout_bytes = status_output.stdout;
+    if stdout_bytes.is_empty() {
+        return Ok(json!({
+            "is_git_repo": true,
+            "branch": branch,
+            "path": workspace,
+            "target_file": target_path,
+            "has_changes": false,
+            "message": "No changes found for this file."
+        }));
+    }
 
-    for line in status_str.lines() {
-        if line.len() < 4 {
+    let status_code = if stdout_bytes.len() >= 2 {
+        String::from_utf8_lossy(&stdout_bytes[0..2]).to_string()
+    } else {
+        String::new()
+    };
+
+    if status_code.starts_with("??") {
+        if is_noise_file(target_path) {
+            return Ok(json!({
+                "is_git_repo": true,
+                "branch": branch,
+                "path": workspace,
+                "target_file": target_path,
+                "has_changes": true,
+                "status": "Untracked (Noise/Binary file)",
+                "diff": format!("+++ {target_path} (Untracked binary or lockfile)"),
+                "truncated": false
+            }));
+        }
+
+        if let Ok(metadata) = std::fs::symlink_metadata(&full_path) {
+            if metadata.file_type().is_file() && metadata.len() <= MAX_FILE_READ_BYTES {
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let lines: Vec<&str> = content.lines().take(MAX_UNTRACKED_FILE_LINES).collect();
+                    let untracked_preview = lines.join("\n");
+                    let is_truncated = content.lines().count() > MAX_UNTRACKED_FILE_LINES;
+                    return Ok(json!({
+                        "is_git_repo": true,
+                        "branch": branch,
+                        "path": workspace,
+                        "target_file": target_path,
+                        "has_changes": true,
+                        "status": "Untracked (New file)",
+                        "diff": format!("+++ {target_path}\n@@ -0,0 +1,{} @@\n{}", lines.len(), untracked_preview),
+                        "truncated": is_truncated
+                    }));
+                }
+            }
+        }
+
+        return Ok(json!({
+            "is_git_repo": true,
+            "branch": branch,
+            "path": workspace,
+            "target_file": target_path,
+            "has_changes": true,
+            "status": "Untracked",
+            "diff": format!("+++ {target_path} (Untracked file)"),
+            "truncated": false
+        }));
+    }
+
+    let status_desc = match status_code.as_str() {
+        "A " | " A" | "AM" | "AD" => "Added",
+        "D " | " D" => "Deleted",
+        "R " | " R" | "RM" | "RD" => "Renamed",
+        "M " | " M" | "MM" => "Modified",
+        _ => "Changed",
+    };
+
+    Ok(json!({
+        "is_git_repo": true,
+        "branch": branch,
+        "path": workspace,
+        "target_file": target_path,
+        "has_changes": true,
+        "status": status_desc,
+        "diff": format!("=== {target_path} ({status_desc}) ==="),
+        "truncated": false
+    }))
+}
+
+fn get_diff_numstat(workspace: &str) -> HashMap<String, (usize, usize)> {
+    let mut map = HashMap::new();
+
+    // 1. Try HEAD numstat
+    let out = Command::new("git")
+        .args(["-C", workspace, "diff", "HEAD", "--numstat", "-z"])
+        .output();
+
+    let (stdout, success) = match out {
+        Ok(o) if o.status.success() => (o.stdout, true),
+        _ => (Vec::new(), false),
+    };
+
+    if success {
+        parse_numstat_z(&stdout, &mut map);
+        // Also get unstaged numstat in case HEAD diff didn't capture something
+        if let Ok(unstaged_out) = Command::new("git")
+            .args(["-C", workspace, "diff", "--numstat", "-z"])
+            .output()
+        {
+            if unstaged_out.status.success() {
+                parse_numstat_z(&unstaged_out.stdout, &mut map);
+            }
+        }
+        return map;
+    }
+
+    // If HEAD failed (e.g. empty repo), try cached and unstaged
+    if let Ok(cached_out) = Command::new("git")
+        .args(["-C", workspace, "diff", "--cached", "--numstat", "-z"])
+        .output()
+    {
+        if cached_out.status.success() {
+            parse_numstat_z(&cached_out.stdout, &mut map);
+        }
+    }
+    if let Ok(unstaged_out) = Command::new("git")
+        .args(["-C", workspace, "diff", "--numstat", "-z"])
+        .output()
+    {
+        if unstaged_out.status.success() {
+            parse_numstat_z(&unstaged_out.stdout, &mut map);
+        }
+    }
+
+    map
+}
+
+fn parse_numstat_z(raw_bytes: &[u8], map: &mut HashMap<String, (usize, usize)>) {
+    let text = String::from_utf8_lossy(raw_bytes);
+    let mut parts = text.split('\0');
+
+    while let Some(line) = parts.next() {
+        if line.is_empty() {
             continue;
         }
-        let index_status = &line[0..1];
-        let worktree_status = &line[1..2];
-        let file_path = line[3..].trim().to_string();
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() >= 3 {
+            let added = fields[0].trim().parse::<usize>().unwrap_or(0);
+            let deleted = fields[1].trim().parse::<usize>().unwrap_or(0);
+            let file_path = fields[2].trim().to_string();
 
-        if index_status == "?" && worktree_status == "?" {
+            let entry = map.entry(file_path).or_insert((0, 0));
+            entry.0 = entry.0.max(added);
+            entry.1 = entry.1.max(deleted);
+        }
+    }
+}
+
+fn parse_porcelain_z(raw_bytes: &[u8], numstat_map: &HashMap<String, (usize, usize)>) -> (Vec<ChangedFile>, Vec<String>) {
+    let mut files = Vec::new();
+    let mut untracked_files = Vec::new();
+    let mut chunks = raw_bytes.split(|&b| b == 0);
+
+    while let Some(chunk) = chunks.next() {
+        if chunk.len() < 3 {
+            continue;
+        }
+
+        let index_status = chunk[0] as char;
+        let worktree_status = chunk[1] as char;
+        let file_path = String::from_utf8_lossy(&chunk[3..]).to_string();
+
+        if index_status == '?' && worktree_status == '?' {
             untracked_files.push(file_path.clone());
             files.push(ChangedFile {
                 path: file_path,
                 status: "Untracked".into(),
                 staged: false,
+                added: None,
+                deleted: None,
             });
             continue;
         }
 
-        let is_staged = index_status != " " && index_status != "?";
+        // If it's a rename (R) or copy (C), next NUL chunk is the original path
+        if index_status == 'R' || index_status == 'C' || worktree_status == 'R' || worktree_status == 'C' {
+            let _orig_path = chunks.next();
+        }
+
+        let is_staged = index_status != ' ' && index_status != '?';
         let status_desc = match (index_status, worktree_status) {
-            ("M", _) | (_, "M") => "Modified",
-            ("A", _) => "Added",
-            ("D", _) | (_, "D") => "Deleted",
-            ("R", _) => "Renamed",
+            ('M', _) | (_, 'M') => "Modified",
+            ('A', _) | (_, 'A') => "Added",
+            ('D', _) | (_, 'D') => "Deleted",
+            ('R', _) | (_, 'R') => "Renamed",
             _ => "Changed",
         };
+
+        let (added, deleted) = numstat_map
+            .get(&file_path)
+            .map(|&(a, d)| (Some(a), Some(d)))
+            .unwrap_or((None, None));
 
         files.push(ChangedFile {
             path: file_path,
             status: status_desc.into(),
             staged: is_staged,
+            added,
+            deleted,
         });
     }
+
+    (files, untracked_files)
+}
+
+fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
+    let branch = get_branch_name(workspace);
+    let status_output = Command::new("git")
+        .args(["-C", workspace, "status", "--porcelain=v1", "-z"])
+        .output()
+        .map_err(|e| format!("git status failed: {e}"))?;
+
+    if !status_output.status.success() {
+        return Err(format!(
+            "git status error: {}",
+            String::from_utf8_lossy(&status_output.stderr)
+        ));
+    }
+
+    let numstat_map = get_diff_numstat(workspace);
+    let (files, untracked_files) = parse_porcelain_z(&status_output.stdout, &numstat_map);
 
     if files.is_empty() {
         return Ok(json!({
@@ -298,41 +569,7 @@ fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
         }));
     }
 
-    // Get git diff
-    let diff_output = Command::new("git")
-        .args([
-            "-C",
-            workspace,
-            "diff",
-            "HEAD",
-            "--ignore-space-at-eol",
-            "--ignore-cr-at-eol",
-            "-U2",
-        ])
-        .output();
-
-    let diff_text = match diff_output {
-        Ok(out) if out.status.success() => {
-            let s = String::from_utf8_lossy(&out.stdout).to_string();
-            if !s.is_empty() {
-                s
-            } else {
-                Command::new("git")
-                    .args([
-                        "-C",
-                        workspace,
-                        "diff",
-                        "--ignore-space-at-eol",
-                        "--ignore-cr-at-eol",
-                        "-U2",
-                    ])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-                    .unwrap_or_default()
-            }
-        }
-        _ => String::new(),
-    };
+    let diff_text = run_git_diff(workspace, None).unwrap_or_default();
 
     let mut combined_diff = String::new();
     let mut total_chars = 0;
@@ -349,52 +586,80 @@ fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
         }
 
         let formatted_hunk = format!("diff --git {hunk}");
-        if total_chars + formatted_hunk.len() > MAX_OUTPUT_CHARS {
+        let hunk_char_count = formatted_hunk.chars().count();
+        if total_chars + hunk_char_count > MAX_OUTPUT_CHARS {
             is_truncated = true;
+            let remaining_budget = MAX_OUTPUT_CHARS.saturating_sub(total_chars);
+            if remaining_budget > 0 {
+                let partial: String = formatted_hunk.chars().take(remaining_budget).collect();
+                combined_diff.push_str(&partial);
+            }
             break;
         }
         combined_diff.push_str(&formatted_hunk);
-        total_chars += formatted_hunk.len();
+        total_chars += hunk_char_count;
     }
 
     // Include previews for untracked files if budget allows
     if !is_truncated && !untracked_files.is_empty() {
+        let workspace_path = Path::new(workspace);
         for untracked in &untracked_files {
             if is_noise_file(untracked) {
                 continue;
             }
-            let full_path = format!("{workspace}/{untracked}");
-            if let Ok(content) = std::fs::read_to_string(&full_path) {
-                let lines: Vec<&str> = content.lines().take(20).collect();
-                let snippet = format!(
-                    "\n--- /dev/null\n+++ b/{untracked}\n@@ -0,0 +1,{} @@\n{}\n",
-                    lines.len(),
-                    lines.join("\n")
-                );
-                if total_chars + snippet.len() > MAX_OUTPUT_CHARS {
-                    is_truncated = true;
-                    break;
+            let full_path = workspace_path.join(untracked);
+            if let Ok(metadata) = std::fs::symlink_metadata(&full_path) {
+                if metadata.file_type().is_file() && metadata.len() <= MAX_FILE_READ_BYTES {
+                    if let Ok(content) = std::fs::read_to_string(&full_path) {
+                        let lines: Vec<&str> = content.lines().take(20).collect();
+                        let snippet = format!(
+                            "\n--- /dev/null\n+++ b/{untracked}\n@@ -0,0 +1,{} @@\n{}\n",
+                            lines.len(),
+                            lines.join("\n")
+                        );
+                        let snippet_chars = snippet.chars().count();
+                        if total_chars + snippet_chars > MAX_OUTPUT_CHARS {
+                            is_truncated = true;
+                            let remaining_budget = MAX_OUTPUT_CHARS.saturating_sub(total_chars);
+                            if remaining_budget > 0 {
+                                let partial: String = snippet.chars().take(remaining_budget).collect();
+                                combined_diff.push_str(&partial);
+                            }
+                            break;
+                        }
+                        combined_diff.push_str(&snippet);
+                        total_chars += snippet_chars;
+                    }
                 }
-                combined_diff.push_str(&snippet);
-                total_chars += snippet.len();
             }
         }
     }
 
     let changed_count = files.len();
+    let truncated_files = changed_count > MAX_CHANGED_FILES_SUMMARY;
+    let displayed_files: Vec<ChangedFile> = if truncated_files {
+        files.into_iter().take(MAX_CHANGED_FILES_SUMMARY).collect()
+    } else {
+        files
+    };
+
     let mut response = json!({
         "is_git_repo": true,
         "branch": branch,
         "path": workspace,
         "has_changes": true,
         "changed_files_count": changed_count,
-        "files": files,
+        "files": displayed_files,
         "diff": combined_diff,
-        "truncated": is_truncated
+        "truncated": is_truncated || truncated_files
     });
 
-    if is_truncated {
-        response["hint"] = json!("Diff was truncated due to large size. Call `InspectChanges(path=\"<path>\")` to inspect the detailed diff of a specific file.");
+    if truncated_files {
+        response["files_truncated"] = json!(true);
+    }
+
+    if is_truncated || truncated_files {
+        response["hint"] = json!("Diff or file list was truncated due to large size. Call `InspectChanges(path=\"<path>\")` to inspect the detailed diff of a specific file.");
     }
 
     Ok(response)
