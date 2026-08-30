@@ -364,7 +364,7 @@ impl ConversationOutput {
                             // Context Usage is the total prompt size sent to the model, including
                             // provider-reported cache reads and writes. A missing count explicitly
                             // requests a local prompt/history estimate for this completed provider call.
-                            context_tokens = usage.input_tokens;
+                            context_tokens = usage.context_tokens();
                         }
                         match &mut turn_usage {
                             Some(total) => *total += usage,

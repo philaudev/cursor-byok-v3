@@ -198,7 +198,13 @@ impl RunEngine {
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
             if !auto_compacted
-                && super::compaction::should_compact(prepared, &messages, &history, context_anchor)
+                && super::compaction::should_compact(
+                    prepared,
+                    &messages,
+                    &history,
+                    context_anchor,
+                    checkpoint_context_tokens,
+                )
             {
                 match self
                     .auto_compact(prepared, checkpoint, &messages, client, cancellation)

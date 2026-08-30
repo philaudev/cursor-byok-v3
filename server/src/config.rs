@@ -47,6 +47,9 @@ fn compaction_prompt_path_in(data_dir: &std::path::Path) -> Result<PathBuf> {
     let rules_dir = data_dir.join(RULES_DIR_NAME);
     fs::create_dir_all(&rules_dir)?;
     let path = rules_dir.join(COMPACTION_PROMPT_FILE_NAME);
+    if !path.exists() {
+        fs::write(&path, DEFAULT_COMPACTION_PROMPT)?;
+    }
     Ok(path)
 }
 

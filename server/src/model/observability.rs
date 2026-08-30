@@ -19,17 +19,31 @@ mod usage {
     }
 
     impl Usage {
+        /// Returns provider-reported prompt tokens, including cache reads and writes.
+        /// Returns `None` when the provider omitted every prompt-token field.
+        pub fn context_tokens(self) -> Option<u64> {
+            let tokens = [
+                self.input_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+            ];
+            tokens
+                .iter()
+                .any(Option::is_some)
+                .then(|| {
+                    tokens.into_iter().try_fold(0_u64, |total, tokens| {
+                        total.checked_add(tokens.unwrap_or_default())
+                    })
+                })
+                .flatten()
+        }
+
         /// Returns the provider-visible input context without counting cached tokens twice.
-        pub(crate) fn context_input_tokens(self, provider: ProviderType) -> Option<u64> {
+        pub(crate) fn context_input_tokens(self, _provider: ProviderType) -> Option<u64> {
             let input = self.input_tokens?;
-            match provider {
-                ProviderType::OpenAiChat | ProviderType::OpenAiResponses | ProviderType::Plugin => {
-                    Some(input)
-                }
-                ProviderType::Anthropic => input
-                    .checked_add(self.cache_read_tokens.unwrap_or_default())?
-                    .checked_add(self.cache_write_tokens.unwrap_or_default()),
-            }
+            input
+                .checked_add(self.cache_read_tokens.unwrap_or_default())?
+                .checked_add(self.cache_write_tokens.unwrap_or_default())
         }
     }
 

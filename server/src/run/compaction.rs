@@ -7,6 +7,7 @@ use crate::model::{
 };
 
 const FALLBACK_CHARS: usize = 12_000;
+pub(super) const COMPACTION_RESERVE_TOKENS: u64 = 10_000;
 
 pub(super) const OUTPUT_TOKENS: u64 = 4_096;
 pub(super) const INSTRUCTIONS: &str = "Summarize the conversation for the next model turn. Preserve goals, constraints, decisions, files, commands, errors, results, and unfinished work. Do not call tools. Return only the concise durable summary.";
@@ -33,6 +34,7 @@ pub(super) fn should_compact(
     messages: &[CanonicalMessage],
     projected_messages: &[ProjectedMessage],
     anchor: Option<ContextUsageAnchor>,
+    checkpoint_context_tokens: Option<u64>,
 ) -> bool {
     if prepared.action != RunAction::Start {
         return false;
@@ -43,6 +45,7 @@ pub(super) fn should_compact(
     if context_window == 0 || messages.len() <= prepared.initial_messages.len() {
         return false;
     }
+    let budget = context_window.saturating_sub(COMPACTION_RESERVE_TOKENS);
     let estimated_input = anchor
         .filter(|anchor| {
             anchor.message_count <= projected_messages.len()
@@ -56,12 +59,19 @@ pub(super) fn should_compact(
                         .unwrap_or_default(),
                 ))
         })
+        .or_else(|| {
+            checkpoint_context_tokens.map(|tokens| {
+                tokens.saturating_add(estimate_serialized_tokens(
+                    &serde_json::to_string(&prepared.initial_messages).unwrap_or_default(),
+                ))
+            })
+        })
         .unwrap_or_else(|| {
             estimate_serialized_tokens(
                 &serde_json::to_string(&(&prepared.prompt, messages)).unwrap_or_default(),
             )
         });
-    estimated_input > context_window
+    estimated_input >= budget
 }
 
 pub(super) fn partition(
@@ -160,19 +170,22 @@ mod tests {
             &prepared,
             &messages,
             &projected,
-            anchor(199_999)
-        ));
-        assert!(!should_compact(
-            &prepared,
-            &messages,
-            &projected,
-            anchor(200_000)
+            anchor(189_999),
+            None,
         ));
         assert!(should_compact(
             &prepared,
             &messages,
             &projected,
-            anchor(200_001)
+            anchor(190_000),
+            None,
+        ));
+        assert!(should_compact(
+            &prepared,
+            &messages,
+            &projected,
+            anchor(200_001),
+            None,
         ));
     }
 }
