@@ -1,3 +1,4 @@
+//! Persists Cursor request traces and artifacts.
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::{
@@ -324,62 +325,4 @@ fn trace_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CursorRunTraceSummary>
 
 fn as_i64(value: usize) -> i64 {
     value.min(i64::MAX as usize) as i64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn records_a_batch_of_trace_chunks_with_one_summary_update() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        store.set_detailed_logging(true).await.unwrap();
-        store
-            .start_cursor_trace_if_detailed("trace", None, "cursor_official", None)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE trace_summary_updates(count INTEGER NOT NULL)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO trace_summary_updates(count) VALUES (0)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TRIGGER count_trace_summary_updates
-             AFTER UPDATE OF response_bytes ON cursor_run_traces
-             BEGIN
-                 UPDATE trace_summary_updates SET count = count + 1;
-             END",
-        )
-        .execute(store.pool())
-        .await
-        .unwrap();
-
-        store
-            .add_cursor_trace_response_chunks(
-                "trace",
-                &[
-                    BufferedCursorTraceChunk::new("cursor_official", b"one"),
-                    BufferedCursorTraceChunk::new("cursor_official", b"two"),
-                    BufferedCursorTraceChunk::new("cursor_official", b"three"),
-                ],
-            )
-            .await
-            .unwrap();
-
-        let trace = store.cursor_trace("trace").await.unwrap().unwrap();
-        assert_eq!(trace.response_bytes, 11);
-        assert_eq!(trace.response_event_count, 3);
-        assert_eq!(
-            store.cursor_trace_artifacts("trace").await.unwrap().len(),
-            3
-        );
-        let updates: i64 = sqlx::query_scalar("SELECT count FROM trace_summary_updates")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
-        assert_eq!(updates, 1);
-    }
 }

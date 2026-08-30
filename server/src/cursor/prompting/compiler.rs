@@ -1,10 +1,10 @@
+//! Compiles stable Prompt specifications for Cursor modes.
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    cursor::rules,
     model::{ModelSpec, PromptSpec, ToolDefinition},
     Error, Result,
 };
@@ -117,15 +117,7 @@ impl PromptCompiler {
         Ok(prompt.replace("{{FAKE_MODEL_NAME}}", fake_model_name))
     }
 
-    fn append_global_rules(&self, mut instructions: String) -> Result<String> {
-        let Some(directory) = &self.global_rules_dir else {
-            return Ok(instructions);
-        };
-        let rules = rules::system_prompt_section(directory.clone())?;
-        if !rules.is_empty() {
-            instructions.push_str("\n\n");
-            instructions.push_str(&rules);
-        }
+    fn append_global_rules(&self, instructions: String) -> Result<String> {
         Ok(instructions)
     }
 

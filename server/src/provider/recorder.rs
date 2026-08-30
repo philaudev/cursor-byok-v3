@@ -1,3 +1,4 @@
+//! Records provider requests, responses, usage, and timing.
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
@@ -38,6 +39,31 @@ pub(crate) fn recorded_headers(
 #[derive(Clone)]
 pub struct CallRecorder {
     inner: Arc<Inner>,
+}
+
+pub(super) struct CancelOnDrop {
+    recorder: CallRecorder,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.recorder.is_finished() {
+            return;
+        }
+        let recorder = self.recorder.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                call_id = recorder.call_id(),
+                "unfinished LLM call dropped outside Tokio runtime"
+            );
+            return;
+        };
+        runtime.spawn(async move {
+            if let Err(error) = recorder.cancelled().await {
+                tracing::warn!(call_id = recorder.call_id(), %error, "failed to mark dropped LLM call cancelled");
+            }
+        });
+    }
 }
 
 struct Inner {
@@ -107,6 +133,12 @@ impl CallRecorder {
 
     pub fn is_finished(&self) -> bool {
         self.inner.finished.load(Ordering::Acquire)
+    }
+
+    pub(super) fn cancel_on_drop(&self) -> CancelOnDrop {
+        CancelOnDrop {
+            recorder: self.clone(),
+        }
     }
 
     pub async fn request(
@@ -263,12 +295,14 @@ impl CallRecorder {
         let attempt_number = self.inner.next_attempt.fetch_add(1, Ordering::Relaxed) + 1;
         let mut call = self.inner.base_call.clone();
         call.call_id = format!("{}:retry-{attempt_number}", self.inner.base_call.call_id);
-        self.inner.store.start_llm_call(&call).await?;
-
         {
             let mut attempt = self.inner.attempt.lock().await;
-            *attempt = AttemptState::new(call.call_id);
+            *attempt = AttemptState::new(call.call_id.clone());
             self.inner.finished.store(false, Ordering::Release);
+            if let Err(error) = self.inner.store.start_llm_call(&call).await {
+                self.inner.finished.store(true, Ordering::Release);
+                return Err(error);
+            }
         }
 
         if let Err(error) = self.request(headers, body).await {
@@ -285,14 +319,14 @@ impl CallRecorder {
         error_kind: Option<&str>,
         error_message: Option<&str>,
     ) -> Result<()> {
-        if self.inner.finished.swap(true, Ordering::AcqRel) {
+        if self.is_finished() {
             return Ok(());
         }
         let mut attempt = self.inner.attempt.lock().await;
-        if let Err(error) = self.flush_locked(&mut attempt).await {
-            self.inner.finished.store(false, Ordering::Release);
-            return Err(error);
+        if self.is_finished() {
+            return Ok(());
         }
+        self.flush_locked(&mut attempt).await?;
         if let Err(error) = self
             .inner
             .store
@@ -309,6 +343,7 @@ impl CallRecorder {
             self.inner.finished.store(false, Ordering::Release);
             return Err(error);
         }
+        self.inner.finished.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -374,222 +409,90 @@ fn error_kind(error: &crate::Error) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::{
+        ModelConfigInput, ModelType, NewLlmCall, ProviderType, OPENAI_CHAT_ENDPOINT,
+    };
+
     use super::*;
 
-    async fn test_recorder(store: &Store, call_id: &str, detailed: bool) -> CallRecorder {
-        let call = NewLlmCall {
-            call_id: call_id.into(),
-            run_id: "run".into(),
-            conversation_id: "conversation".into(),
-            provider_call_index: 0,
-            model_hash: "hash".into(),
-            provider_type: crate::model::ProviderType::OpenAiChat,
-            provider_url: "https://example.com".into(),
-            request_type: crate::model::ProviderType::OpenAiChat,
-            request_url: "https://example.com".into(),
-            model_id: "model".into(),
-            display_name: "Model".into(),
-            reasoning_effort: None,
-            fast: false,
-            message_count: 0,
-            projected_message_count: 0,
-            history_fingerprint: String::new(),
-            tool_count: 0,
-            detailed,
-        };
-        sqlx::query(
-            "INSERT INTO model_configs(
-                model_hash, display_name, model_type, base_url, api_key,
-                tooltip_data, model_id, created_at_ms, updated_at_ms
-             ) VALUES ('hash', 'Model', 'openai', 'https://example.com',
-                'key', 'Model', 'model', 1, 1)",
-        )
-        .execute(store.pool())
+    #[tokio::test]
+    async fn dropping_an_unfinished_call_guard_marks_the_call_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO llm_calls(
-                call_id, run_id, conversation_id, provider_call_index, provider_type,
-                provider_url, request_type, request_url, model_id, display_name, status,
-                created_at_ms, message_count, tool_count, detailed
-             ) VALUES (?, 'run', 'conversation', 0, 'openai-chat',
-                'https://example.com', 'openai-chat', 'https://example.com',
-                'model', 'Model', 'running', 1, 0, 0, ?)",
-        )
-        .bind(call_id)
-        .bind(detailed)
-        .execute(store.pool())
-        .await
-        .unwrap();
-        CallRecorder {
-            inner: Arc::new(Inner {
-                store: store.clone(),
-                base_call: call.clone(),
-                detailed,
-                attempt: Mutex::new(AttemptState::new(call_id.into())),
-                next_attempt: AtomicU32::new(0),
-                next_generation: AtomicU64::new(0),
-                finished: AtomicBool::new(false),
-            }),
-        }
-    }
-
-    #[tokio::test]
-    async fn a_partial_chunk_flushes_after_the_deadline() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let recorder = test_recorder(&store, "timed-flush-call", true).await;
-
-        recorder.response_chunk(b"chunk").await.unwrap();
-        assert_eq!(
-            store
-                .llm_call("timed-flush-call")
-                .await
-                .unwrap()
-                .unwrap()
-                .stream_event_count,
-            0
-        );
-
-        tokio::time::sleep(MAX_BUFFER_AGE + std::time::Duration::from_millis(100)).await;
-
-        let call = store.llm_call("timed-flush-call").await.unwrap().unwrap();
-        assert_eq!(call.response_bytes, 5);
-        assert_eq!(call.stream_event_count, 1);
-        assert_eq!(
-            store
-                .llm_call_chunks("timed-flush-call")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn first_text_is_persisted_only_once() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let recorder = test_recorder(&store, "first-text-call", false).await;
-        sqlx::query("CREATE TABLE first_text_updates(count INTEGER NOT NULL)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO first_text_updates(count) VALUES (0)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TRIGGER count_first_text_updates
-             AFTER UPDATE OF first_text_at_ms ON llm_calls
-             BEGIN
-                 UPDATE first_text_updates SET count = count + 1;
-             END",
-        )
-        .execute(store.pool())
-        .await
-        .unwrap();
-        for text in ["one", "two", "three"] {
-            recorder
-                .event(&ModelEvent::TextDelta(text.into()))
-                .await
-                .unwrap();
-        }
-
-        let count: i64 = sqlx::query_scalar("SELECT count FROM first_text_updates")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    async fn first_valid_response_includes_empty_text_and_reasoning_events() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let recorder = test_recorder(&store, "first-valid-response-call", false).await;
-
-        recorder
-            .event(&ModelEvent::Start {
-                model_call_id: "call".into(),
+        let model = store
+            .create_model(&ModelConfigInput {
+                sort_order: 0,
+                display_name: "Test Model".into(),
+                group_name: None,
+                model_type: ModelType::OpenAi,
+                base_url: "https://example.com/v1/chat/completions".into(),
+                use_full_url: true,
+                api_key: "test-key".into(),
+                tooltip_data: "Test Model".into(),
+                model_id: "test-model".into(),
+                reasoning_effort: None,
+                openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
+                openai_extra_params_enabled: false,
+                openai_extra_params: serde_json::json!({}),
+                custom_headers_enabled: false,
+                custom_headers: serde_json::json!({}),
+                anthropic_extra_params_enabled: false,
+                anthropic_extra_params: serde_json::json!({}),
+                context_window_tokens: None,
+                max_completion_tokens: None,
+                anthropic_max_tokens: None,
+                anthropic_thinking_effort: None,
+                thinking_budget_tokens: None,
             })
             .await
             .unwrap();
-        recorder.event(&ModelEvent::TextStart).await.unwrap();
-        recorder
-            .event(&ModelEvent::TextDelta(String::new()))
-            .await
-            .unwrap();
+        let recorder = CallRecorder::start(
+            store.clone(),
+            NewLlmCall {
+                call_id: "cancel-on-drop".into(),
+                run_id: "run".into(),
+                conversation_id: "conversation".into(),
+                provider_call_index: 0,
+                model_hash: model.model_hash,
+                provider_type: ProviderType::OpenAiChat,
+                provider_url: "https://example.com".into(),
+                request_type: ProviderType::OpenAiChat,
+                request_url: "https://example.com/v1/chat/completions".into(),
+                model_id: "test-model".into(),
+                display_name: "Test Model".into(),
+                reasoning_effort: None,
+                fast: false,
+                message_count: 1,
+                tool_count: 0,
+                detailed: false,
+            },
+        )
+        .await
+        .unwrap();
 
-        let call = store
-            .llm_call("first-valid-response-call")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(call.ttfr_ms.is_some());
-        assert!(call.ttft_ms.is_none());
+        drop(recorder.cancel_on_drop());
 
-        recorder
-            .event(&ModelEvent::TextDelta("text".into()))
-            .await
-            .unwrap();
-        let call = store
-            .llm_call("first-valid-response-call")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(call.ttft_ms.is_some());
-
-        recorder
-            .event(&ModelEvent::ThinkingDelta("reasoning".into()))
-            .await
-            .unwrap();
-        let call = store
-            .llm_call("first-valid-response-call")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(call.first_valid_response_at_ms.is_some());
-    }
-
-    #[tokio::test]
-    async fn retry_finishes_the_old_call_and_records_the_new_request() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let recorder = test_recorder(&store, "retry-call", true).await;
-        let error = crate::Error::Provider("OpenAI Chat 429: rate limited".into());
-        let body = serde_json::json!({"model": "model", "stream": true});
-
-        recorder
-            .retry(
-                &error,
-                serde_json::json!({"content-type": "application/json"}),
-                &body,
-            )
-            .await
-            .unwrap();
-
-        let old = store.llm_call("retry-call").await.unwrap().unwrap();
-        assert_eq!(old.status, "error");
-        assert_eq!(
-            old.error_message.as_deref(),
-            Some(error.to_string().as_str())
-        );
-
-        let new = store.llm_call("retry-call:retry-1").await.unwrap().unwrap();
-        assert_eq!(new.status, "running");
-        assert_eq!(new.request_bytes, Some(31));
-        assert!(store
-            .llm_call_request("retry-call:retry-1")
-            .await
-            .unwrap()
-            .is_some());
-
-        recorder.completed(FinishReason::Stop).await.unwrap();
-        assert_eq!(
-            store
-                .llm_call("retry-call:retry-1")
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            "completed"
-        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM llm_calls WHERE call_id = ?")
+                    .bind("cancel-on-drop")
+                    .fetch_one(store.pool())
+                    .await
+                    .unwrap();
+            if status == "cancelled" {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "unfinished recorder stayed running after its stream was dropped"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 }

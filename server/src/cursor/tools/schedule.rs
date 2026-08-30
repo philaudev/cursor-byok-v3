@@ -1,3 +1,4 @@
+//! Schedules background Tool work.
 use std::collections::{HashMap, VecDeque};
 
 use crate::{model::ToolCall, Error, Result};

@@ -120,13 +120,35 @@ API Key、模型配置和应用设置保存在本机。模型请求仍会发送�
 ```text
 cursor-byok/
 ├── apps/
-│   ├── desktop/       # React、Vite、Tauri 桌面应用
+│   ├── desktop/
+│   │   ├── src/
+│   │   │   ├── features/ # 首页、模型、调用记录与设置
+│   │   │   ├── shell/    # 窗口框架、页面布局与广告外壳
+│   │   │   ├── shared/   # UI、虚拟列表、状态、API 与平台能力
+│   │   │   ├── i18n/     # 本地化运行时与语言目录
+│   │   │   └── styles/   # 全局主题与排版令牌
+│   │   └── src-tauri/    # Tauri 桌面生命周期
 │   └── docs/          # Next.js 与 Fumadocs 中文/英文文档站
-├── server/            # 本地服务、Cursor 请求处理和模型转发
+├── server/
+│   ├── src/
+│   │   ├── cursor/    # Cursor 协议适配
+│   │   ├── run/       # 通用 Agent Runtime 与内部 Port
+│   │   ├── provider/  # 模型供应商适配
+│   │   ├── model/     # 聚合领域模型
+│   │   ├── store/     # SQLite Repository
+│   │   ├── control/   # 管理面 API
+│   │   ├── harness/   # Cursor 本地集成
+│   │   └── search/    # Web 与 Semble 搜索接入
+│   ├── prompt/
+│   └── migrations/
 ├── crates/
 │   └── semble-core/   # 本地代码索引与搜索核心库
-├── cursor-proto/      # Cursor 协议定义
-├── benchmarks/        # 代码搜索和索引基准测试
+├── protocols/
+│   └── cursor/        # Cursor 协议定义的唯一来源
+├── support/                     # 仓库辅助设施
+│   ├── cursor-protocol-extractor/ # Cursor 协议提取与 Go 代码生成工具
+│   ├── cursor-capture/            # Cursor 协议抓取和调试工具
+│   └── benchmarks/                # 代码搜索和索引基准测试
 ├── images/            # README 展示图片
 ├── Cargo.toml         # Rust 工作区配置
 └── Makefile           # 常用开发、检查和构建命令

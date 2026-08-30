@@ -1,3 +1,4 @@
+//! Provides shared network client and transport configuration.
 //! Outbound HTTP clients configured from persisted application proxy settings.
 
 use std::sync::{
@@ -92,7 +93,6 @@ pub async fn blocking_client_builder(store: &Store) -> Result<reqwest::blocking:
     }
     Ok(builder)
 }
-
 #[cfg(test)]
 mod tests {
     use std::{

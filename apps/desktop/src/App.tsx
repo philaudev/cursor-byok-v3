@@ -1,17 +1,18 @@
 import { useEffect, useRef } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
-import { MessageProvider } from "./components/ui/MessageProvider";
-import { useMessage } from "./components/ui/message";
-import { AppFrame } from "./layouts/AppFrame";
-import { AppLayout } from "./layouts/AppLayout";
-import { CallsPage } from "./pages/CallsPage";
-import { CallDetailsPage } from "./pages/CallDetailsPage";
-import { CompactionConfigPage } from "./pages/CompactionConfigPage";
-import { CursorSettingsPage } from "./pages/CursorSettingsPage";
-import { HomePage } from "./pages/HomePage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { useAppStore } from "./store/appStore";
-import { updateStore } from "./store/updateStore";
+import { MessageProvider } from "./shared/ui/MessageProvider";
+import { useMessage } from "./shared/ui/message";
+import { AppFrame } from "./shell/AppFrame";
+import { AppLayout } from "./shell/AppLayout";
+import { CallsPage } from "./features/calls/CallsPage";
+import { CallDetailsPage } from "./features/calls/CallDetailsPage";
+import { CompactionConfigPage } from "./features/calls/CompactionConfigPage";
+import { CursorSettingsPage } from "./features/models/CursorSettingsPage";
+import { HomePage } from "./features/home/HomePage";
+import { PluginManagementPage } from "./features/plugins/PluginManagementPage";
+import { SettingsPage } from "./features/settings/SettingsPage";
+import { useAppStore } from "./shared/store/appStore";
+import { updateStore } from "./shared/store/updateStore";
 
 export function App() {
   return (
@@ -25,6 +26,7 @@ export function App() {
               <Route path="calls" element={<CallsPage />} />
               <Route path="harness/cursor" element={<CursorSettingsPage />} />
               <Route path="config" element={<CompactionConfigPage />} />
+              <Route path="plugins" element={<PluginManagementPage />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

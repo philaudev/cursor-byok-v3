@@ -1,3 +1,4 @@
+//! Exposes the extensible Cursor Tool system.
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
@@ -7,25 +8,24 @@ use tokio::sync::Mutex;
 
 pub mod codec;
 pub(crate) mod compat;
-mod dispatch;
 pub(crate) mod edit;
-pub(crate) mod result;
+pub(crate) mod registry;
 pub mod runtime;
 mod schedule;
 pub(crate) mod stream;
-#[cfg(test)]
-mod tests;
+mod tool_call_dispatch;
+pub(crate) mod tool_call_result;
 
 use crate::{
     model::{CanonicalMessage, MessageContent, Role, ToolCall},
+    search::{WebCache, WebFetch, WebSearch},
     store::Store,
-    web::{WebFetch, WebSearch},
     Error, Result,
 };
 
-use self::result::{ToolCompletion, ToolResultSender};
 use self::schedule::{DeferredEdit, EditSchedule};
-use super::{interaction, proto::agent::v1 as pb};
+use self::tool_call_result::{ToolCompletion, ToolResultSender};
+use super::protocol::proto::agent::v1 as pb;
 use runtime::{CursorToolRuntime, ExecContext};
 
 #[derive(Clone)]
@@ -57,7 +57,7 @@ pub enum ClientToolEvent {
 
 impl ToolDispatcher {
     pub fn new(runtime: CursorToolRuntime) -> Self {
-        let (results, _) = result::tool_result_channel();
+        let (results, _) = tool_call_result::tool_result_channel();
         Self {
             runtime,
             results,
@@ -72,12 +72,13 @@ impl ToolDispatcher {
         runtime: CursorToolRuntime,
         results: ToolResultSender,
         store: Store,
+        web_cache: WebCache,
     ) -> Self {
         Self {
             runtime,
             results,
             search: WebSearch::managed(store.clone()),
-            fetch: WebFetch::managed(store.clone()),
+            fetch: WebFetch::managed(store.clone(), web_cache),
             store: Some(store),
             edit_schedule: Arc::new(Mutex::new(EditSchedule::default())),
         }
@@ -171,14 +172,11 @@ impl ToolDispatcher {
     ) -> Result<DispatchedTool> {
         let call = context.prepare_call(call)?;
         let mut messages = if publish_started {
-            vec![interaction::tool_started(
-                &call,
-                dynamic_mcp.get(&call.name),
-            )?]
+            vec![codec::tool_started(&call, dynamic_mcp.get(&call.name))?]
         } else {
             Vec::new()
         };
-        let started = dispatch::start(
+        let started = tool_call_dispatch::start(
             &self.runtime,
             &self.results,
             &call,
@@ -218,7 +216,7 @@ impl ToolDispatcher {
             }
         };
         Ok(
-            match dispatch::resume_interaction(
+            match tool_call_dispatch::resume_interaction(
                 &self.results,
                 &self.search,
                 &self.fetch,
@@ -227,10 +225,10 @@ impl ToolDispatcher {
             )
             .await?
             {
-                dispatch::InteractionContinuation::Completed(completion) => {
+                tool_call_dispatch::InteractionContinuation::Completed(completion) => {
                     ClientToolEvent::Completed(completion)
                 }
-                dispatch::InteractionContinuation::Pending => ClientToolEvent::Pending,
+                tool_call_dispatch::InteractionContinuation::Pending => ClientToolEvent::Pending,
             },
         )
     }

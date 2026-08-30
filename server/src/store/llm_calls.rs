@@ -1,3 +1,4 @@
+//! Persists provider call payloads, timing, and usage.
 use std::str::FromStr;
 
 use sqlx::Row;
@@ -70,9 +71,8 @@ impl Store {
                 call_id, run_id, conversation_id, provider_call_index, model_hash,
                 provider_type, provider_url, request_type, request_url, model_id, display_name,
                 reasoning_effort, fast, status,
-                created_at_ms, request_started_at_ms, queue_ms, message_count, projected_message_count,
-                history_fingerprint, tool_count, detailed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?, ?, ?)"#,
+                created_at_ms, request_started_at_ms, queue_ms, message_count, tool_count, detailed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?)"#,
         )
         .bind(&call.call_id)
         .bind(&call.run_id)
@@ -90,8 +90,6 @@ impl Store {
         .bind(now)
         .bind(now)
         .bind(call.message_count as i64)
-        .bind(call.projected_message_count as i64)
-        .bind(&call.history_fingerprint)
         .bind(call.tool_count as i64)
         .bind(call.detailed)
         .execute(&self.pool)
@@ -313,18 +311,14 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
-            let projected_message_count = usize::try_from(
-                row.try_get::<i64, _>("projected_message_count")?,
-            )
-            .unwrap_or(usize::MAX);
-            let history_fingerprint = row.try_get("history_fingerprint")?;
+            let message_count =
+                usize::try_from(row.try_get::<i64, _>("message_count")?).unwrap_or(usize::MAX);
             let tool_count =
                 usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
             Ok(LlmCallUsageAnchor {
                 request_type: ProviderType::from_str(row.try_get("request_type")?)?,
                 usage: serde_json::from_str(row.try_get("usage_json")?)?,
-                projected_message_count,
-                history_fingerprint,
+                message_count,
                 tool_count,
             })
         })
@@ -423,224 +417,51 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::model::{ModelConfigInput, ModelType};
-    use tokio::sync::Barrier;
 
+    /// 插件模型不在 model_configs 中,调用记录必须照常落库并可按其稳定 ID 筛选。
     #[tokio::test]
-    async fn concurrent_writes_are_serialized_without_sqlite_busy_retries() {
+    async fn plugin_calls_record_without_a_model_config_row() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::connect(&format!(
             "sqlite://{}",
-            directory.path().join("concurrent-writes.db").display()
+            directory.path().join("test.db").display()
         ))
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO llm_calls(
-                call_id, run_id, conversation_id, provider_call_index, provider_type,
-                provider_url, request_type, request_url, model_id, display_name, status,
-                created_at_ms, message_count, tool_count, detailed
-             ) VALUES (
-                'concurrent-call', 'run', 'conversation', 0, 'openai-chat',
-                'https://example.com', 'openai-chat', 'https://example.com',
-                'model', 'Model', 'running', 1, 0, 0, 0
-             )",
-        )
-        .execute(store.pool())
-        .await
-        .unwrap();
-
-        let mut connections = Vec::new();
-        for _ in 0..8 {
-            connections.push(store.pool().acquire().await.unwrap());
-        }
-        for connection in &mut connections {
-            sqlx::query("PRAGMA busy_timeout = 0")
-                .execute(&mut **connection)
-                .await
-                .unwrap();
-        }
-        drop(connections);
-
-        let writers = 32;
-        let barrier = Arc::new(Barrier::new(writers));
-        let mut tasks = Vec::with_capacity(writers);
-        for seq in 0..writers {
-            let store = store.clone();
-            let barrier = barrier.clone();
-            tasks.push(tokio::spawn(async move {
-                barrier.wait().await;
-                store
-                    .record_llm_chunk("concurrent-call", seq as i64, 1, b"x", false)
-                    .await
-            }));
-        }
-        for task in tasks {
-            task.await.unwrap().unwrap();
-        }
-
-        let call = store.llm_call("concurrent-call").await.unwrap().unwrap();
-        assert_eq!(call.response_bytes, writers as i64);
-        assert_eq!(call.stream_event_count, writers as i64);
-    }
-
-    #[tokio::test]
-    async fn records_a_batch_of_response_chunks_with_one_summary_update() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        sqlx::query(
-            "INSERT INTO llm_calls(
-                call_id, run_id, conversation_id, provider_call_index, provider_type,
-                provider_url, request_type, request_url, model_id, display_name, status,
-                created_at_ms, message_count, tool_count, detailed
-             ) VALUES (
-                'batch-call', 'run', 'conversation', 0, 'openai-chat',
-                'https://example.com', 'openai-chat', 'https://example.com',
-                'model', 'Model', 'running', 1, 0, 0, 1
-             )",
-        )
-        .execute(store.pool())
-        .await
-        .unwrap();
-        sqlx::query("CREATE TABLE llm_call_summary_updates(count INTEGER NOT NULL)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO llm_call_summary_updates(count) VALUES (0)")
-            .execute(store.pool())
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TRIGGER count_llm_call_summary_updates
-             AFTER UPDATE OF response_bytes ON llm_calls
-             BEGIN
-                 UPDATE llm_call_summary_updates SET count = count + 1;
-             END",
-        )
-        .execute(store.pool())
-        .await
-        .unwrap();
-
+        let plugin_model = "plugin:dev.example/codex/gpt-test";
         store
-            .record_llm_chunks(
-                "batch-call",
-                &[
-                    BufferedLlmChunk::new(0, 1, b"one"),
-                    BufferedLlmChunk::new(1, 2, b"two"),
-                    BufferedLlmChunk::new(2, 3, b"three"),
-                ],
-                true,
-            )
-            .await
-            .unwrap();
-
-        let call = store.llm_call("batch-call").await.unwrap().unwrap();
-        assert_eq!(call.response_bytes, 11);
-        assert_eq!(call.stream_event_count, 3);
-        assert_eq!(store.llm_call_chunks("batch-call").await.unwrap().len(), 3);
-        let updates: i64 = sqlx::query_scalar("SELECT count FROM llm_call_summary_updates")
-            .fetch_one(store.pool())
-            .await
-            .unwrap();
-        assert_eq!(updates, 1);
-    }
-
-    #[tokio::test]
-    async fn latest_usage_anchor_uses_the_latest_completed_call_for_the_same_conversation_and_model(
-    ) {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let model = store
-            .create_model(&ModelConfigInput {
-                model_id: "model".into(),
-                display_name: "Model".into(),
-                model_type: ModelType::OpenAi,
-                base_url: "https://example.com/v1/responses".into(),
-                use_full_url: true,
-                api_key: "secret".into(),
-                tooltip_data: "Model".into(),
-                sort_order: 0,
+            .start_llm_call(&NewLlmCall {
+                call_id: "plugin-call".into(),
+                run_id: "run".into(),
+                conversation_id: "conversation".into(),
+                provider_call_index: 0,
+                model_hash: plugin_model.into(),
+                provider_type: ProviderType::Plugin,
+                provider_url: "plugin://dev.example/codex".into(),
+                request_type: ProviderType::Plugin,
+                request_url: "plugin://dev.example/codex".into(),
+                model_id: "gpt-test".into(),
+                display_name: "GPT Test".into(),
                 reasoning_effort: None,
-                openai_endpoint: "/v1/responses".into(),
-                openai_extra_params_enabled: false,
-                openai_extra_params: serde_json::json!({}),
-                custom_headers_enabled: false,
-                custom_headers: serde_json::json!({}),
-                anthropic_extra_params_enabled: false,
-                anthropic_extra_params: serde_json::json!({}),
-                context_window_tokens: Some(200_000),
-                max_completion_tokens: Some(16_000),
-                anthropic_max_tokens: None,
-                anthropic_thinking_effort: None,
-                thinking_budget_tokens: None,
+                fast: false,
+                message_count: 1,
+                tool_count: 0,
+                detailed: false,
             })
             .await
             .unwrap();
-        let conversation_id = ConversationId::new("conversation");
-
-        for (call_id, status, input_tokens, message_count) in [
-            ("completed-old", "completed", 120_000, 10),
-            ("failed-newer", "error", 180_000, 11),
-            ("completed-latest", "completed", 140_649, 12),
-            ("completed-legacy", "completed", 180_000, 13),
-        ] {
-            store
-                .start_llm_call(&NewLlmCall {
-                    call_id: call_id.into(),
-                    run_id: format!("run-{call_id}"),
-                    conversation_id: conversation_id.to_string(),
-                    provider_call_index: 0,
-                    model_hash: model.model_hash.clone(),
-                    provider_type: model.provider_type(),
-                    provider_url: model.base_url.clone(),
-                    request_type: model.provider_type(),
-                    request_url: model.request_url().unwrap(),
-                    model_id: model.model_id.clone(),
-                    display_name: model.display_name.clone(),
-                    reasoning_effort: None,
-                    fast: false,
-                    message_count,
-                    projected_message_count: message_count,
-                    history_fingerprint: format!("history-{message_count}"),
-                    tool_count: 7,
-                    detailed: false,
-                })
-                .await
-                .unwrap();
-            store
-                .record_llm_usage(
-                    call_id,
-                    Usage {
-                        input_tokens: Some(input_tokens),
-                        cache_read_tokens: Some(100_000),
-                        ..Usage::default()
-                    },
-                )
-                .await
-                .unwrap();
-            store
-                .finish_llm_call(call_id, status, None, 1, None, None)
-                .await
-                .unwrap();
-        }
-
-        sqlx::query("UPDATE llm_calls SET history_fingerprint = '' WHERE call_id = 'completed-legacy'")
-            .execute(store.pool())
+        store
+            .finish_llm_call("plugin-call", "completed", None, 10, None, None)
             .await
             .unwrap();
-
-        let anchor = store
-            .latest_llm_call_usage_anchor(&conversation_id, &model.model_hash)
+        let overview = store
+            .overview(None, None, Some(&format!("[\"{plugin_model}\"]")))
             .await
-            .unwrap()
             .unwrap();
-
-        assert_eq!(anchor.request_type, ProviderType::OpenAiResponses);
-        assert_eq!(anchor.usage.input_tokens, Some(140_649));
-        assert_eq!(anchor.projected_message_count, 12);
-        assert_eq!(anchor.history_fingerprint, "history-12");
-        assert_eq!(anchor.tool_count, 7);
+        assert_eq!(overview.metrics.llm_calls, 1);
+        assert_eq!(overview.metrics.successful_calls, 1);
     }
 
     #[tokio::test]
@@ -669,6 +490,7 @@ mod tests {
                 anthropic_max_tokens: None,
                 anthropic_thinking_effort: None,
                 thinking_budget_tokens: None,
+                group_name: None,
             })
             .await
             .unwrap();
@@ -689,8 +511,6 @@ mod tests {
                 reasoning_effort: None,
                 fast: false,
                 message_count: 2,
-                projected_message_count: 2,
-                history_fingerprint: "history".into(),
                 tool_count: 3,
                 detailed: true,
             })

@@ -1,3 +1,4 @@
+//! Implements the OpenAI Responses provider adapter.
 use async_stream::try_stream;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eventsource_stream::Eventsource;
@@ -13,7 +14,8 @@ use crate::{
 };
 
 use super::{
-    apply_openai_prompt_cache_key, merge_extra_params,
+    apply_body_allowlist, apply_openai_prompt_cache_key, map_sse_error, merge_extra_params,
+    provider_event_error,
     recorder::recorded_headers,
     retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
@@ -82,6 +84,7 @@ impl Provider for OpenAiResponsesProvider {
             apply_model(&mut body, &request.model, config.max_output_tokens)?;
             merge_extra_params(&mut body, &request.model.extra_params)?;
             apply_openai_prompt_cache_key(&mut body, &request.model.model_id)?;
+            apply_body_allowlist(&mut body, config.allowed_body_fields.as_ref())?;
             let request_headers = recorded_headers(&config, &[("content-type", "application/json")]);
             if let Some(recorder) = &recorder {
                 recorder.request(request_headers.clone(), &body).await?;
@@ -90,7 +93,7 @@ impl Provider for OpenAiResponsesProvider {
                 "OpenAI Responses",
                 || client.post(&config.request_url)
                     .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body),
-                RetryPolicy::default(),
+                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
                 request_headers,
@@ -125,9 +128,12 @@ impl Provider for OpenAiResponsesProvider {
                     event = source.next() => event,
                 };
                 let Some(event) = event else { break };
-                let event = event.map_err(|error| Error::Provider(format!("OpenAI Responses SSE: {error}")))?;
+                let event = event.map_err(|error| map_sse_error("OpenAI Responses", error))?;
                 if event.data == "[DONE]" { break; }
                 let value: Value = serde_json::from_str(&event.data)?;
+                if let Some(error) = provider_event_error("OpenAI Responses", &value) {
+                    Err(error)?;
+                }
                 let kind = value.get("type").and_then(Value::as_str).unwrap_or(&event.event);
                 match kind {
                     "response.output_text.delta" => {
@@ -246,7 +252,6 @@ impl Provider for OpenAiResponsesProvider {
                         terminal = true;
                         yield ModelEvent::Done(FinishReason::Length);
                     }
-                    "response.failed" => Err(Error::Provider(format!("OpenAI Responses failed: {}", event.data)))?,
                     _ => {}
                 }
             }
@@ -531,7 +536,6 @@ fn responses_usage(value: &Value) -> Usage {
             .and_then(Value::as_u64),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

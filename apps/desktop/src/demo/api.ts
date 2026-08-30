@@ -8,7 +8,7 @@ import type {
   ProxySettings,
   StatisticsStorage,
   TabSettings,
-} from "../api";
+} from "../shared/api";
 
 const API_ROOT = "/__byok-api__/api";
 const FIXED_NOW = Date.UTC(2026, 7, 27, 8, 0, 0);
@@ -185,6 +185,7 @@ function createModel({ hash, order, name, type, url, modelId, endpoint = "/v1/re
     model_hash: hash,
     sort_order: order,
     display_name: name,
+    group_name: null,
     type,
     base_url: url,
     use_full_url: false,

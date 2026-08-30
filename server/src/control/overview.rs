@@ -1,3 +1,4 @@
+//! Implements control dashboard overview endpoints.
 //! HTTP handler for the desktop overview aggregates.
 
 use axum::{

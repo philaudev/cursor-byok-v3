@@ -1,7 +1,8 @@
+//! Builds compacted checkpoint summary state.
 use prost::Message;
 
 use crate::{
-    cursor::{presentation::PresentationDelta, proto::agent::v1 as pb},
+    cursor::{checkpoint::PendingSteps, protocol::proto::agent::v1 as pb},
     model::CanonicalMessage,
     store::{BlobEdge, BlobId},
     Error, Result,
@@ -15,7 +16,7 @@ impl CheckpointBuilder {
         messages: &[CanonicalMessage],
         mode: i32,
         summary: &str,
-        presentation: &PresentationDelta,
+        presentation: &PendingSteps,
     ) -> Result<pb::ConversationStateStructure> {
         let summarized = self
             .base
@@ -85,7 +86,7 @@ impl CheckpointBuilder {
         }
         self.base.self_summary_count = self.base.self_summary_count.saturating_add(1);
         if let Some(details) = self.base.token_details.as_mut() {
-            let breakdown = crate::cursor::usage::breakdown(
+            let breakdown = crate::cursor::services::usage::breakdown(
                 0,
                 details.max_tokens,
                 details.breakdown.as_ref(),

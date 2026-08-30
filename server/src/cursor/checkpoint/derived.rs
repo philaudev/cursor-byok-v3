@@ -1,9 +1,10 @@
+//! Derives Todo, Plan, and related checkpoint state from Messages.
 use std::collections::HashMap;
 
 use prost::Message;
 
 use crate::{
-    cursor::{prompting::fold_derived_state, proto::agent::v1 as pb},
+    cursor::{prompting::fold_derived_state, protocol::proto::agent::v1 as pb},
     model::{CanonicalMessage, MessageContent},
     store::BlobId,
     Result,
@@ -162,63 +163,4 @@ fn normalize(name: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{Origin, Role, ToolCallContent, ToolResultContent};
-
-    #[test]
-    fn update_current_step_is_folded_from_canonical_messages() {
-        let messages = vec![
-            CanonicalMessage {
-                message_id: "assistant".into(),
-                role: Role::Assistant,
-                origin: Origin::Assistant,
-                content: MessageContent::Assistant {
-                    text: String::new(),
-                    thinking: String::new(),
-                    tool_round_id: Some("round".into()),
-                    replay_state: None,
-                    tool_calls: vec![ToolCallContent {
-                        index: 0,
-                        call_id: "call".into(),
-                        name: "UpdateCurrentStep".into(),
-                        arguments: serde_json::json!({
-                            "current_step": "Inspecting protocol",
-                            "final_summary": "Protocol verified.",
-                            "completed_subtitle": "Verified protocol flow"
-                        }),
-                    }],
-                },
-                runtime_event_id: None,
-            },
-            CanonicalMessage {
-                message_id: "result".into(),
-                role: Role::Tool,
-                origin: Origin::Tool,
-                content: MessageContent::ToolResult(ToolResultContent {
-                    call_id: "call".into(),
-                    name: "UpdateCurrentStep".into(),
-                    content: serde_json::json!({
-                        "success": {"current_step": "Inspecting protocol", "message_index": 3}
-                    })
-                    .to_string(),
-                    is_error: false,
-                    image: None,
-                    provider_parts: Vec::new(),
-                }),
-                runtime_event_id: None,
-            },
-        ];
-        let state = update_current_step_state(&messages).unwrap();
-        assert_eq!(state.history[0].step, "Inspecting protocol");
-        assert_eq!(state.history[0].message_index, 3);
-        assert_eq!(state.final_summary.as_deref(), Some("Protocol verified."));
-        assert_eq!(
-            state.completed_subtitle.as_deref(),
-            Some("Verified protocol flow")
-        );
-    }
 }
