@@ -13,6 +13,10 @@ const COMPACTION_PROMPT_FILE_NAME: &str = "compaction.md";
 const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompt/cursor/compaction/prompt.md");
 const V0049_DATA_DIR_NAME: &str = ".cursor-local-assistant-v2";
 const V0049_CONFIG_FILE_NAME: &str = "config.yaml";
+
+pub fn default_compaction_prompt() -> &'static str {
+    DEFAULT_COMPACTION_PROMPT
+}
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -43,9 +47,6 @@ fn compaction_prompt_path_in(data_dir: &std::path::Path) -> Result<PathBuf> {
     let rules_dir = data_dir.join(RULES_DIR_NAME);
     fs::create_dir_all(&rules_dir)?;
     let path = rules_dir.join(COMPACTION_PROMPT_FILE_NAME);
-    if !path.exists() {
-        fs::write(&path, DEFAULT_COMPACTION_PROMPT)?;
-    }
     Ok(path)
 }
 
