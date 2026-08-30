@@ -85,6 +85,8 @@ mod llm_call {
         pub reasoning_effort: Option<String>,
         pub fast: bool,
         pub message_count: usize,
+        pub projected_message_count: usize,
+        pub history_fingerprint: String,
         pub tool_count: usize,
         pub detailed: bool,
     }

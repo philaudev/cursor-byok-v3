@@ -468,6 +468,8 @@ mod tests {
                 reasoning_effort: None,
                 fast: false,
                 message_count: 1,
+                projected_message_count: 1,
+                history_fingerprint: "fingerprint".into(),
                 tool_count: 0,
                 detailed: false,
             },

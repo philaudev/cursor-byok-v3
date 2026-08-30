@@ -71,8 +71,9 @@ impl Store {
                 call_id, run_id, conversation_id, provider_call_index, model_hash,
                 provider_type, provider_url, request_type, request_url, model_id, display_name,
                 reasoning_effort, fast, status,
-                created_at_ms, request_started_at_ms, queue_ms, message_count, tool_count, detailed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?)"#,
+                created_at_ms, request_started_at_ms, queue_ms, message_count,
+                projected_message_count, history_fingerprint, tool_count, detailed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, 0, ?, ?, ?, ?, ?)"#,
         )
         .bind(&call.call_id)
         .bind(&call.run_id)
@@ -90,6 +91,8 @@ impl Store {
         .bind(now)
         .bind(now)
         .bind(call.message_count as i64)
+        .bind(call.projected_message_count as i64)
+        .bind(&call.history_fingerprint)
         .bind(call.tool_count as i64)
         .bind(call.detailed)
         .execute(&self.pool)
@@ -312,7 +315,7 @@ impl Store {
         .await?;
         row.map(|row| {
             let message_count =
-                usize::try_from(row.try_get::<i64, _>("message_count")?).unwrap_or(usize::MAX);
+                usize::try_from(row.try_get::<i64, _>("projected_message_count")?).unwrap_or(usize::MAX);
             let tool_count =
                 usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
             Ok(LlmCallUsageAnchor {
@@ -447,6 +450,8 @@ mod tests {
                 reasoning_effort: None,
                 fast: false,
                 message_count: 1,
+                projected_message_count: 1,
+                history_fingerprint: "fingerprint".into(),
                 tool_count: 0,
                 detailed: false,
             })
@@ -511,6 +516,8 @@ mod tests {
                 reasoning_effort: None,
                 fast: false,
                 message_count: 2,
+                projected_message_count: 2,
+                history_fingerprint: "fingerprint".into(),
                 tool_count: 3,
                 detailed: true,
             })
