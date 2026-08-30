@@ -18,15 +18,18 @@ pub struct NewLlmCall {
     pub reasoning_effort: Option<String>,
     pub fast: bool,
     pub message_count: usize,
+    pub projected_message_count: usize,
+    pub history_fingerprint: String,
     pub tool_count: usize,
     pub detailed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LlmCallUsageAnchor {
     pub request_type: ProviderType,
     pub usage: Usage,
-    pub message_count: usize,
+    pub projected_message_count: usize,
+    pub history_fingerprint: String,
     pub tool_count: usize,
 }
 
@@ -52,10 +55,12 @@ pub struct LlmCallSummary {
     pub response_headers_at_ms: Option<i64>,
     pub first_event_at_ms: Option<i64>,
     pub first_text_at_ms: Option<i64>,
+    pub first_valid_response_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
     pub queue_ms: Option<i64>,
     pub ttfb_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
+    pub ttfr_ms: Option<i64>,
     pub duration_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{atomic::AtomicU32, Arc, OnceLock},
 };
 
@@ -30,6 +30,8 @@ pub struct CursorSessionHandle {
     commands: mpsc::Sender<CursorCommand>,
     output: Arc<OutputHub>,
     cancellation: CancellationToken,
+    conversation_id: Arc<OnceLock<String>>,
+    cancelled_conversations: Arc<parking_lot::Mutex<HashSet<String>>>,
     parent: Arc<OnceLock<CursorParent>>,
     trace: Option<CursorTraceRecorder>,
 }
@@ -43,6 +45,35 @@ pub struct CursorParent {
 impl CursorSessionHandle {
     pub fn request_id(&self) -> &str {
         &self.request_id
+    }
+    pub fn set_conversation_id(&self, conversation_id: &str) -> Result<()> {
+        if conversation_id.is_empty() {
+            return Err(crate::Error::Protocol(
+                "Cursor conversation id is required".into(),
+            ));
+        }
+        if self
+            .conversation_id
+            .get()
+            .is_some_and(|current| current != conversation_id)
+        {
+            return Err(crate::Error::Protocol(format!(
+                "conflicting conversation ids for request {}",
+                self.request_id
+            )));
+        }
+        let _ = self.conversation_id.set(conversation_id.into());
+        Ok(())
+    }
+    pub fn conversation_id(&self) -> Option<&str> {
+        self.conversation_id.get().map(String::as_str)
+    }
+    pub fn mark_conversation_cancelled(&self) {
+        if let Some(conversation_id) = self.conversation_id() {
+            self.cancelled_conversations
+                .lock()
+                .insert(conversation_id.to_owned());
+        }
     }
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<Bytes> {
         self.output.subscribe()
@@ -78,6 +109,8 @@ impl CursorSessionHandle {
             commands,
             output: Arc::new(OutputHub::default()),
             cancellation: CancellationToken::new(),
+            conversation_id: Arc::new(OnceLock::new()),
+            cancelled_conversations: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             parent: Arc::new(OnceLock::new()),
             trace: None,
         }
@@ -179,6 +212,7 @@ struct RegistryInner {
     store: Store,
     provider: Arc<dyn Provider>,
     compiler: PromptCompiler,
+    cancelled_conversations: Arc<parking_lot::Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +245,7 @@ impl CursorSessionRegistry {
                 store,
                 provider,
                 compiler,
+                cancelled_conversations: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             }),
         }
     }
@@ -237,6 +272,8 @@ impl CursorSessionRegistry {
             commands,
             output,
             cancellation,
+            conversation_id: Arc::new(OnceLock::new()),
+            cancelled_conversations: self.inner.cancelled_conversations.clone(),
             parent: Arc::new(OnceLock::new()),
             trace,
         };
@@ -295,9 +332,27 @@ impl CursorSessionRegistry {
             .contains_key(request_id)
     }
 
+    pub(crate) fn conversation_cancelled(&self, conversation_id: &str) -> bool {
+        self.inner
+            .cancelled_conversations
+            .lock()
+            .contains(conversation_id)
+    }
+
+    pub(crate) fn clear_conversation_cancelled(&self, conversation_id: &str) {
+        self.inner
+            .cancelled_conversations
+            .lock()
+            .remove(conversation_id);
+    }
+
     pub(crate) async fn wait_route(&self, request_id: &str) -> CursorRoute {
         loop {
+            // Create the notification future BEFORE checking state to avoid
+            // a race where a notification fires between state check and await.
             let changed = self.inner.route_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             if self.inner.runs.lock().await.contains_key(request_id) {
                 return CursorRoute::Local;
             }

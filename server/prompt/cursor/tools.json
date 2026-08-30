@@ -463,6 +463,32 @@
     {
       "type": "function",
       "function": {
+        "name": "Ls",
+        "description": "Lists files and directories under a directory path.\n\nUse this tool when you need directory structure, especially top-level project layout or immediate children of a folder. Do not use Glob(\"*\") or recursive Glob patterns to list a directory; use Ls instead.\n\nYou may provide ignore globs for large or irrelevant directories such as .git, node_modules, dist, build, target, or logs.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ignore": {
+              "description": "Optional ignore globs for directories or files that should be skipped while listing.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "path": {
+              "description": "The absolute path of the directory to list.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Grep",
         "description": "A search tool built on ripgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
         "parameters": {
@@ -534,12 +560,12 @@
       "type": "function",
       "function": {
         "name": "InspectChanges",
-        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or a specific file with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff of a single file instead of running `git diff <file>` via Shell: pass the file path (e.g. `path: \"src/main.rs\"`) to get its focused unified diff.\n- Checking working tree status, modified/added/deleted files, or staged/unstaged changes before and after code modifications.\n- Reviewing repository-wide diffs without flooding context with raw terminal output.\n\nUsage Guidelines:\n- Pass a project/repo directory path (e.g. `path: \"C:/path/to/repo\"` or `path: \".\"`) to get an overview of all modified and untracked files with summarized diffs.\n- Pass a specific file path (e.g. `path: \"src/main.rs\"`) to inspect its complete unified diff.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
+        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or a specific file with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff of a single file instead of running `git diff <file>` via Shell: pass the absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to get its focused unified diff.\n- Checking working tree status, modified/added/deleted files, or staged/unstaged changes before and after code modifications.\n- Reviewing repository-wide diffs without flooding context with raw terminal output.\n\nUsage Guidelines:\n- Pass the absolute project/repo directory path (e.g. `path: \"C:/path/to/repo\"`) to get an overview of all modified and untracked files with summarized diffs.\n- Pass an absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to inspect its complete unified diff.\n- Always use absolute paths.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
-              "description": "The absolute or relative path to the Git repository directory or a specific file to inspect.",
+              "description": "The absolute path to the Git repository directory or a specific file to inspect.",
               "type": "string"
             }
           },

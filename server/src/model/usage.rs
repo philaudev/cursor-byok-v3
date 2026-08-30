@@ -35,14 +35,11 @@ impl Usage {
     }
 
     /// Returns the provider-visible input context without counting cached tokens twice.
-    pub(crate) fn context_input_tokens(self, provider: ProviderType) -> Option<u64> {
+    pub(crate) fn context_input_tokens(self, _provider: ProviderType) -> Option<u64> {
         let input = self.input_tokens?;
-        match provider {
-            ProviderType::OpenAiChat | ProviderType::OpenAiResponses => Some(input),
-            ProviderType::Anthropic => input
-                .checked_add(self.cache_read_tokens.unwrap_or_default())?
-                .checked_add(self.cache_write_tokens.unwrap_or_default()),
-        }
+        input
+            .checked_add(self.cache_read_tokens.unwrap_or_default())?
+            .checked_add(self.cache_write_tokens.unwrap_or_default())
     }
 }
 
@@ -67,11 +64,11 @@ mod tests {
     use crate::model::ProviderType;
 
     #[test]
-    fn openai_context_input_does_not_double_count_cached_tokens() {
+    fn openai_context_input_includes_cached_tokens() {
         let usage = Usage {
-            input_tokens: Some(140_649),
+            input_tokens: Some(20_649),
             cache_read_tokens: Some(120_000),
-            cache_write_tokens: Some(10_000),
+            cache_write_tokens: None,
             ..Usage::default()
         };
 

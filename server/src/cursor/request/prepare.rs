@@ -152,9 +152,21 @@ pub(crate) async fn prepare(
         mode_from_proto(mode_number)?
     };
     let mut model = model::requested_model(request)?;
+    let request_context_window = model.context_window_tokens;
     if let Some(configured_model) = store.model(&model.model_id).await? {
         configured_model.configure(&mut model);
     }
+    hydrate_context_window_from_checkpoint(
+        &mut model,
+        request_context_window,
+        request.conversation_state.as_ref(),
+    );
+    let checkpoint_context_tokens = request
+        .conversation_state
+        .as_ref()
+        .and_then(|state| state.token_details.as_ref())
+        .map(|details| details.used_tokens as u64)
+        .filter(|tokens| *tokens > 0);
     let dynamic = context::dynamic_mcp(request, &request_context)?;
     let custom_subagent = selected_custom_subagent(request, &request_context);
     let subagent_model_overrides = model::overrides(request)?;
@@ -363,6 +375,7 @@ pub(crate) async fn prepare(
             conversation_id,
             kind,
             model,
+            checkpoint_context_tokens,
             prompt,
             compaction_prompt,
             initial_messages,
@@ -383,6 +396,26 @@ pub(crate) async fn prepare(
             background_completion,
         },
     ))
+}
+
+fn hydrate_context_window_from_checkpoint(
+    model: &mut crate::model::ModelSpec,
+    request_context_window: Option<u64>,
+    state: Option<&pb::ConversationStateStructure>,
+) {
+    // A context selected in Cursor is authoritative. When Cursor omits the
+    // parameter, retain the saved model setting so a runtime config update is
+    // reflected in the next checkpoint. The previous checkpoint is only a
+    // fallback for models without a configured context window.
+    if request_context_window.is_none() && model.context_window_tokens.is_none() {
+        if let Some(tokens) = state
+            .and_then(|state| state.token_details.as_ref())
+            .map(|details| details.max_tokens as u64)
+            .filter(|tokens| *tokens > 0)
+        {
+            model.context_window_tokens = Some(tokens);
+        }
+    }
 }
 
 fn needs_history_restore(
@@ -683,7 +716,18 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
             })
         }
         pb::conversation_action::Action::BackgroundTaskCompletionAction(action) => {
-            let projection = background::project_background_completion(action, mode)?;
+            let Some(projection) = background::project_background_completion(action, mode)? else {
+                return Ok(ActionProjection {
+                    mode,
+                    turn_user: None,
+                    action_context: String::new(),
+                    event_id: None,
+                    input_id: None,
+                    starts_turn: false,
+                    compacting: false,
+                    background_completion: false,
+                });
+            };
             let event_id = projection.turn_user.message_id.clone();
             Ok(ActionProjection {
                 mode,
@@ -888,6 +932,79 @@ fn exec_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_context_overrides_stale_checkpoint_limit() {
+        let mut model = crate::model::ModelSpec {
+            context_window_tokens: Some(200_000),
+            ..crate::model::ModelSpec::new("model")
+        };
+        let checkpoint = pb::ConversationStateStructure {
+            token_details: Some(pb::ConversationTokenDetails {
+                max_tokens: 280_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        hydrate_context_window_from_checkpoint(&mut model, None, Some(&checkpoint));
+
+        assert_eq!(model.context_window_tokens, Some(200_000));
+    }
+
+    #[test]
+    fn checkpoint_context_fills_missing_configured_context() {
+        let mut model = crate::model::ModelSpec::new("model");
+        let checkpoint = pb::ConversationStateStructure {
+            token_details: Some(pb::ConversationTokenDetails {
+                max_tokens: 280_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        hydrate_context_window_from_checkpoint(&mut model, None, Some(&checkpoint));
+
+        assert_eq!(model.context_window_tokens, Some(280_000));
+    }
+
+    #[test]
+    fn selected_request_context_window_overrides_checkpoint_meter_limit() {
+        let mut model = crate::model::ModelSpec {
+            context_window_tokens: Some(356_000),
+            ..crate::model::ModelSpec::new("model")
+        };
+        let checkpoint = pb::ConversationStateStructure {
+            token_details: Some(pb::ConversationTokenDetails {
+                max_tokens: 280_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        hydrate_context_window_from_checkpoint(&mut model, Some(356_000), Some(&checkpoint));
+
+        assert_eq!(model.context_window_tokens, Some(356_000));
+    }
+
+    #[test]
+    fn checkpoint_usage_is_available_to_the_prepared_run() {
+        let checkpoint = pb::ConversationStateStructure {
+            token_details: Some(pb::ConversationTokenDetails {
+                used_tokens: 202_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let tokens = checkpoint
+            .token_details
+            .as_ref()
+            .map(|details| details.used_tokens as u64)
+            .filter(|tokens| *tokens > 0);
+
+        assert_eq!(tokens, Some(202_000));
+    }
 
     #[test]
     fn compacted_checkpoint_keeps_summary_without_restoring_full_history() {

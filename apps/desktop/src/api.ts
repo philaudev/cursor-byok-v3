@@ -86,7 +86,7 @@ export interface LegacyModelImportResult {
 
 export interface ModelConnectivityResult {
   duration_ms: number;
-  first_text_ms: number | null;
+  first_valid_response_ms: number | null;
   output_tokens: number;
   tokens_per_second: number;
   tokens_estimated: boolean;
@@ -115,6 +115,8 @@ export interface StatisticsStorage {
   call_count: number;
   trace_count: number;
 }
+
+export type StatisticsStorageScope = "details" | "all";
 
 export type ProxyMode = "system" | "custom";
 
@@ -195,6 +197,7 @@ export interface LlmCall {
   created_at_ms: number;
   ttfb_ms: number | null;
   ttft_ms: number | null;
+  ttfr_ms: number | null;
   duration_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -335,7 +338,7 @@ export const api = {
   ports: () => request<PortSettings>("/settings/ports"),
   setPorts: (settings: PortSettings) => request<PortSettings>("/settings/ports", { method: "PUT", body: JSON.stringify(settings) }),
   statisticsStorage: () => request<StatisticsStorage>("/settings/storage/statistics"),
-  clearStatisticsStorage: () => request<StatisticsStorage>("/settings/storage/statistics", { method: "DELETE" }),
+  clearStatisticsStorage: (scope: StatisticsStorageScope) => request<StatisticsStorage>("/settings/storage/statistics", { method: "DELETE", body: JSON.stringify({ scope }) }),
   proxySettings: () => request<ProxySettings>("/settings/proxy"),
   setProxySettings: (settings: ProxySettingsInput) => request<ProxySettings>("/settings/proxy", { method: "PUT", body: JSON.stringify(settings) }),
   tabSettings: () => request<TabSettings>("/settings/tab"),

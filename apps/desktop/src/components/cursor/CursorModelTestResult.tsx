@@ -21,7 +21,7 @@ export function CursorModelTestResult({ state, testing = false }: { state?: Curs
   const detail = success
     ? t("速度 {speed} tokens/s · 首字 {firstText} ms · 总耗时 {duration} ms · 输出 {tokens} tokens{estimated} · 返回：{output}", {
       speed: formatSpeed(state.result.tokens_per_second),
-      firstText: state.result.first_text_ms ?? "--",
+      firstText: state.result.first_valid_response_ms ?? "--",
       duration: state.result.duration_ms,
       tokens: state.result.output_tokens,
       estimated: state.result.tokens_estimated ? t("（估算）") : "",

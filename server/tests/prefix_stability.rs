@@ -47,6 +47,28 @@ fn every_tool_result_is_projected_as_string_content() {
 }
 
 #[test]
+fn projected_tool_result_prefixes_remain_stable() {
+    let first = vec![named_tool_result("Grep", &"x".repeat(64 * 1024))];
+    let mut second = first.clone();
+    second.push(fixtures::user("u2", "continue"));
+
+    let projected_first = project_messages(&first).unwrap();
+    let projected_second = project_messages(&second).unwrap();
+
+    assert_eq!(projected_first, projected_second[..projected_first.len()]);
+}
+
+#[test]
+fn unbounded_tool_results_are_not_rewritten() {
+    let original = "x".repeat(64 * 1024);
+    let projected = project_messages(&[named_tool_result("Delete", &original)]).unwrap();
+    let ProjectedContent::ToolResult(result) = &projected[0].content else {
+        panic!("expected tool result")
+    };
+    assert_eq!(result.content, original);
+}
+
+#[test]
 fn assistant_text_and_thinking_remain_separate_during_projection() {
     let messages = vec![CanonicalMessage {
         message_id: "assistant".into(),
@@ -117,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 22);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 25);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -132,6 +154,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebSearch",
             "WebFetch",
             "GenerateImage",
+            "InspectChanges",
             "EditNotebook",
             "TodoWrite",
             "StrReplace",
@@ -148,6 +171,8 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "CallMcpTool",
             "SembleSearch",
             "SembleFindRelated",
+            "CreatePlan",
+            "UpdateCurrentStep",
         ]
     );
     assert_mode(
@@ -158,6 +183,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "CallMcpTool",
             "Delete",
             "FetchMcpResource",
+            "InspectChanges",
             "Glob",
             "Grep",
             "Read",
@@ -172,7 +198,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "c963d22b4f65ece57b3f1f5e7c9b6c1c622f845ee1ac5907f359cf9e52af628b",
+        "eb9bde0cda82c85da7c2e6b355bad757e894de204a5f7219adf3e999e79ce71b",
     );
     assert_mode(
         &assets,
@@ -182,6 +208,10 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Glob",
             "Grep",
             "Read",
+            "InspectChanges",
+            "Write",
+            "StrReplace",
+            "Delete",
             "TodoWrite",
             "ReadLints",
             "WebSearch",
@@ -191,10 +221,11 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Task",
             "FetchMcpResource",
             "CallMcpTool",
+            "SwitchMode",
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "527ec09c1a466660ad8dff8fb24a759fbd69f208dd9708f337126bd67a5d19c5",
+        "1d56d38bd34d3d340c5d74400000ad0b4f55c3b3ccac85fba2b019594795aad1",
     );
     assert_mode(
         &assets,
@@ -204,6 +235,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "CallMcpTool",
             "Delete",
             "FetchMcpResource",
+            "InspectChanges",
             "Glob",
             "Grep",
             "Read",
@@ -218,7 +250,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "c963d22b4f65ece57b3f1f5e7c9b6c1c622f845ee1ac5907f359cf9e52af628b",
+        "eb9bde0cda82c85da7c2e6b355bad757e894de204a5f7219adf3e999e79ce71b",
     );
     assert_mode(
         &assets,
@@ -228,6 +260,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "CallMcpTool",
             "Delete",
             "FetchMcpResource",
+            "InspectChanges",
             "Glob",
             "Grep",
             "Read",
@@ -244,7 +277,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "7c56df44f70f338ef8b361ffbb2a6842af52b9efd4d17b47830a6aaeda756e03",
+        "598695901bec54f1f02364eeac21963362e8e92f06e2c3094ff96d9bb2dcc71c",
     );
     assert_mode(
         &assets,
@@ -256,6 +289,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebSearch",
             "WebFetch",
             "GenerateImage",
+            "InspectChanges",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
@@ -272,7 +306,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "48c8e0fe825f9c2450307ca5e70cde7077c4282c135b2cd15338bd4bd0c43636",
+        "a08edd64ff56d5eb29f9be048aa522b8b680c91b4552c72edd76d7f713030389",
     );
     assert_mode(
         &assets,
@@ -282,7 +316,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "b86f59ad0dfc3a3f6ab91af47ff544f99f664d23a7fa07d28ece580cfc90dafb"
+        "dae16d1379f686da3288fdbd19d39c874ec8717af9768b029438ee2a03fa8052"
     );
     let task = assets
         .mode(Mode::Agent)
@@ -290,12 +324,8 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         .iter()
         .find(|tool| tool.name == "Task")
         .unwrap();
-    assert!(task.description.contains(
-        "When the user does not specify a number, launch at most three subagents in a single response. If the user explicitly requests more, you may launch the requested number."
-    ));
-    assert!(task.description.contains(
-        "If the user explicitly requests parallel subagents, follow the number requested by the user."
-    ));
+    assert!(task.description.contains("SUBAGENT & DELEGATION POLICY"));
+    assert!(task.description.contains("Launch up to 2-3 concurrent subagents"));
     assert!(!task
         .description
         .chars()
@@ -324,7 +354,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .mode(mode)
             .tools
             .iter()
-            .any(|tool| tool.name == "CreatePlan" || tool.name == "PatchEdit"));
+            .any(|tool| tool.name == "PatchEdit"));
     }
 }
 
@@ -519,7 +549,6 @@ fn subagent_uses_the_agent_prompt_and_only_the_captured_tool_delta() {
             "Write",
             "Read",
             "Glob",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",
@@ -561,6 +590,23 @@ fn tool_result_with_call(
                 .as_str()
                 .map(str::to_string)
                 .unwrap_or_else(|| output.to_string()),
+            is_error: false,
+            image: None,
+            provider_parts: Vec::new(),
+        }),
+        runtime_event_id: None,
+    }
+}
+
+fn named_tool_result(name: &str, output: &str) -> CanonicalMessage {
+    CanonicalMessage {
+        message_id: format!("result-{name}"),
+        role: Role::Tool,
+        origin: Origin::Tool,
+        content: MessageContent::ToolResult(ToolResultContent {
+            call_id: format!("call-{name}"),
+            name: name.into(),
+            content: output.into(),
             is_error: false,
             image: None,
             provider_parts: Vec::new(),

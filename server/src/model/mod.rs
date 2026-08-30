@@ -11,6 +11,7 @@ mod run;
 mod runtime_tag;
 mod token_count;
 mod tool;
+mod tool_result_replay;
 mod usage;
 
 pub use configuration::*;
@@ -26,4 +27,5 @@ pub use run::*;
 pub use runtime_tag::*;
 pub(crate) use token_count::*;
 pub use tool::*;
+pub(crate) use tool_result_replay::limit_tool_result_text;
 pub use usage::*;

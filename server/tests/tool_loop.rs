@@ -39,6 +39,7 @@ fn call(id: &str, name: &str) -> ToolCall {
 
 fn exec_context() -> ExecContext {
     ExecContext {
+        workspace_paths: Vec::new(),
         conversation_id: "conversation".into(),
         root_conversation_id: "conversation".into(),
         default_subagent_model: "model".into(),
@@ -995,6 +996,157 @@ async fn await_shell_uses_completed_background_state_when_terminal_file_lags() {
         panic!("background shell state must complete AwaitShell without terminal-file exit_code")
     };
     assert!(completion.result().content.contains("\"exit_code\":1"));
+}
+
+#[tokio::test]
+async fn ls_tool_routes_request_and_renders_tree_result() {
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::new(runtime.clone());
+    let mut ls_call = call("ls-1", "Ls");
+    ls_call.arguments = json!({
+        "path": "/workspace/my-app",
+        "ignore": ["node_modules", ".git"]
+    });
+    ls_call.arguments_text = ls_call.arguments.to_string();
+
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let dispatched = dispatcher
+        .start_batch(
+            &[ls_call],
+            ToolBatchState {
+                completed: &completed,
+                started: &started,
+                response_text: "",
+                response_thinking: "",
+            },
+            &[],
+            &BTreeMap::new(),
+            &exec_context(),
+        )
+        .await
+        .unwrap();
+
+    let exec = dispatched[0]
+        .messages
+        .iter()
+        .find_map(|message| match message.message.as_ref() {
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => Some(exec),
+            _ => None,
+        })
+        .expect("expected Ls ExecServerMessage");
+
+    assert_eq!(exec.exec_id, "ls-1");
+    let Some(pb::exec_server_message::Message::LsArgs(args)) = &exec.message else {
+        panic!("expected LsArgs in exec message");
+    };
+    assert_eq!(args.path, "/workspace/my-app");
+    assert_eq!(args.ignore, vec!["node_modules", ".git"]);
+    assert_eq!(args.tool_call_id, "ls-1");
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id: exec.id,
+            exec_id: "ls-1".into(),
+            message: Some(pb::exec_client_message::Message::LsResult(pb::LsResult {
+                result: Some(pb::ls_result::Result::Success(pb::LsSuccess {
+                    directory_tree_root: Some(pb::LsDirectoryTreeNode {
+                        abs_path: "/workspace/my-app".into(),
+                        children_dirs: vec![pb::LsDirectoryTreeNode {
+                            abs_path: "src".into(),
+                            ..Default::default()
+                        }],
+                        children_files: vec![
+                            pb::ls_directory_tree_node::File {
+                                name: "package.json".into(),
+                                terminal_metadata: None,
+                            },
+                            pb::ls_directory_tree_node::File {
+                                name: "Cargo.toml".into(),
+                                terminal_metadata: None,
+                            },
+                        ],
+                        children_were_processed: true,
+                        full_subtree_extension_counts: Default::default(),
+                        num_files: 3,
+                    }),
+                })),
+            })),
+            ..Default::default()
+        },
+        &runtime,
+    )
+    .await
+    .unwrap();
+
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("expected completed Ls event");
+    };
+    assert_eq!(completion.result().call_id, "ls-1");
+    assert!(!completion.result().is_error);
+    assert_eq!(
+        completion.result().content,
+        "/workspace/my-app:\n  src/\n  package.json\n  Cargo.toml"
+    );
+
+    let Some(pb::tool_call::Tool::LsToolCall(tool)) = completion.tool_call().tool.as_ref() else {
+        panic!("expected LsToolCall");
+    };
+    let Some(pb::ls_result::Result::Success(success)) = tool.result.as_ref().and_then(|r| r.result.as_ref()) else {
+        panic!("expected typed LsSuccess");
+    };
+    assert_eq!(
+        success.directory_tree_root.as_ref().unwrap().abs_path,
+        "/workspace/my-app"
+    );
+}
+
+#[tokio::test]
+async fn ls_tool_truncates_large_directory_and_adds_text_notice() {
+    let pending = CursorToolRuntime::default();
+    let mut ls_call = call("ls-large", "Ls");
+    ls_call.arguments = json!({
+        "path": "/workspace/overflow"
+    });
+    let id = pending.reserve_exec(&ls_call, &exec_context()).await.unwrap();
+
+    let mut children_files = Vec::new();
+    for i in 0..150 {
+        children_files.push(pb::ls_directory_tree_node::File {
+            name: format!("file_{i}.txt"),
+            terminal_metadata: None,
+        });
+    }
+
+    let event = codec::client_event(
+        &pb::ExecClientMessage {
+            id,
+            exec_id: "ls-large".into(),
+            message: Some(pb::exec_client_message::Message::LsResult(pb::LsResult {
+                result: Some(pb::ls_result::Result::Success(pb::LsSuccess {
+                    directory_tree_root: Some(pb::LsDirectoryTreeNode {
+                        abs_path: "/workspace/overflow".into(),
+                        children_dirs: Vec::new(),
+                        children_files,
+                        children_were_processed: true,
+                        ..Default::default()
+                    }),
+                })),
+            })),
+            ..Default::default()
+        },
+        &pending,
+    )
+    .await
+    .unwrap();
+
+    let codec::ClientExecEvent::Completed(completion) = event else {
+        panic!("expected completed Ls event");
+    };
+
+    assert!(completion.result().content.contains("[truncated: directory listing was limited]"));
+    assert!(completion.result().content.contains("file_99.txt"));
+    assert!(!completion.result().content.contains("file_100.txt"));
 }
 
 #[tokio::test]

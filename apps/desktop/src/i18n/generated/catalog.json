@@ -92,7 +92,7 @@
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 180,
+          "line": 185,
           "column": 82
         }
       ]
@@ -166,18 +166,6 @@
           "file": "pages/CursorSettingsPage.tsx",
           "line": 284,
           "column": 73
-        }
-      ]
-    },
-    "08d742566ffc9fa3": {
-      "source": "确定要清理所有统计数据吗？",
-      "kind": "text",
-      "placeholders": [],
-      "refs": [
-        {
-          "file": "pages/SettingsPage.tsx",
-          "line": 289,
-          "column": 16
         }
       ]
     },
@@ -277,6 +265,18 @@
         }
       ]
     },
+    "0d2dab3d62eb73d6": {
+      "source": "全部统计数据已清理",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 94,
+          "column": 38
+        }
+      ]
+    },
     "0d5e2bdb15579fc4": {
       "source": "消息数",
       "kind": "text",
@@ -301,7 +301,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 272,
+          "line": 277,
           "column": 26
         }
       ]
@@ -591,7 +591,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 276,
+          "line": 281,
           "column": 60
         }
       ]
@@ -617,17 +617,17 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 63,
+          "line": 64,
           "column": 42
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 185,
+          "line": 190,
           "column": 22
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 212,
+          "line": 217,
           "column": 58
         }
       ]
@@ -714,7 +714,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 250,
+          "line": 255,
           "column": 43
         }
       ]
@@ -726,7 +726,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 118,
+          "line": 119,
           "column": 15
         }
       ]
@@ -740,6 +740,18 @@
           "file": "pages/CursorSettingsPage.tsx",
           "line": 250,
           "column": 134
+        }
+      ]
+    },
+    "23ae7a90b1b9816d": {
+      "source": "清理范围",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 304,
+          "column": 24
         }
       ]
     },
@@ -888,12 +900,12 @@
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 176,
+          "line": 181,
           "column": 81
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 291,
+          "line": 296,
           "column": 22
         }
       ]
@@ -962,7 +974,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 142,
+          "line": 143,
           "column": 15
         }
       ]
@@ -1046,7 +1058,7 @@
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 235,
+          "line": 240,
           "column": 27
         }
       ]
@@ -1112,6 +1124,18 @@
         }
       ]
     },
+    "382f2e3419a02fef": {
+      "source": "仅清理详细记录",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 306,
+          "column": 42
+        }
+      ]
+    },
     "393e1241552b1870": {
       "source": "请求",
       "kind": "text",
@@ -1172,7 +1196,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 283,
+          "line": 288,
           "column": 14
         }
       ]
@@ -1196,7 +1220,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 235,
+          "line": 240,
           "column": 39
         }
       ]
@@ -1246,12 +1270,12 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 242,
+          "line": 247,
           "column": 22
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 248,
+          "line": 253,
           "column": 26
         }
       ]
@@ -1304,6 +1328,18 @@
         }
       ]
     },
+    "40a08e7cf320ae07": {
+      "source": "确定要清理详细记录吗？",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 158,
+          "column": 66
+        }
+      ]
+    },
     "4125fc7ba333524c": {
       "source": "默认亮色",
       "kind": "text",
@@ -1311,7 +1347,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 267,
+          "line": 272,
           "column": 52
         }
       ]
@@ -1664,7 +1700,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 174,
+          "line": 179,
           "column": 26
         }
       ]
@@ -1746,7 +1782,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 228,
+          "line": 233,
           "column": 78
         }
       ]
@@ -1792,7 +1828,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 232,
+          "line": 237,
           "column": 21
         }
       ]
@@ -1852,18 +1888,6 @@
         }
       ]
     },
-    "5cae248525cb9140": {
-      "source": "所有调用记录和详细追踪数据都会被删除。模型配置、CA 和应用设置不会受到影响，此操作无法撤销。",
-      "kind": "text",
-      "placeholders": [],
-      "refs": [
-        {
-          "file": "pages/SettingsPage.tsx",
-          "line": 298,
-          "column": 14
-        }
-      ]
-    },
     "5d59857bf039cac9": {
       "source": "Cursor 助手 v{version}",
       "kind": "template",
@@ -1873,7 +1897,7 @@
       "refs": [
         {
           "file": "layouts/AppHeader.tsx",
-          "line": 31,
+          "line": 34,
           "column": 18
         }
       ]
@@ -2021,7 +2045,7 @@
       "refs": [
         {
           "file": "api.ts",
-          "line": 315,
+          "line": 317,
           "column": 43
         }
       ]
@@ -2126,6 +2150,18 @@
           "file": "components/settings/AppLifecycleSettingsCard.tsx",
           "line": 143,
           "column": 16
+        }
+      ]
+    },
+    "68102220092c1f0f": {
+      "source": "详细记录已清理",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 94,
+          "column": 55
         }
       ]
     },
@@ -2302,7 +2338,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 164,
+          "line": 169,
           "column": 16
         }
       ]
@@ -2314,7 +2350,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 259,
+          "line": 264,
           "column": 26
         }
       ]
@@ -2338,7 +2374,7 @@
       "refs": [
         {
           "file": "api.ts",
-          "line": 310,
+          "line": 312,
           "column": 43
         }
       ]
@@ -2362,7 +2398,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 292,
+          "line": 297,
           "column": 23
         }
       ]
@@ -2405,20 +2441,8 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 136,
+          "line": 137,
           "column": 83
-        }
-      ]
-    },
-    "7e1f06318e80c3af": {
-      "source": "统计数据已清理",
-      "kind": "text",
-      "placeholders": [],
-      "refs": [
-        {
-          "file": "pages/SettingsPage.tsx",
-          "line": 93,
-          "column": 15
         }
       ]
     },
@@ -2465,7 +2489,7 @@
       "refs": [
         {
           "file": "api.ts",
-          "line": 259,
+          "line": 261,
           "column": 21
         }
       ]
@@ -2637,7 +2661,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 231,
+          "line": 236,
           "column": 22
         }
       ]
@@ -2747,6 +2771,18 @@
           "file": "layouts/AppLayout.tsx",
           "line": 73,
           "column": 39
+        }
+      ]
+    },
+    "92156a483d4ba248": {
+      "source": "仅删除请求、响应和追踪附件等详细内容，保留调用汇总、统计指标和配置。",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 161,
+          "column": 7
         }
       ]
     },
@@ -2892,7 +2928,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 239,
+          "line": 244,
           "column": 26
         }
       ]
@@ -2928,7 +2964,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 56,
+          "line": 57,
           "column": 34
         }
       ]
@@ -2998,7 +3034,7 @@
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 177,
+          "line": 182,
           "column": 133
         }
       ]
@@ -3390,6 +3426,18 @@
         }
       ]
     },
+    "b67e408132f4dbd7": {
+      "source": "确定要清理全部统计数据吗？",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 158,
+          "column": 45
+        }
+      ]
+    },
     "b75a46aad3e7c132": {
       "source": "非缓存输入：{tokens}",
       "kind": "template",
@@ -3411,7 +3459,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 275,
+          "line": 280,
           "column": 22
         }
       ]
@@ -3537,7 +3585,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 267,
+          "line": 272,
           "column": 40
         }
       ]
@@ -3736,12 +3784,12 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 162,
+          "line": 167,
           "column": 22
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 168,
+          "line": 173,
           "column": 20
         }
       ]
@@ -3753,7 +3801,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 199,
+          "line": 204,
           "column": 21
         }
       ]
@@ -3779,6 +3827,18 @@
           "file": "components/cursor/CursorModelEditor.tsx",
           "line": 155,
           "column": 50
+        }
+      ]
+    },
+    "d1a3d72618d1ed27": {
+      "source": "所有调用汇总、详细内容和追踪记录都会被删除。模型配置、CA 和应用设置不会受到影响，此操作无法撤销。",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 160,
+          "column": 7
         }
       ]
     },
@@ -4035,7 +4095,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 306,
+          "line": 316,
           "column": 30
         }
       ]
@@ -4241,7 +4301,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 69,
+          "line": 70,
           "column": 17
         }
       ]
@@ -4311,7 +4371,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 159,
+          "line": 164,
           "column": 26
         }
       ]
@@ -4400,7 +4460,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 218,
+          "line": 223,
           "column": 16
         }
       ]
@@ -4513,7 +4573,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 243,
+          "line": 248,
           "column": 21
         }
       ]
@@ -4587,7 +4647,7 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 186,
+          "line": 191,
           "column": 21
         }
       ]
@@ -4696,6 +4756,18 @@
         }
       ]
     },
+    "fec7210590309465": {
+      "source": "清理全部统计数据",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "pages/SettingsPage.tsx",
+          "line": 307,
+          "column": 38
+        }
+      ]
+    },
     "ff509c9ba052a21c": {
       "source": "保存中…",
       "kind": "text",
@@ -4713,7 +4785,7 @@
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 177,
+          "line": 182,
           "column": 121
         }
       ]
@@ -4737,17 +4809,17 @@
       "refs": [
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 64,
+          "line": 65,
           "column": 46
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 198,
+          "line": 203,
           "column": 22
         },
         {
           "file": "pages/SettingsPage.tsx",
-          "line": 213,
+          "line": 218,
           "column": 58
         }
       ]

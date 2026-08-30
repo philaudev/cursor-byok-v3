@@ -184,6 +184,7 @@ async fn update_current_step_uses_a_one_based_turn_message_index() {
 
 fn context() -> ExecContext {
     ExecContext {
+        workspace_paths: Vec::new(),
         conversation_id: "child".into(),
         root_conversation_id: "root".into(),
         default_subagent_model: "parent-model".into(),

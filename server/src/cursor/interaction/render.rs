@@ -169,6 +169,7 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "shell" => Tool::ShellToolCall(pb::ShellToolCall::default()),
         "delete" => Tool::DeleteToolCall(pb::DeleteToolCall::default()),
         "glob" => Tool::GlobToolCall(pb::GlobToolCall::default()),
+        "ls" => Tool::LsToolCall(pb::LsToolCall::default()),
         "grep" => Tool::GrepToolCall(pb::GrepToolCall::default()),
         "read" => Tool::ReadToolCall(pb::ReadToolCall::default()),
         "todowrite" => Tool::UpdateTodosToolCall(pb::UpdateTodosToolCall::default()),
@@ -188,7 +189,6 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "updatecurrentstep" => {
             Tool::CommunicateUpdateToolCall(pb::CommunicateUpdateToolCall::default())
         }
-        "awaitshell" => Tool::AwaitToolCall(pb::AwaitToolCall::default()),
         "getmcptools" => Tool::GetMcpToolsToolCall(pb::GetMcpToolsToolCall::default()),
         _ => return Err(Error::Protocol(format!("unsupported tool: {name}"))),
     };
@@ -264,6 +264,24 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
             tool.args = Some(pb::GlobToolArgs {
                 target_directory: optional("target_directory"),
                 glob_pattern: string("glob_pattern"),
+            })
+        }
+        Some(pb::tool_call::Tool::LsToolCall(tool)) => {
+            tool.args = Some(pb::LsArgs {
+                path: string("path").trim().to_string(),
+                ignore: call
+                    .arguments
+                    .get("ignore")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                tool_call_id: call.call_id.clone(),
+                sandbox_policy: None,
+                timeout_ms: None,
             })
         }
         Some(pb::tool_call::Tool::GrepToolCall(tool)) => {
@@ -455,17 +473,6 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
                     .and_then(Value::as_u64)
                     .unwrap_or_default() as u32,
                 chars: string("chars"),
-            })
-        }
-        Some(pb::tool_call::Tool::AwaitToolCall(tool)) => {
-            tool.args = Some(pb::AwaitArgs {
-                task_id: string("shell_id"),
-                block_until_ms: call
-                    .arguments
-                    .get("block_until_ms")
-                    .and_then(Value::as_u64)
-                    .map(|v| v as u32),
-                regex: optional("pattern"),
             })
         }
         Some(pb::tool_call::Tool::GetMcpToolsToolCall(tool)) => {

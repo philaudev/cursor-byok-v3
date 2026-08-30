@@ -52,6 +52,8 @@ pub struct PreparedRun {
     pub conversation_id: ConversationId,
     pub kind: RunKind,
     pub model: ModelSpec,
+    /// Authoritative prompt usage from Cursor's last UI checkpoint.
+    pub checkpoint_context_tokens: Option<u64>,
     pub prompt: PromptSpec,
     pub compaction_prompt: PromptSpec,
     pub initial_messages: Vec<CanonicalMessage>,

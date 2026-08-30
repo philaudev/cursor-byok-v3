@@ -89,9 +89,12 @@ impl ToolCompletion {
         call: &ToolCall,
         started_at_ms: u64,
         mut result: ToolResult,
-        tool: pb::tool_call::Tool,
+        mut tool: pb::tool_call::Tool,
     ) -> Self {
-        gate::model_content(&tool, &mut result.content);
+        // Apply the model-visible size gate once, at the tool completion
+        // boundary. Canonical history and every provider projection then
+        // carry the same bounded result without reprocessing it.
+        gate::tool_completion(&call.name, &mut tool, &mut result.content);
         Self {
             result,
             tool_call: pb::ToolCall {

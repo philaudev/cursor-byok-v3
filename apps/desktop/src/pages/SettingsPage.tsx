@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ProxySettings, type ProxySettingsInput, type StatisticsStorage, type TabSettings } from "../api";
+import { api, type ProxySettings, type ProxySettingsInput, type StatisticsStorage, type StatisticsStorageScope, type TabSettings } from "../api";
 import { PageContent } from "../components/layout/PageContent";
 import { LegacyModelImport } from "../components/models/LegacyModelImport";
 import { AppLifecycleSettingsCard } from "../components/settings/AppLifecycleSettingsCard";
@@ -27,6 +27,7 @@ export function SettingsPage() {
   const [savingPorts, setSavingPorts] = useState(false);
   const [storage, setStorage] = useState<StatisticsStorage | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [clearScope, setClearScope] = useState<StatisticsStorageScope>("details");
   const [clearing, setClearing] = useState(false);
   const [outboundProxy, setOutboundProxy] = useState<ProxySettings | null>(null);
   const [proxyDraft, setProxyDraft] = useState<ProxySettingsInput>({ mode: "system", address: "", auth_enabled: false, username: "", password: "" });
@@ -87,10 +88,10 @@ export function SettingsPage() {
   const clearStorage = async () => {
     try {
       setClearing(true);
-      setStorage(await api.clearStatisticsStorage());
+      setStorage(await api.clearStatisticsStorage(clearScope));
       setConfirmClear(false);
       await appStore.refresh();
-      message(t("统计数据已清理"));
+      message(clearScope === "all" ? t("全部统计数据已清理") : t("详细记录已清理"));
     } catch (cause) {
       message(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -154,6 +155,10 @@ export function SettingsPage() {
     while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
     return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
   };
+  const clearTitle = clearScope === "all" ? t("确定要清理全部统计数据吗？") : t("确定要清理详细记录吗？");
+  const clearDescription = clearScope === "all"
+    ? t("所有调用汇总、详细内容和追踪记录都会被删除。模型配置、CA 和应用设置不会受到影响，此操作无法撤销。")
+    : t("仅删除请求、响应和追踪附件等详细内容，保留调用汇总、统计指标和配置。");
   const content = (
     <div className={styles.page}>
       <TitledCard title={t("调用观测")}>
@@ -278,7 +283,7 @@ export function SettingsPage() {
           <button
             type="button"
             className={styles.textButton}
-            onClick={() => setConfirmClear(true)}
+            onClick={() => { setClearScope("details"); setConfirmClear(true); }}
           >
             {t("清理存储空间")}
           </button>
@@ -286,7 +291,7 @@ export function SettingsPage() {
       </TitledCard>
       <ConfirmDialog
         open={confirmClear}
-        title={t("确定要清理所有统计数据吗？")}
+        title={clearTitle}
         busy={clearing}
         cancelLabel={t("取消")}
         confirmLabel={t("确认清理")}
@@ -294,11 +299,16 @@ export function SettingsPage() {
         onConfirm={() => void clearStorage()}
       >
         <div className={styles.confirmContent}>
-          <small>
-            {t(
-              "所有调用记录和详细追踪数据都会被删除。模型配置、CA 和应用设置不会受到影响，此操作无法撤销。",
-            )}
-          </small>
+          <Select
+            value={clearScope}
+            ariaLabel={t("清理范围")}
+            options={[
+              { value: "details", label: t("仅清理详细记录") },
+              { value: "all", label: t("清理全部统计数据") },
+            ]}
+            onChange={(value) => setClearScope(value as StatisticsStorageScope)}
+          />
+          <small>{clearDescription}</small>
         </div>
       </ConfirmDialog>
     </div>

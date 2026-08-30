@@ -40,6 +40,17 @@ async fn version_two_database_upgrades_with_cursor_request_mapping() {
     assert!(columns
         .iter()
         .any(|column| column.get::<String, _>("name") == "cursor_request_id"));
+
+    let llm_call_columns = sqlx::query("PRAGMA table_info(llm_calls)")
+        .fetch_all(store.pool())
+        .await
+        .unwrap();
+    assert!(llm_call_columns
+        .iter()
+        .any(|column| column.get::<String, _>("name") == "first_valid_response_at_ms"));
+    assert!(llm_call_columns
+        .iter()
+        .any(|column| column.get::<String, _>("name") == "ttfr_ms"));
 }
 
 #[tokio::test]

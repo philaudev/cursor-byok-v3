@@ -24,6 +24,8 @@ pub struct ModelInvocation {
     pub conversation_id: String,
     pub provider_call_index: u64,
     pub canonical_message_count: usize,
+    pub projected_message_count: usize,
+    pub history_fingerprint: String,
     pub request: ModelRequest,
 }
 

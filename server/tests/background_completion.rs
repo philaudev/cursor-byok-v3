@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use cursor_server::{
     cursor::{
+        bidi_append::{self, DecodedAppend},
         connect,
         prompting::{PromptAssets, PromptCompiler},
         proto::agent::v1 as pb,
@@ -19,6 +20,45 @@ use prost::Message;
 
 const FOLLOW_UP: &str = "Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required. If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`.";
 const SHELL_FOLLOW_UP: &str = "Briefly inform the user about the task result and perform any follow-up actions (if needed). If there's no follow-ups needed, don't explicitly say that.";
+
+#[tokio::test]
+async fn cancelled_conversation_drops_late_background_completion() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = CursorSessionRegistry::new(
+        store,
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+        Default::default(),
+    );
+    let active = registry.get_or_create("cancelled-request").await.unwrap();
+    active.set_conversation_id("parent-conversation").unwrap();
+    active.mark_conversation_cancelled();
+
+    bidi_append::append(
+        &registry,
+        DecodedAppend {
+            request_id: "late-completion".into(),
+            seqno: 1,
+            message: completion_run(
+                "child-id",
+                "cancelled-parent-run",
+                pb::ConversationStateStructure::default(),
+            ),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(provider.requests().is_empty());
+}
 
 #[tokio::test]
 async fn background_subagent_completion_starts_a_simulated_parent_turn() {
@@ -312,8 +352,6 @@ async fn background_shell_completion_wakes_the_parent_with_the_captured_notifica
     assert!(text.contains("detail: terminated_by_user"));
     assert!(text.contains("output_path: /tmp/977679.txt"));
     assert!(text.contains(SHELL_FOLLOW_UP));
-    assert!(text.starts_with("<timestamp>"));
-    assert!(!text.contains("You are still in **Agent Mode**"));
     assert!(text.find("<system_notification>").unwrap() < text.find("<user_query>").unwrap());
 
     let turn = pb::ConversationTurnStructure::decode(
@@ -687,6 +725,7 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
         conversation_id: parent_conversation_id.clone(),
         kind: cursor_server::model::RunKind::Root,
         model: cursor_server::model::ModelSpec::new("parent-model"),
+        checkpoint_context_tokens: None,
         prompt: cursor_server::model::PromptSpec {
             instructions: "You are the parent".into(),
             tools: Vec::new(),
@@ -727,6 +766,7 @@ async fn subagent_completion_auto_notifies_parent_conversation() {
             background: true,
         },
         model: cursor_server::model::ModelSpec::new("child-model"),
+        checkpoint_context_tokens: None,
         prompt: cursor_server::model::PromptSpec {
             instructions: "You are subagent".into(),
             tools: Vec::new(),

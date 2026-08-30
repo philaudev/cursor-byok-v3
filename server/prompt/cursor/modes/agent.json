@@ -14,6 +14,7 @@
     "Read",
     "ReadLints",
     "Glob",
+    "Ls",
     "AskQuestion",
     "Task",
     "AwaitShell",

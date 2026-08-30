@@ -12,6 +12,7 @@ const COMPACTION_PROMPT_FILE_NAME: &str = "compaction.md";
 const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompt/cursor/compaction/prompt.md");
 const V0049_DATA_DIR_NAME: &str = ".cursor-local-assistant-v2";
 const V0049_CONFIG_FILE_NAME: &str = "config.yaml";
+const DEFAULT_PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(3000);
 
 pub fn managed_data_dir() -> Result<PathBuf> {
     let home_dir = dirs::home_dir()
@@ -96,7 +97,7 @@ impl Config {
             Ok(value) => Duration::from_secs(value.parse().map_err(|error| {
                 Error::Config(format!("invalid CURSOR_PROVIDER_TIMEOUT_SECONDS: {error}"))
             })?),
-            Err(env::VarError::NotPresent) => Duration::from_secs(300),
+            Err(env::VarError::NotPresent) => DEFAULT_PROVIDER_REQUEST_TIMEOUT,
             Err(error) => {
                 return Err(Error::Config(format!(
                     "invalid CURSOR_PROVIDER_TIMEOUT_SECONDS: {error}"
@@ -137,7 +138,7 @@ impl Config {
                 .parse()
                 .expect("desktop listen address is static"),
             database_url: default_database_url()?,
-            provider_request_timeout: Duration::from_secs(300),
+            provider_request_timeout: DEFAULT_PROVIDER_REQUEST_TIMEOUT,
             console: None,
             use_persisted_ports: true,
         })

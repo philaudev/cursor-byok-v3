@@ -13,8 +13,10 @@ use crate::{
 };
 
 use super::{
-    apply_openai_prompt_cache_key, merge_extra_params, recorder::recorded_headers, CallRecorder,
-    FinishReason, ModelEvent, Provider, ProviderStream,
+    apply_openai_prompt_cache_key, merge_extra_params,
+    recorder::recorded_headers,
+    retry::{send_with_retry, Attempt, RetryPolicy},
+    CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
 };
 
 #[derive(Default)]
@@ -69,35 +71,32 @@ impl Provider for OpenAiResponsesProvider {
             let mut body = json!({
                 "model": request.model.model_id, "input": input, "stream": true,
                 "instructions": request.prompt.instructions,
-                "include": ["reasoning.encrypted_content"],
-                "tools": request.prompt.tools.iter().map(|tool| json!({
+                "include": ["reasoning.encrypted_content"]
+            });
+            if !request.prompt.tools.is_empty() {
+                body["tools"] = json!(request.prompt.tools.iter().map(|tool| json!({
                     "type":"function", "name":tool.name, "description":tool.description,
                     "parameters":tool.parameters, "strict":false
-                })).collect::<Vec<_>>()
-            });
+                })).collect::<Vec<_>>());
+            }
             apply_model(&mut body, &request.model, config.max_output_tokens)?;
             merge_extra_params(&mut body, &request.model.extra_params)?;
             apply_openai_prompt_cache_key(&mut body, &request.model.model_id)?;
+            let request_headers = recorded_headers(&config, &[("content-type", "application/json")]);
             if let Some(recorder) = &recorder {
-                recorder.request(recorded_headers(&config, &[("content-type", "application/json")]), &body).await?;
+                recorder.request(request_headers.clone(), &body).await?;
             }
-            let request = client.post(&config.request_url)
-                .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body).send();
-            let response = tokio::select! {
-                _ = cancellation.cancelled() => return,
-                response = request => response,
-            };
-            let response = response?;
-            if let Some(recorder) = &recorder {
-                recorder.response_headers(response.status().as_u16()).await?;
-            }
-            if !response.status().is_success() {
-                let status = response.status(); let bytes = response.bytes().await?;
-                if let Some(recorder) = &recorder { recorder.response_chunk(&bytes).await?; }
-                let text = String::from_utf8_lossy(&bytes);
-                Err(Error::Provider(format!("OpenAI Responses {status}: {text}")))?;
-                return;
-            }
+            let attempt = send_with_retry(
+                "OpenAI Responses",
+                || client.post(&config.request_url)
+                    .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body),
+                RetryPolicy::default(),
+                &cancellation,
+                recorder.as_ref(),
+                request_headers,
+                &body,
+            ).await?;
+            let Attempt::Response(response) = attempt else { return };
             yield ModelEvent::Start { model_call_id: call_id };
             let chunk_recorder = recorder.clone();
             let chunks = response.bytes_stream()

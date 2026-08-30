@@ -11,7 +11,7 @@ pub struct MessageInsertion {
 #[derive(Debug)]
 pub enum ClientCommand {
     ToolResult(ToolResult),
-    RuntimeMessage(CanonicalMessage),
+    InterruptWithMessage(CanonicalMessage),
     RuntimeEvent(RuntimeEvent),
     InsertMessages(MessageInsertion),
     ClientClosed { error: String },

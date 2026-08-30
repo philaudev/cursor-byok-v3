@@ -18,15 +18,15 @@ pub(crate) fn from_exec(
     wire_result: &pb::exec_client_message::Message,
 ) -> Result<ToolCompletion> {
     use pb::{exec_client_message::Message, tool_call::Tool};
-    let mut gated_shell = matches!(
+    let mut gated_wire = matches!(
         wire_result,
-        Message::ShellResult(_) | Message::MiniSweAgentBashResult(_)
+        Message::ShellResult(_) | Message::MiniSweAgentBashResult(_) | Message::LsResult(_)
     )
     .then(|| wire_result.clone());
-    if let Some(message) = gated_shell.as_mut() {
+    if let Some(message) = gated_wire.as_mut() {
         gate::exec_message(message);
     }
-    let wire_result = gated_shell.as_ref().unwrap_or(wire_result);
+    let wire_result = gated_wire.as_ref().unwrap_or(wire_result);
     if let Message::McpStateExecResult(result) = wire_result {
         return mcp_state::complete(pending, result);
     }
@@ -55,6 +55,9 @@ pub(crate) fn from_exec(
         }
         (Some(Tool::GlobToolCall(tool)), Message::GrepResult(result)) => {
             tool.result = Some(render::glob(result)?);
+        }
+        (Some(Tool::LsToolCall(tool)), Message::LsResult(result)) => {
+            tool.result = Some(result.clone());
         }
         (Some(Tool::ReadToolCall(tool)), Message::ReadResult(result))
         | (Some(Tool::ReadToolCall(tool)), Message::RedactedReadResult(result)) => {

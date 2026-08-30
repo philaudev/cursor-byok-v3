@@ -3,7 +3,7 @@ use cursor_server::{
     config::{ProviderConfig, ProviderKind},
     model::{
         ContentPart, ModelInvocation, ModelLatency, ModelRequest, ModelSpec, ProjectedContent,
-        ProjectedMessage, PromptSpec, Role, Usage,
+        ProjectedMessage, PromptSpec, Role, ToolDefinition, Usage,
     },
     provider::{
         FinishReason, ModelEvent, OpenAiChatProvider, OpenAiResponsesProvider, Provider,
@@ -12,7 +12,7 @@ use cursor_server::{
     run::{consume_model_cycle, RunFailure},
 };
 use futures_util::{stream, StreamExt};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -658,6 +658,18 @@ async fn anthropic_raw_stream_uses_explicit_and_default_token_limits() {
     );
     let mut request = invocation();
     request.request.model.latency = ModelLatency::Fast;
+    request.request.prompt.tools = vec![
+        ToolDefinition {
+            name: "first".into(),
+            description: "first tool".into(),
+            parameters: json!({"type":"object"}),
+        },
+        ToolDefinition {
+            name: "last".into(),
+            description: "last tool".into(),
+            parameters: json!({"type":"object"}),
+        },
+    ];
     let events = collect(provider.stream(request, CancellationToken::new())).await;
     let body = requests.recv().await.unwrap();
     let continued = continued_invocation(&events);
@@ -672,7 +684,20 @@ async fn anthropic_raw_stream_uses_explicit_and_default_token_limits() {
     server.abort();
 
     assert_eq!(body["max_tokens"], 1234);
+    assert!(body.get("cache_control").is_none());
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    assert!(body["tools"][0].get("cache_control").is_none());
+    assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+    assert!(body["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_none());
+    assert_eq!(
+        body["messages"][0]["content"][1]["cache_control"]["type"],
+        "ephemeral"
+    );
     assert_eq!(default_body["max_tokens"], 65_000);
+    assert!(default_body.get("cache_control").is_none());
+    assert_eq!(default_body["messages"][0]["content"][0]["type"], "text");
     assert!(body.get("service_tier").is_none());
     assert_eq!(body["messages"][0]["content"][1]["type"], "image");
     assert_eq!(
@@ -922,6 +947,8 @@ fn invocation() -> ModelInvocation {
         conversation_id: "conversation-1".into(),
         provider_call_index: 0,
         canonical_message_count: 1,
+        projected_message_count: 1,
+        history_fingerprint: "history".into(),
         request: ModelRequest {
             prompt: PromptSpec {
                 instructions: "system".into(),

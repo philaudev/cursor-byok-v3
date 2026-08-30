@@ -6,7 +6,7 @@ use crate::{
     cursor::{prompting::fold_derived_state, proto::agent::v1 as pb},
     model::{CanonicalMessage, MessageContent},
     store::BlobId,
-    Error, Result,
+    Result,
 };
 
 use super::CheckpointBuilder;
@@ -20,41 +20,33 @@ impl CheckpointBuilder {
         let todo_values = state
             .todos
             .as_ref()
-            .map(|value| {
-                value
-                    .get("todos")
-                    .and_then(serde_json::Value::as_array)
-                    .ok_or_else(|| Error::Protocol("TodoWrite state is missing todos[]".into()))
-            })
-            .transpose()?;
+            .and_then(|value| value.get("todos"))
+            .and_then(serde_json::Value::as_array);
         let mut todo_ids = Vec::new();
         for (index, todo) in todo_values.into_iter().flatten().enumerate() {
             let status = match todo
                 .get("status")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| Error::Protocol("TodoWrite item is missing status".into()))?
+                .unwrap_or("pending")
             {
                 "in_progress" => pb::TodoStatus::InProgress,
                 "completed" => pb::TodoStatus::Completed,
                 "cancelled" => pb::TodoStatus::Cancelled,
-                "pending" => pb::TodoStatus::Pending,
-                status => {
-                    return Err(Error::Protocol(format!(
-                        "unknown TodoWrite status: {status}"
-                    )))
-                }
+                _ => pb::TodoStatus::Pending,
             };
+            let id = todo
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("todo-{index}"));
+            let content = todo
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let message = pb::TodoItem {
-                id: todo
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| Error::Protocol("TodoWrite item is missing id".into()))?
-                    .into(),
-                content: todo
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| Error::Protocol("TodoWrite item is missing content".into()))?
-                    .into(),
+                id,
+                content,
                 status: status as i32,
                 created_at: 0,
                 updated_at: 0,
@@ -82,14 +74,18 @@ impl CheckpointBuilder {
                 .and_then(serde_json::Value::as_str)
                 .or_else(|| value.as_str())
                 .or_else(|| value.get("overview").and_then(serde_json::Value::as_str))
-                .ok_or_else(|| Error::Protocol("plan state has no textual plan".into()))?;
-            let mut encoded = Vec::new();
-            pb::ConversationPlan { plan: text.into() }.encode(&mut encoded)?;
-            let id = BlobId::digest(&encoded);
-            if self.base.plan.as_deref() == Some(id.as_bytes()) {
-                Some(id)
+                .unwrap_or_default();
+            if text.is_empty() {
+                None
             } else {
-                Some(self.sync.persist(&encoded, &[]).await?)
+                let mut encoded = Vec::new();
+                pb::ConversationPlan { plan: text.into() }.encode(&mut encoded)?;
+                let id = BlobId::digest(&encoded);
+                if self.base.plan.as_deref() == Some(id.as_bytes()) {
+                    Some(id)
+                } else {
+                    Some(self.sync.persist(&encoded, &[]).await?)
+                }
             }
         } else {
             None

@@ -55,7 +55,12 @@ fn apply_todo_write(current: Option<Value>, mut input: Value) -> Value {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for patch in patches {
+    for mut patch in patches {
+        if let Value::Object(ref mut patch_obj) = patch {
+            if !patch_obj.contains_key("status") || patch_obj["status"].is_null() {
+                patch_obj.insert("status".into(), Value::String("pending".into()));
+            }
+        }
         let existing = patch.get("id").and_then(Value::as_str).and_then(|id| {
             todos
                 .iter_mut()
@@ -122,6 +127,42 @@ mod tests {
                 {"id": "first", "content": "First", "status": "completed"},
                 {"id": "second", "content": "Second updated", "status": "pending"},
                 {"id": "third", "content": "Third", "status": "cancelled"}
+            ])
+        );
+    }
+
+    #[test]
+    fn todo_write_merge_supplies_default_pending_status_for_new_items_without_status() {
+        let messages = vec![
+            assistant_call(
+                "create",
+                serde_json::json!({
+                    "merge": false,
+                    "todos": [
+                        {"id": "task-1", "content": "Task 1", "status": "in_progress"}
+                    ]
+                }),
+            ),
+            successful_result("create"),
+            assistant_call(
+                "merge",
+                serde_json::json!({
+                    "merge": true,
+                    "todos": [
+                        {"id": "task-2", "content": "Task 2"}
+                    ]
+                }),
+            ),
+            successful_result("merge"),
+        ];
+
+        let state = fold_derived_state(&messages);
+
+        assert_eq!(
+            state.todos.unwrap()["todos"],
+            serde_json::json!([
+                {"id": "task-1", "content": "Task 1", "status": "in_progress"},
+                {"id": "task-2", "content": "Task 2", "status": "pending"}
             ])
         );
     }
