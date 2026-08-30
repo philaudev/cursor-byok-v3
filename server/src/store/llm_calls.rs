@@ -293,13 +293,13 @@ impl Store {
     pub(crate) async fn latest_llm_call_usage_anchor(
         &self,
         conversation_id: &ConversationId,
-        model_hash: &str,
+        model: &str,
     ) -> Result<Option<LlmCallUsageAnchor>> {
         let row = sqlx::query(
             r#"SELECT request_type, usage_json, projected_message_count, history_fingerprint, tool_count
                FROM llm_calls
                WHERE conversation_id = ?
-                 AND model_hash = ?
+                 AND (model_hash = ? OR model_id = ?)
                  AND status = 'completed'
                  AND input_tokens IS NOT NULL
                  AND usage_json IS NOT NULL
@@ -308,7 +308,8 @@ impl Store {
                LIMIT 1"#,
         )
         .bind(conversation_id.as_str())
-        .bind(model_hash)
+        .bind(model)
+        .bind(model)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
