@@ -1,10 +1,11 @@
+//! Compiles stable Prompt specifications for Cursor modes.
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    cursor::rules,
+    config::default_compaction_prompt,
     model::{ModelSpec, PromptSpec, ToolDefinition},
     Error, Result,
 };
@@ -117,15 +118,7 @@ impl PromptCompiler {
         Ok(prompt.replace("{{FAKE_MODEL_NAME}}", fake_model_name))
     }
 
-    fn append_global_rules(&self, mut instructions: String) -> Result<String> {
-        let Some(directory) = &self.global_rules_dir else {
-            return Ok(instructions);
-        };
-        let rules = rules::system_prompt_section(directory.clone())?;
-        if !rules.is_empty() {
-            instructions.push_str("\n\n");
-            instructions.push_str(&rules);
-        }
+    fn append_global_rules(&self, instructions: String) -> Result<String> {
         Ok(instructions)
     }
 
@@ -154,12 +147,16 @@ fn append_custom_instructions(
     instructions
 }
 fn read_compaction_prompt(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|error| {
-        Error::Config(format!(
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(default_compaction_prompt().to_string())
+        }
+        Err(error) => Err(Error::Config(format!(
             "cannot read compaction prompt at {}: {error}",
             path.display()
-        ))
-    })
+        ))),
+    }
 }
 
 fn render(template: &str, values: &BTreeMap<&str, String>) -> Result<String> {
@@ -237,10 +234,10 @@ mod tests {
         }
     }
     #[test]
-    fn compaction_prompt_error_identifies_the_configured_file() {
+    fn missing_compaction_prompt_fallbacks_to_embedded_default() {
         let path = std::path::PathBuf::from("missing-compaction.md");
-        let error = read_compaction_prompt(&path).unwrap_err();
-        assert!(error.to_string().contains("missing-compaction.md"));
+        let prompt = read_compaction_prompt(&path).unwrap();
+        assert_eq!(prompt, default_compaction_prompt());
     }
 
     #[test]

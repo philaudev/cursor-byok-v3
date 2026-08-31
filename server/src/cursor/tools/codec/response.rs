@@ -1,11 +1,11 @@
+//! Decodes Tool execution responses received from Cursor.
 use crate::{
     cursor::{
-        interaction,
-        proto::agent::v1 as pb,
+        protocol::{events, proto::agent::v1 as pb},
         tools::{
             edit,
-            result::{self, ToolCompletion},
             runtime::{BackgroundShellStatus, CursorToolRuntime, ExecStage, PendingExec},
+            tool_call_result::{self as result, ToolCompletion},
         },
     },
     model::ToolCall,
@@ -14,7 +14,7 @@ use crate::{
 
 use super::request::{await_read_request, edit_write_request};
 
-pub(crate) const NON_STREAMING_CLOSE_GRACE: std::time::Duration =
+pub const NON_STREAMING_CLOSE_GRACE: std::time::Duration =
     std::time::Duration::from_millis(1500);
 
 pub enum ClientExecEvent {
@@ -220,7 +220,7 @@ async fn background_shell_event(
     Ok(ClientExecEvent::Pending)
 }
 
-pub(crate) async fn recover_transport_closed(
+pub async fn recover_transport_closed(
     id: u32,
     pending: &CursorToolRuntime,
 ) -> Result<Option<ToolCompletion>> {
@@ -233,9 +233,9 @@ pub(crate) async fn recover_transport_closed(
     );
     let rendered = match &entry.stage {
         ExecStage::DynamicMcp(definition) => {
-            interaction::render_dynamic_mcp(&entry.call, definition, false)
+            super::render::render_dynamic_mcp(&entry.call, definition, false)
         }
-        _ => interaction::render_tool_call(&entry.call, false)?,
+        _ => super::render_tool_call(&entry.call, false)?,
     };
     Ok(Some(ToolCompletion::from_rendered(
         &entry.call,
@@ -299,9 +299,9 @@ pub async fn stream_closed_immediate(
     }
     let rendered = match &entry.stage {
         ExecStage::DynamicMcp(definition) => {
-            interaction::render_dynamic_mcp(&entry.call, definition, false)
+            super::render_dynamic_mcp(&entry.call, definition, false)
         }
-        _ => interaction::render_tool_call(&entry.call, false)?,
+        _ => super::render_tool_call(&entry.call, false)?,
     };
     Ok(Some(ToolCompletion::from_rendered(
         &entry.call,
@@ -654,7 +654,7 @@ fn shell_delta(call: &ToolCall, stdout: bool, content: &str) -> pb::AgentServerM
             content: content.into(),
         })
     };
-    interaction::server_interaction(pb::interaction_update::Message::ToolCallDelta(Box::new(
+    events::server_interaction(pb::interaction_update::Message::ToolCallDelta(Box::new(
         pb::ToolCallDeltaUpdate {
             call_id: call.call_id.clone(),
             tool_call_delta: Some(Box::new(pb::ToolCallDelta {

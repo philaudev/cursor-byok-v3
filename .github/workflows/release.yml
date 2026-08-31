@@ -206,7 +206,7 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          node scripts/release/generate-legacy-update.mjs \
+          node .github/scripts/generate-legacy-update.mjs \
             --version "${VERSION}" \
             --repository "${GITHUB_REPOSITORY}" \
             --assets-dir legacy-update \
@@ -231,7 +231,7 @@ jobs:
             -H "Accept: application/octet-stream" \
             "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
             > tauri-update/latest.json
-          node scripts/release/normalize-tauri-update.mjs \
+          node .github/scripts/normalize-tauri-update.mjs \
             --manifest tauri-update/latest.json \
             --release tauri-update/release.json \
             --repository "${GITHUB_REPOSITORY}" \

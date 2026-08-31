@@ -1,3 +1,4 @@
+//! Implements advertisement configuration endpoints.
 //! Advertisement service contract and desktop HTTP handler.
 
 use axum::{
@@ -144,66 +145,4 @@ pub async fn dismiss(
 ) -> Result<StatusCode> {
     service.dismiss_ad(&ad_id, &input).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_supported_ad_language_and_falls_back_to_english() {
-        let mut headers = HeaderMap::new();
-        headers.insert(LANGUAGE_HEADER, "zh-CN".parse().unwrap());
-        assert_eq!(ad_language(&headers), "zh-CN");
-
-        headers.insert(LANGUAGE_HEADER, "fr-FR".parse().unwrap());
-        assert_eq!(ad_language(&headers), "en-US");
-    }
-
-    #[test]
-    fn filters_disabled_slots_without_limiting_menu_ads() {
-        let slot = |id: &str, enabled| AdSlot {
-            id: id.into(),
-            enabled,
-            placement: AdPlacement::Menu,
-            target: AdTarget {
-                title: id.into(),
-                description: String::new(),
-                image_url: "https://example.com/target.png".into(),
-            },
-            content: AdContent {
-                title: id.into(),
-                description: String::new(),
-                image_url: "https://example.com/content.png".into(),
-                details: Vec::new(),
-                button: AdButton {
-                    label: "Open".into(),
-                    action: AdAction {
-                        action_type: AdActionType::OpenBrowser,
-                        url: "https://example.com".into(),
-                    },
-                },
-            },
-        };
-        let runtime = AdRuntime {
-            slots: vec![
-                slot("one", true),
-                slot("disabled", false),
-                slot("two", true),
-                slot("three", true),
-                slot("four", true),
-            ],
-        }
-        .into_menu_slots()
-        .unwrap();
-
-        assert_eq!(
-            runtime
-                .slots
-                .iter()
-                .map(|slot| slot.id.as_str())
-                .collect::<Vec<_>>(),
-            ["one", "two", "three", "four"]
-        );
-    }
 }

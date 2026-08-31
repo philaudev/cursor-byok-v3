@@ -1,3 +1,4 @@
+//! Implements the Anthropic provider adapter.
 use async_stream::try_stream;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eventsource_stream::Eventsource;
@@ -11,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    merge_extra_params,
+    map_sse_error, merge_extra_params, provider_event_error,
     recorder::recorded_headers,
     retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
@@ -95,7 +96,7 @@ impl Provider for AnthropicProvider {
                     .header("x-api-key", &config.api_key).header("anthropic-version", "2023-06-01")
                     .headers(config.custom_headers.clone())
                     .json(&body),
-                RetryPolicy::default(),
+                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
                 request_headers,
@@ -128,8 +129,11 @@ impl Provider for AnthropicProvider {
                 _ = cancellation.cancelled() => { return; }
                 event = source.next() => event,
             } {
-                let event = event.map_err(|error| Error::Provider(format!("Anthropic SSE: {error}")))?;
+                let event = event.map_err(|error| map_sse_error("Anthropic", error))?;
                 let value: Value = serde_json::from_str(&event.data)?;
+                if let Some(error) = provider_event_error("Anthropic", &value) {
+                    Err(error)?;
+                }
                 let data_kind = value.get("type").and_then(Value::as_str);
                 let kind = match event.event.as_str() {
                     "" | "message" => data_kind.unwrap_or(event.event.as_str()),
@@ -241,7 +245,6 @@ impl Provider for AnthropicProvider {
                         };
                         yield ModelEvent::Done(finish);
                     }
-                    "error" => Err(Error::Provider(format!("Anthropic stream error: {}", event.data)))?,
                     _ => {}
                 }
             }

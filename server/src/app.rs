@@ -1,19 +1,21 @@
+//! Assembles server dependencies and starts the application services.
 use std::{future::IntoFuture, net::SocketAddr, time::Duration};
 
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    api,
     config::{Config, ConsoleSource},
     control,
     cursor::{
-        handlers,
         prompting::{PromptAssets, PromptCompiler},
-        CursorSessionRegistry,
+        transport::TransportRegistry,
     },
-    harness::CursorHarness,
+    local_app::CursorHarness,
+    plugin::{PluginRegistry, PluginRuntime},
     provider::ProviderRouter,
-    run::RunRegistry,
+    search::WebCache,
     store::Store,
     Result,
 };
@@ -21,7 +23,7 @@ use crate::{
 pub struct App {
     config: Config,
     router: axum::Router,
-    registry: CursorSessionRegistry,
+    registry: TransportRegistry,
     harness: CursorHarness,
     store: Store,
 }
@@ -42,16 +44,30 @@ impl App {
             compaction_prompt_path,
             global_rules_dir,
         );
+        let plugin_runtime = PluginRuntime::managed()?;
+        let plugins = PluginRegistry::managed(
+            store.clone(),
+            plugin_runtime.clone(),
+            config.app_version.clone(),
+        )?;
         let provider = std::sync::Arc::new(ProviderRouter::new(
             store.clone(),
+            plugins.clone(),
             config.provider_request_timeout,
+            config.provider_stream_idle_timeout,
         ));
-        let run_registry = RunRegistry::default();
-        let registry =
-            CursorSessionRegistry::new(store.clone(), provider.clone(), compiler, run_registry);
-        let control = control::ControlService::new(store.clone(), provider)?;
+        let registry = TransportRegistry::with_plugins(
+            store.clone(),
+            provider.clone(),
+            compiler,
+            WebCache::managed()?,
+            plugins.clone(),
+            crate::config::managed_data_dir()?.join("rules"),
+        );
+        let control =
+            control::ControlService::new(store.clone(), provider, plugin_runtime, plugins)?;
         let harness = control.cursor_harness().clone();
-        let mut router = handlers::router(registry.clone()).await?;
+        let mut router = api::router(registry.clone())?;
         router = match &config.console {
             Some(ConsoleSource::Directory(directory)) => {
                 router.merge(control::web_router(control.clone(), directory))
@@ -112,6 +128,7 @@ impl App {
 
     pub async fn serve_on(self, listener: TcpListener, shutdown: CancellationToken) -> Result<()> {
         let address = listener.local_addr()?;
+        self.registry.web_cache().set_service_addr(address);
         self.harness.set_backend_addr(address);
         tracing::info!(%address, "cursor server listening");
         let registry = self.registry;
@@ -175,17 +192,4 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn service_listener_falls_back_when_configured_port_is_busy() {
-        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let requested = occupied.local_addr().unwrap();
-        let listener = bind_service_listener(requested, true).await.unwrap();
-        assert_ne!(listener.local_addr().unwrap().port(), requested.port());
-    }
 }

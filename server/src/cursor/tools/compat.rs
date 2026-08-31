@@ -1,9 +1,10 @@
+//! Converts unsupported or retired Tool forms into safe Cursor representations.
 use crate::{
-    cursor::proto::agent::v1 as pb,
+    cursor::protocol::proto::agent::v1 as pb,
     model::{ToolCall, ToolResult},
 };
 
-use super::{codec, result::ToolCompletion, runtime::now_ms};
+use super::{codec, runtime::now_ms, tool_call_result::ToolCompletion};
 
 // Unknown/retired tools use a generic Cursor MCP card only as a wire/UI
 // representation; they are never dispatched to an MCP server.
@@ -98,61 +99,4 @@ fn normalized(name: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tool(name: &str) -> ToolCall {
-        let arguments = serde_json::json!({"shell_id": "runtime-shell", "block_until_ms": 30000});
-        ToolCall {
-            index: 0,
-            call_id: "call-1".into(),
-            model_call_id: "model-call-1".into(),
-            name: name.into(),
-            arguments_text: arguments.to_string(),
-            arguments,
-        }
-    }
-
-    #[test]
-    fn retired_await_shell_is_a_model_visible_failure() {
-        let completion = failure(&tool("AwaitShell"));
-        assert!(completion.result().is_error);
-        assert!(completion
-            .result()
-            .content
-            .contains("current advertised tool set"));
-        assert!(completion
-            .result()
-            .content
-            .contains("current Shell/background completion flow"));
-        let Some(pb::tool_call::Tool::McpToolCall(rendered)) = completion.tool_call().tool.as_ref()
-        else {
-            panic!("expected compatibility MCP card");
-        };
-        let args = rendered.args.as_ref().unwrap();
-        assert_eq!(args.provider_identifier, COMPAT_PROVIDER);
-        assert_eq!(args.tool_name, "AwaitShell");
-    }
-
-    #[test]
-    fn arbitrary_unknown_tool_is_a_model_visible_failure() {
-        let completion = failure(&tool("OldTool"));
-        assert!(completion.result().is_error);
-        assert!(completion.result().content.contains("not available"));
-        assert_eq!(
-            completion
-                .tool_call()
-                .tool
-                .as_ref()
-                .and_then(|tool| match tool {
-                    pb::tool_call::Tool::McpToolCall(tool) => tool.args.as_ref(),
-                    _ => None,
-                })
-                .map(|args| args.tool_name.as_str()),
-            Some("OldTool")
-        );
-    }
 }

@@ -1,3 +1,4 @@
+//! Provides deterministic provider streams for integration tests.
 #![allow(dead_code)]
 
 use std::{

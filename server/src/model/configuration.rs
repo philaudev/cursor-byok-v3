@@ -1,3 +1,4 @@
+//! Defines model and provider configuration.
 use std::{fmt, str::FromStr};
 
 use reqwest::Url;
@@ -17,6 +18,9 @@ pub enum ProviderType {
     OpenAiResponses,
     #[serde(rename = "anthropic")]
     Anthropic,
+    /// 插件执行的调用;协议细节在插件内部,核心只按统一事件流记录。
+    #[serde(rename = "plugin")]
+    Plugin,
 }
 
 impl ProviderType {
@@ -25,6 +29,7 @@ impl ProviderType {
             Self::OpenAiChat => "openai-chat",
             Self::OpenAiResponses => "openai-responses",
             Self::Anthropic => "anthropic",
+            Self::Plugin => "plugin",
         }
     }
 }
@@ -43,6 +48,7 @@ impl FromStr for ProviderType {
             "openai-chat" => Ok(Self::OpenAiChat),
             "openai-responses" => Ok(Self::OpenAiResponses),
             "anthropic" => Ok(Self::Anthropic),
+            "plugin" => Ok(Self::Plugin),
             _ => Err(Error::Config(format!("unsupported provider type: {value}"))),
         }
     }
@@ -81,6 +87,9 @@ pub struct ModelConfigInput {
     #[serde(default)]
     pub sort_order: i64,
     pub display_name: String,
+    /// 供应商分组的自定义显示名;同一 base_url 主机下的模型共享。
+    #[serde(default)]
+    pub group_name: Option<String>,
     #[serde(rename = "type")]
     pub model_type: ModelType,
     pub base_url: String,
@@ -118,6 +127,7 @@ pub struct ModelConfig {
     pub model_hash: String,
     pub sort_order: i64,
     pub display_name: String,
+    pub group_name: Option<String>,
     #[serde(rename = "type")]
     pub model_type: ModelType,
     pub base_url: String,
@@ -200,6 +210,12 @@ impl ModelConfig {
 
 pub fn normalize_model_input(input: &ModelConfigInput) -> Result<ModelConfigInput> {
     let display_name = required(&input.display_name, "model display name")?;
+    let group_name = input
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from);
     let base_url = normalize_request_url(&input.base_url)?;
     let api_key = required(&input.api_key, "model API key")?;
     let tooltip_data = required(&input.tooltip_data, "model tooltip")?;
@@ -226,6 +242,7 @@ pub fn normalize_model_input(input: &ModelConfigInput) -> Result<ModelConfigInpu
     let normalized = ModelConfigInput {
         sort_order: input.sort_order.max(0),
         display_name,
+        group_name,
         model_type: input.model_type,
         base_url,
         use_full_url: input.use_full_url,
@@ -420,22 +437,65 @@ fn empty_object_ref() -> &'static serde_json::Value {
     EMPTY.get_or_init(empty_object)
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningSpec {
+    pub enabled: bool,
+    pub effort: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelLatency {
+    #[default]
+    Standard,
+    Fast,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ModelSpec {
+    pub model_id: String,
+    pub display_name: Option<String>,
+    pub reasoning: ReasoningSpec,
+    pub latency: ModelLatency,
+    pub max_output_tokens: Option<u64>,
+    pub context_window_tokens: Option<u64>,
+    #[serde(default)]
+    pub supports_image_generation: bool,
+    #[serde(default)]
+    pub extra_params: serde_json::Value,
+}
+
+impl ModelSpec {
+    pub fn new(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            display_name: None,
+            reasoning: ReasoningSpec::default(),
+            latency: ModelLatency::Standard,
+            max_output_tokens: None,
+            context_window_tokens: None,
+            supports_image_generation: false,
+            extra_params: serde_json::json!({}),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ModelSpec;
 
     fn input() -> ModelConfigInput {
         ModelConfigInput {
-            sort_order: 1,
+            sort_order: 0,
             display_name: "Model A".into(),
+            group_name: None,
             model_type: ModelType::OpenAi,
             base_url: "https://example.com/custom/generate".into(),
             use_full_url: true,
             api_key: "secret".into(),
             tooltip_data: "Model A".into(),
             model_id: "model-a".into(),
-            reasoning_effort: Some("high".into()),
+            reasoning_effort: None,
             openai_endpoint: OPENAI_RESPONSES_ENDPOINT.into(),
             openai_extra_params_enabled: false,
             openai_extra_params: empty_object(),
@@ -443,7 +503,7 @@ mod tests {
             custom_headers: empty_object(),
             anthropic_extra_params_enabled: false,
             anthropic_extra_params: empty_object(),
-            context_window_tokens: Some(200_000),
+            context_window_tokens: None,
             max_completion_tokens: None,
             anthropic_max_tokens: None,
             anthropic_thinking_effort: None,
@@ -464,6 +524,7 @@ mod tests {
             model_hash: "hash".into(),
             sort_order: 1,
             display_name: "Model A".into(),
+            group_name: None,
             model_type: ModelType::OpenAi,
             base_url: "https://example.com".into(),
             use_full_url: true,
@@ -563,6 +624,7 @@ mod tests {
             model_hash: "hash".into(),
             sort_order: input.sort_order,
             display_name: input.display_name,
+            group_name: None,
             model_type: input.model_type,
             base_url: input.base_url,
             use_full_url: input.use_full_url,
@@ -585,7 +647,7 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         };
-        let mut requested = super::super::ModelSpec::new("model-a");
+        let mut requested = ModelSpec::new("model-a");
         requested.context_window_tokens = Some(200_000);
 
         config.configure(&mut requested);
@@ -600,6 +662,7 @@ mod tests {
             model_hash: "hash".into(),
             sort_order: input.sort_order,
             display_name: input.display_name,
+            group_name: None,
             model_type: input.model_type,
             base_url: input.base_url,
             use_full_url: input.use_full_url,
@@ -622,7 +685,7 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         };
-        let mut requested = super::super::ModelSpec::new("model-a");
+        let mut requested = ModelSpec::new("model-a");
 
         config.configure(&mut requested);
 

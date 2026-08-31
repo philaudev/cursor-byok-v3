@@ -1,3 +1,4 @@
+//! Implements settings management endpoints.
 use crate::Result;
 use axum::{extract::State, Json};
 use serde::Deserialize;

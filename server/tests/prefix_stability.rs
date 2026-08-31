@@ -139,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 25);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 26);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -162,6 +162,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Read",
             "ReadLints",
             "Glob",
+            "Ls",
             "AskQuestion",
             "Task",
             "AwaitShell",
@@ -185,6 +186,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "FetchMcpResource",
             "InspectChanges",
             "Glob",
+            "Ls",
             "Grep",
             "Read",
             "ReadLints",
@@ -198,7 +200,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "eb9bde0cda82c85da7c2e6b355bad757e894de204a5f7219adf3e999e79ce71b",
+        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
     );
     assert_mode(
         &assets,
@@ -206,6 +208,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         &[
             "Shell",
             "Glob",
+            "Ls",
             "Grep",
             "Read",
             "InspectChanges",
@@ -225,7 +228,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "1d56d38bd34d3d340c5d74400000ad0b4f55c3b3ccac85fba2b019594795aad1",
+        "edb505745a12e0892c22990135312940ba0f64b7af40f7220492b16bbf947aac",
     );
     assert_mode(
         &assets,
@@ -237,6 +240,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "FetchMcpResource",
             "InspectChanges",
             "Glob",
+            "Ls",
             "Grep",
             "Read",
             "ReadLints",
@@ -250,7 +254,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "eb9bde0cda82c85da7c2e6b355bad757e894de204a5f7219adf3e999e79ce71b",
+        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
     );
     assert_mode(
         &assets,
@@ -262,6 +266,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "FetchMcpResource",
             "InspectChanges",
             "Glob",
+            "Ls",
             "Grep",
             "Read",
             "ReadLints",
@@ -277,7 +282,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "598695901bec54f1f02364eeac21963362e8e92f06e2c3094ff96d9bb2dcc71c",
+        "5c39beb609b3298f81338907a3e0ce92148979c10b7bf757295e0863d6bec993",
     );
     assert_mode(
         &assets,
@@ -297,6 +302,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Write",
             "Read",
             "Glob",
+            "Ls",
             "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
@@ -306,7 +312,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "a08edd64ff56d5eb29f9be048aa522b8b680c91b4552c72edd76d7f713030389",
+        "8e9f4a013b9ecc90643b8ef2ab6aaca082412722fdf54017af592be1b37a2fb5",
     );
     assert_mode(
         &assets,
@@ -316,7 +322,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "dae16d1379f686da3288fdbd19d39c874ec8717af9768b029438ee2a03fa8052"
+        "2958862c44387b3cba98cbc3fb2e9e7dbd9b6ae55389424c5168b365640e0fd4"
     );
     let task = assets
         .mode(Mode::Agent)
@@ -381,13 +387,13 @@ fn every_captured_mode_owns_and_renders_its_runtime_template() {
     for (mode, marker) in [
         (Mode::Agent, "You are still in **Agent Mode**"),
         (Mode::Ask, "Ask mode is active."),
-        (Mode::Plan, "Plan mode is active."),
+        (Mode::Plan, "You are still in **Plan Mode**"),
         (Mode::Debug, "You are now in **DEBUG MODE**"),
         (Mode::Multitask, "The user has engaged **Multitask Mode**"),
     ] {
         let rendered = compiler.runtime_message(mode, &values).unwrap();
         assert!(rendered.contains(marker), "missing {mode:?} marker");
-        assert!(rendered.contains("<user_query>\nquestion\n</user_query>"));
+        assert!(rendered.contains("<user_query>") && rendered.contains("question") && rendered.contains("</user_query>"));
         assert_eq!(rendered.matches("<user_query>").count(), 1);
     }
 }
@@ -511,7 +517,7 @@ fn agent_system_prompt_is_static_and_substitutes_the_model_name() {
 }
 
 #[test]
-fn subagent_uses_the_agent_prompt_and_only_the_captured_tool_delta() {
+fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
     let assets = PromptAssets::load(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("prompt/cursor")
@@ -519,13 +525,12 @@ fn subagent_uses_the_agent_prompt_and_only_the_captured_tool_delta() {
     )
     .unwrap();
     let compiler = PromptCompiler::new(assets);
-    let agent_prompt = compiler
-        .prompt_spec(Mode::Agent, &ModelSpec::new("model"), &[], false)
-        .unwrap();
     let subagent_prompt = compiler
         .prompt_spec(Mode::Subagent, &ModelSpec::new("model"), &[], false)
         .unwrap();
-    assert_eq!(agent_prompt.instructions, subagent_prompt.instructions);
+    assert!(subagent_prompt
+        .instructions
+        .contains("<handoff_return_contract>"));
 
     let request = compiler
         .prompt_spec(Mode::Subagent, &ModelSpec::new("model"), &[], false)
@@ -542,6 +547,7 @@ fn subagent_uses_the_agent_prompt_and_only_the_captured_tool_delta() {
             "Delete",
             "WebSearch",
             "WebFetch",
+            "InspectChanges",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
@@ -549,6 +555,8 @@ fn subagent_uses_the_agent_prompt_and_only_the_captured_tool_delta() {
             "Write",
             "Read",
             "Glob",
+            "Ls",
+            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",

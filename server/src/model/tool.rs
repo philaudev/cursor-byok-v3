@@ -1,3 +1,4 @@
+//! Defines Tool calls, results, and Tool round identities.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

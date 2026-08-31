@@ -1,8 +1,9 @@
+//! Encodes Tool execution requests sent to Cursor.
 use serde_json::{Map, Value};
 
 use crate::{
     cursor::{
-        proto::agent::v1 as pb,
+        protocol::proto::agent::v1 as pb,
         tools::{
             edit::{self, EditWrite},
             runtime::{

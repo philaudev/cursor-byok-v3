@@ -1,8 +1,9 @@
+//! Persists Tool round calls, results, and settlement state.
 use sqlx::Row;
 
 use crate::{
     model::{
-        CanonicalMessage, ConversationId, MessageContent, Origin, RevisionId, Role, RunId,
+        CanonicalMessage, CheckpointId, ConversationId, MessageContent, Origin, Role, RunId,
         ToolCall, ToolCallContent, ToolResult, ToolResultContent, ToolRoundAssistant, ToolRoundId,
     },
     Error, Result,
@@ -20,7 +21,7 @@ pub enum ToolRoundStatus {
 pub struct ToolRoundSnapshot {
     pub round_id: ToolRoundId,
     pub run_id: RunId,
-    pub base_revision_id: RevisionId,
+    pub base_checkpoint_id: CheckpointId,
     pub assistant: ToolRoundAssistant,
     pub calls: Vec<ToolCall>,
     pub completed_call_ids: Vec<String>,
@@ -31,7 +32,7 @@ pub struct ToolRoundSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCommit {
-    pub revision_id: RevisionId,
+    pub checkpoint_id: CheckpointId,
     pub tool_round_version: u64,
     pub completion_seq: u64,
     pub settled: bool,
@@ -42,7 +43,7 @@ impl Store {
         &self,
         round_id: &ToolRoundId,
         run_id: &RunId,
-        base_revision_id: RevisionId,
+        base_checkpoint_id: CheckpointId,
         assistant: &ToolRoundAssistant,
         calls: &[ToolCall],
         created_at_ms: Option<u64>,
@@ -56,18 +57,18 @@ impl Store {
         let ownership: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM runs r JOIN conversations c USING(conversation_id)
-                WHERE r.run_id = ? AND r.head_revision_id = ?
+                WHERE r.run_id = ? AND r.head_checkpoint_id = ?
                   AND r.status = 'running' AND c.active_run_id = r.run_id
-                  AND c.current_revision_id = r.head_revision_id
+                  AND c.current_checkpoint_id = r.head_checkpoint_id
              )",
         )
         .bind(run_id.as_str())
-        .bind(base_revision_id.0)
+        .bind(base_checkpoint_id.0)
         .fetch_one(&mut *tx)
         .await?;
         if !ownership {
             return Err(Error::Store(format!(
-                "run {run_id} cannot start tool round at revision {base_revision_id}"
+                "run {run_id} cannot start tool round at checkpoint {base_checkpoint_id}"
             )));
         }
         let now = now_ms();
@@ -78,12 +79,12 @@ impl Store {
             .unwrap_or(now);
         sqlx::query(
             "INSERT INTO tool_rounds
-             (round_id, run_id, base_revision_id, assistant_json, status, created_at_ms, updated_at_ms)
+             (round_id, run_id, base_checkpoint_id, assistant_json, status, created_at_ms, updated_at_ms)
              VALUES (?, ?, ?, ?, 'pending', ?, ?)",
         )
         .bind(round_id.as_str())
         .bind(run_id.as_str())
-        .bind(base_revision_id.0)
+        .bind(base_checkpoint_id.0)
         .bind(assistant_json)
         .bind(created_at_ms)
         .bind(now)
@@ -161,7 +162,7 @@ impl Store {
             )));
         }
 
-        let head: i64 = sqlx::query_scalar("SELECT head_revision_id FROM runs WHERE run_id = ?")
+        let head: i64 = sqlx::query_scalar("SELECT head_checkpoint_id FROM runs WHERE run_id = ?")
             .bind(run_id.as_str())
             .fetch_one(&mut *tx)
             .await?;
@@ -206,24 +207,24 @@ impl Store {
             }),
             runtime_event_id: None,
         };
-        let revision = Self::append_revision_tx(
+        let checkpoint = Self::append_checkpoint_tx(
             &mut tx,
             conversation_id,
             run_id,
-            RevisionId(head),
+            CheckpointId(head),
             &[assistant_message, result_message],
         )
         .await?;
 
         sqlx::query(
             "UPDATE tool_round_calls SET status = 'completed', completion_seq = ?,
-             result_content = ?, result_is_error = ?, committed_revision_id = ?, completed_at_ms = ?
+             result_content = ?, result_is_error = ?, committed_checkpoint_id = ?, completed_at_ms = ?
              WHERE round_id = ? AND call_id = ? AND status = 'pending'",
         )
         .bind(completion_seq)
         .bind(&result.content)
         .bind(result.is_error)
-        .bind(revision.0)
+        .bind(checkpoint.0)
         .bind(now_ms())
         .bind(round_id.as_str())
         .bind(&result.call_id)
@@ -249,7 +250,7 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(ToolCommit {
-            revision_id: revision,
+            checkpoint_id: checkpoint,
             tool_round_version: (version + 1) as u64,
             completion_seq: completion_seq as u64,
             settled,
@@ -258,7 +259,7 @@ impl Store {
 
     pub async fn tool_round(&self, round_id: &ToolRoundId) -> Result<Option<ToolRoundSnapshot>> {
         let Some(round) = sqlx::query(
-            "SELECT run_id, base_revision_id, assistant_json, status, version, created_at_ms
+            "SELECT run_id, base_checkpoint_id, assistant_json, status, version, created_at_ms
              FROM tool_rounds WHERE round_id = ?",
         )
         .bind(round_id.as_str())
@@ -294,7 +295,7 @@ impl Store {
         Ok(Some(ToolRoundSnapshot {
             round_id: round_id.clone(),
             run_id: RunId(round.get(0)),
-            base_revision_id: RevisionId(round.get(1)),
+            base_checkpoint_id: CheckpointId(round.get(1)),
             assistant: serde_json::from_str(round.get(2))?,
             calls,
             completed_call_ids: completed,

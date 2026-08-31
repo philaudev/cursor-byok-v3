@@ -1,3 +1,4 @@
+//! Verifies unique persisted and streamed terminal outcomes.
 #[path = "support/fake_provider.rs"]
 mod fake_provider;
 #[path = "support/fixtures.rs"]
@@ -8,11 +9,11 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use cursor_server::{
     cursor::prompting::{PromptAssets, PromptCompiler},
-    cursor::{
+    cursor::protocol::{
         connect,
         proto::{agent::v1 as pb, aiserver::v1 as ai},
     },
-    cursor::{CursorCommand, CursorSessionRegistry},
+    cursor::{TransportCommand, TransportParent, TransportRegistry},
     model::{MessageContent, Role},
     provider::{FinishReason, ModelEvent},
     Error,
@@ -28,16 +29,15 @@ async fn abort_command_cancels_the_run_and_closes_output() {
             .as_path(),
     )
     .unwrap();
-    let registry = CursorSessionRegistry::new(
+    let registry = TransportRegistry::new(
         store,
         Arc::new(fake_provider::FakeProvider::default()),
         PromptCompiler::new(assets),
-        Default::default(),
     );
     let handle = registry.get_or_create("abort-request").await.unwrap();
     let mut output = handle.subscribe();
 
-    handle.command(CursorCommand::Abort).await.unwrap();
+    handle.command(TransportCommand::Disconnect).await.unwrap();
 
     let frame = tokio::time::timeout(std::time::Duration::from_secs(1), output.recv())
         .await
@@ -47,7 +47,6 @@ async fn abort_command_cancels_the_run_and_closes_output() {
     assert_eq!(flags, connect::END_STREAM_FLAG);
     let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(payload["error"]["code"], "canceled");
-    assert!(handle.cancellation().is_cancelled());
     assert_eq!(output.recv().await, None);
 }
 
@@ -62,16 +61,15 @@ async fn provider_failure_keeps_the_initial_checkpoint_then_returns_structured_e
             .as_path(),
     )
     .unwrap();
-    let registry = CursorSessionRegistry::new(
+    let registry = TransportRegistry::new(
         store.clone(),
         Arc::new(provider),
         PromptCompiler::new(assets),
-        Default::default(),
     );
     let handle = registry.get_or_create("failed-request").await.unwrap();
     let mut output = handle.subscribe();
     handle
-        .command(CursorCommand::Append {
+        .command(TransportCommand::Append {
             seqno: 0,
             message: Box::new(client_run()),
         })
@@ -94,7 +92,7 @@ async fn provider_failure_keeps_the_initial_checkpoint_then_returns_structured_e
         match server.message {
             Some(pb::agent_server_message::Message::KvServerMessage(kv)) => {
                 handle
-                    .command(CursorCommand::Append {
+                    .command(TransportCommand::Append {
                         seqno: append_seqno,
                         message: Box::new(kv_ack(kv.id)),
                     })
@@ -191,11 +189,10 @@ async fn runtime_protocol_failure_returns_connect_error_end_stream_and_closes() 
             .as_path(),
     )
     .unwrap();
-    let registry = CursorSessionRegistry::new(
+    let registry = TransportRegistry::new(
         store.clone(),
         Arc::new(provider),
         PromptCompiler::new(assets),
-        Default::default(),
     );
     let handle = registry
         .get_or_create("protocol-failed-request")
@@ -203,9 +200,9 @@ async fn runtime_protocol_failure_returns_connect_error_end_stream_and_closes() 
         .unwrap();
     let mut output = handle.subscribe();
     handle
-        .command(CursorCommand::Append {
+        .command(TransportCommand::Append {
             seqno: 0,
-            message: Box::new(protocol_client_run()),
+            message: Box::new(protocol_client_run("read it", "protocol-failed-user")),
         })
         .await
         .unwrap();
@@ -225,7 +222,7 @@ async fn runtime_protocol_failure_returns_connect_error_end_stream_and_closes() 
         match server.message {
             Some(pb::agent_server_message::Message::KvServerMessage(kv)) => {
                 handle
-                    .command(CursorCommand::Append {
+                    .command(TransportCommand::Append {
                         seqno: append_seqno,
                         message: Box::new(kv_ack(kv.id)),
                     })
@@ -236,7 +233,7 @@ async fn runtime_protocol_failure_returns_connect_error_end_stream_and_closes() 
             Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => {
                 // An unknown numeric bridge id is a runtime protocol error.
                 handle
-                    .command(CursorCommand::Append {
+                    .command(TransportCommand::Append {
                         seqno: append_seqno,
                         message: Box::new(pb::AgentClientMessage {
                             message: Some(pb::agent_client_message::Message::ExecClientMessage(
@@ -307,7 +304,7 @@ async fn runtime_protocol_failure_returns_connect_error_end_stream_and_closes() 
 }
 
 #[tokio::test]
-async fn duplicate_run_request_on_one_bidi_stream_is_a_protocol_error() {
+async fn newer_run_request_on_one_bidi_stream_replaces_the_active_run() {
     let (_directory, store) = fixtures::temp_store().await;
     let provider = fake_provider::FakeProvider::default();
     provider.push(vec![
@@ -326,17 +323,25 @@ async fn duplicate_run_request_on_one_bidi_stream_is_a_protocol_error() {
         ModelEvent::ToolCallEnd { index: 0 },
         ModelEvent::Done(FinishReason::ToolUse),
     ]);
+    provider.push(vec![
+        ModelEvent::Start {
+            model_call_id: "replacement-model-call".into(),
+        },
+        ModelEvent::TextStart,
+        ModelEvent::TextDelta("replacement completed".into()),
+        ModelEvent::TextEnd,
+        ModelEvent::Done(FinishReason::Stop),
+    ]);
     let assets = PromptAssets::load(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("prompt/cursor")
             .as_path(),
     )
     .unwrap();
-    let registry = CursorSessionRegistry::new(
-        store,
-        Arc::new(provider),
+    let registry = TransportRegistry::new(
+        store.clone(),
+        Arc::new(provider.clone()),
         PromptCompiler::new(assets),
-        Default::default(),
     );
     let handle = registry
         .get_or_create("protocol-failed-request")
@@ -344,16 +349,19 @@ async fn duplicate_run_request_on_one_bidi_stream_is_a_protocol_error() {
         .unwrap();
     let mut output = handle.subscribe();
     handle
-        .command(CursorCommand::Append {
+        .command(TransportCommand::Append {
             seqno: 0,
-            message: Box::new(protocol_client_run()),
+            message: Box::new(protocol_client_run("read it", "first-user")),
         })
         .await
         .unwrap();
 
     let mut seqno = 1;
-    let mut duplicate_sent = false;
-    let error_json = loop {
+    let mut replacement_sent = false;
+    let mut late_result_sent = false;
+    let mut saw_abort = false;
+    let mut cropped_state = None;
+    let terminal_json = loop {
         let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
             .await
             .unwrap()
@@ -366,7 +374,7 @@ async fn duplicate_run_request_on_one_bidi_stream_is_a_protocol_error() {
         match server.message {
             Some(pb::agent_server_message::Message::KvServerMessage(kv)) => {
                 handle
-                    .command(CursorCommand::Append {
+                    .command(TransportCommand::Append {
                         seqno,
                         message: Box::new(kv_ack(kv.id)),
                     })
@@ -374,27 +382,189 @@ async fn duplicate_run_request_on_one_bidi_stream_is_a_protocol_error() {
                     .unwrap();
                 seqno += 1;
             }
-            Some(pb::agent_server_message::Message::ExecServerMessage(_)) if !duplicate_sent => {
-                duplicate_sent = true;
+            Some(pb::agent_server_message::Message::ConversationCheckpointUpdate(mut state)) => {
+                state.root_prompt_messages_json.truncate(1);
+                state.turns.clear();
+                state.pending_tool_calls.clear();
+                cropped_state = Some(state);
+            }
+            Some(pb::agent_server_message::Message::ExecServerMessage(exec))
+                if !replacement_sent =>
+            {
+                replacement_sent = true;
+                let mut replacement =
+                    protocol_client_run("use the cropped history", "replacement-user");
+                let Some(pb::agent_client_message::Message::RunRequest(request)) =
+                    replacement.message.as_mut()
+                else {
+                    unreachable!()
+                };
+                request.conversation_state = Some(
+                    cropped_state
+                        .clone()
+                        .expect("first Run must publish a checkpoint before tools"),
+                );
                 handle
-                    .command(CursorCommand::Append {
+                    .command(TransportCommand::Append {
                         seqno,
-                        message: Box::new(protocol_client_run()),
+                        message: Box::new(replacement),
                     })
                     .await
                     .unwrap();
                 seqno += 1;
+                handle
+                    .command(TransportCommand::Append {
+                        seqno,
+                        message: Box::new(pb::AgentClientMessage {
+                            message: Some(pb::agent_client_message::Message::ExecClientMessage(
+                                pb::ExecClientMessage {
+                                    id: exec.id,
+                                    message: Some(pb::exec_client_message::Message::ReadResult(
+                                        pb::ReadResult::default(),
+                                    )),
+                                    ..Default::default()
+                                },
+                            )),
+                        }),
+                    })
+                    .await
+                    .unwrap();
+                seqno += 1;
+                late_result_sent = true;
+            }
+            Some(pb::agent_server_message::Message::ExecServerControlMessage(control)) => {
+                if matches!(
+                    control.message,
+                    Some(pb::exec_server_control_message::Message::Abort(_))
+                ) {
+                    saw_abort = true;
+                }
             }
             _ => {}
         }
     };
 
-    assert!(duplicate_sent);
-    assert_eq!(error_json["error"]["code"], "invalid_argument");
-    assert_eq!(
-        error_json["error"]["message"],
-        "duplicate RunRequest for request_id: protocol-failed-request"
+    assert!(replacement_sent);
+    assert!(late_result_sent);
+    assert!(saw_abort);
+    assert!(terminal_json.get("error").is_none(), "{terminal_json}");
+    assert_eq!(provider.requests().len(), 2);
+    let replacement_history = serde_json::to_string(&provider.requests()[1].history).unwrap();
+    assert!(replacement_history.contains("use the cropped history"));
+    assert!(!replacement_history.contains("read it"));
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM runs WHERE cursor_request_id = ? ORDER BY created_at_ms, run_id",
+    )
+    .bind("protocol-failed-request")
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(statuses, ["cancelled", "completed"]);
+}
+
+#[tokio::test]
+async fn parent_request_does_not_need_to_resolve_to_an_active_run() {
+    assert_run_starts_without_parent_dependency(
+        "finished-parent-request",
+        Some(TransportParent {
+            request_id: "already-finished-parent".into(),
+            tool_call_id: "original-tool-call".into(),
+        }),
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn subagent_type_does_not_require_parent_metadata() {
+    assert_run_starts_without_parent_dependency(
+        "parentless-subagent-request",
+        None,
+        Some("generalPurpose"),
+    )
+    .await;
+}
+
+async fn assert_run_starts_without_parent_dependency(
+    request_id: &str,
+    parent: Option<TransportParent>,
+    subagent_type_name: Option<&str>,
+) {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(vec![
+        ModelEvent::Start {
+            model_call_id: "independent-model-call".into(),
+        },
+        ModelEvent::TextStart,
+        ModelEvent::TextDelta("continued independently".into()),
+        ModelEvent::TextEnd,
+        ModelEvent::Done(FinishReason::Stop),
+    ]);
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = TransportRegistry::new(
+        store.clone(),
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
     );
+    let handle = registry.get_or_create(request_id).await.unwrap();
+    if let Some(parent) = parent {
+        handle.set_parent(parent).unwrap();
+    }
+    let mut output = handle.subscribe();
+    let mut message = protocol_client_run("continue", "independent-user");
+    let Some(pb::agent_client_message::Message::RunRequest(request)) = message.message.as_mut()
+    else {
+        unreachable!()
+    };
+    request.conversation_id = Some(format!("{request_id}-conversation"));
+    request.subagent_type_name = subagent_type_name.map(str::to_owned);
+    handle
+        .command(TransportCommand::Append {
+            seqno: 0,
+            message: Box::new(message),
+        })
+        .await
+        .unwrap();
+
+    let mut seqno = 1;
+    let terminal_json = loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .expect("RunSSE closed before EndStream");
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            break serde_json::from_slice::<serde_json::Value>(&payload).unwrap();
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        if let Some(pb::agent_server_message::Message::KvServerMessage(kv)) = server.message {
+            handle
+                .command(TransportCommand::Append {
+                    seqno,
+                    message: Box::new(kv_ack(kv.id)),
+                })
+                .await
+                .unwrap();
+            seqno += 1;
+        }
+    };
+
+    assert!(terminal_json.get("error").is_none(), "{terminal_json}");
+    assert_eq!(provider.requests().len(), 1);
+    let row: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT run_kind, parent_run_id, parent_tool_call_id FROM runs WHERE cursor_request_id = ?",
+    )
+    .bind(request_id)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, ("root".into(), None, None));
 }
 
 fn client_run() -> pb::AgentClientMessage {
@@ -427,7 +597,7 @@ fn client_run() -> pb::AgentClientMessage {
     }
 }
 
-fn protocol_client_run() -> pb::AgentClientMessage {
+fn protocol_client_run(text: &str, message_id: &str) -> pb::AgentClientMessage {
     pb::AgentClientMessage {
         message: Some(pb::agent_client_message::Message::RunRequest(
             pb::AgentRunRequest {
@@ -435,8 +605,8 @@ fn protocol_client_run() -> pb::AgentClientMessage {
                     action: Some(pb::conversation_action::Action::UserMessageAction(
                         pb::UserMessageAction {
                             user_message: Some(pb::UserMessage {
-                                text: "read it".into(),
-                                message_id: "protocol-failed-user".into(),
+                                text: text.into(),
+                                message_id: message_id.into(),
                                 mode: pb::AgentMode::Agent as i32,
                                 ..Default::default()
                             }),

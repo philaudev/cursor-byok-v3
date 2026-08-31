@@ -35,7 +35,7 @@ $(LOCAL_TAURI_SIGNING_KEY):
 	@powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '$(dir $@)' | Out-Null; & '$(CURDIR)/apps/desktop/node_modules/.bin/tauri.cmd' signer generate --ci --write-keys '$@'"
 
 build-desktop: $(LOCAL_TAURI_SIGNING_KEY)
-	@set "TAURI_SIGNING_PRIVATE_KEY=$(LOCAL_TAURI_SIGNING_KEY)" && set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" && npm --prefix apps/desktop run tauri:build -- --bundles nsis
+	@node -e "const { spawnSync } = require('node:child_process'); const result = spawnSync(process.execPath, ['node_modules/@tauri-apps/cli/tauri.js', 'build', '--bundles', 'nsis'], { cwd: 'apps/desktop', stdio: 'inherit', env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY: process.argv[1], TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' } }); process.exit(result.status ?? 1)" "$(LOCAL_TAURI_SIGNING_KEY)"
 else
 $(LOCAL_TAURI_SIGNING_KEY):
 	@install -d -m 700 "$(dir $@)"

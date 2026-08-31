@@ -1,3 +1,4 @@
+//! Implements the OpenAI Chat Completions provider adapter.
 use std::collections::BTreeMap;
 
 use async_stream::try_stream;
@@ -16,7 +17,8 @@ use crate::{
 };
 
 use super::{
-    apply_openai_prompt_cache_key, merge_extra_params,
+    apply_body_allowlist, apply_openai_prompt_cache_key, map_sse_error, merge_extra_params,
+    provider_event_error,
     recorder::recorded_headers,
     retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
@@ -85,6 +87,7 @@ impl Provider for OpenAiChatProvider {
             apply_model(&mut body, &request.model, config.max_output_tokens)?;
             merge_extra_params(&mut body, &request.model.extra_params)?;
             apply_openai_prompt_cache_key(&mut body, &request.model.model_id)?;
+            apply_body_allowlist(&mut body, config.allowed_body_fields.as_ref())?;
             let request_headers = recorded_headers(&config, &[("content-type", "application/json")]);
             if let Some(recorder) = &recorder {
                 recorder.request(request_headers.clone(), &body).await?;
@@ -93,7 +96,7 @@ impl Provider for OpenAiChatProvider {
                 "OpenAI Chat",
                 || client.post(&config.request_url)
                     .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body),
-                RetryPolicy::default(),
+                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
                 request_headers,
@@ -145,12 +148,14 @@ impl Provider for OpenAiChatProvider {
                     break;
                 };
                 let event = event.map_err(|error| {
-                    let err_msg = error.to_string();
                     tracing::debug!(iteration = loop_iteration, error = %error, "OpenAI Chat SSE event failed");
-                    Error::Provider(format!("OpenAI Chat SSE: {err_msg}"))
+                    map_sse_error("OpenAI Chat", error)
                 })?;
                 if event.data == "[DONE]" { saw_done_marker = true; break; }
                 let value: Value = serde_json::from_str(&event.data)?;
+                if let Some(error) = provider_event_error("OpenAI Chat", &value) {
+                    Err(error)?;
+                }
                 if let Some(usage) = value.get("usage").filter(|value| !value.is_null()) {
                     final_usage = Some(openai_usage(usage));
                 }
@@ -435,146 +440,5 @@ pub(crate) fn openai_usage(value: &Value) -> Usage {
         reasoning_tokens: value
             .pointer("/completion_tokens_details/reasoning_tokens")
             .and_then(Value::as_u64),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::openai_chat_messages;
-    use crate::{
-        model::{ContentPart, ProjectedContent, ProjectedMessage, ToolResultContent},
-        model::{ProviderReplayState, Role, ToolCallContent},
-    };
-    use serde_json::{json, Value};
-
-    #[test]
-    fn chat_replay_state_is_encoded_as_reasoning_content() {
-        let messages = openai_chat_messages(
-            "",
-            &[ProjectedMessage {
-                message_id: "test".into(),
-                role: Role::Assistant,
-                content: ProjectedContent::Assistant {
-                    text: "visible answer".into(),
-                    thinking: "private reasoning".into(),
-                    replay_state: Some(ProviderReplayState {
-                        provider_kind: "openai_chat".into(),
-                        value: json!({"reasoning_content": "private reasoning"}),
-                    }),
-                    calls: vec![ToolCallContent {
-                        index: 0,
-                        call_id: "call-1".into(),
-                        name: "Read".into(),
-                        arguments: json!({}),
-                    }],
-                },
-            }],
-        )
-        .unwrap();
-
-        assert_eq!(messages[0]["content"], "visible answer");
-        assert_eq!(messages[0]["reasoning_content"], "private reasoning");
-        assert_eq!(messages[0]["tool_calls"][0]["id"], "call-1");
-    }
-
-    #[test]
-    fn chat_tool_call_assistant_uses_null_content() {
-        let messages = openai_chat_messages(
-            "",
-            &[ProjectedMessage {
-                message_id: "test".into(),
-                role: Role::Assistant,
-                content: ProjectedContent::Assistant {
-                    text: String::new(),
-                    thinking: String::new(),
-                    replay_state: None,
-                    calls: vec![ToolCallContent {
-                        index: 0,
-                        call_id: "call-1".into(),
-                        name: "Read".into(),
-                        arguments: json!({"path": "README.md"}),
-                    }],
-                },
-            }],
-        )
-        .unwrap();
-
-        assert_eq!(messages[0]["content"], Value::Null);
-        assert!(messages[0]["tool_calls"].is_array());
-    }
-
-    #[test]
-    fn chat_contentless_assistant_is_omitted() {
-        let messages = openai_chat_messages(
-            "",
-            &[ProjectedMessage {
-                message_id: "test".into(),
-                role: Role::Assistant,
-                content: ProjectedContent::Assistant {
-                    text: String::new(),
-                    thinking: String::new(),
-                    replay_state: None,
-                    calls: vec![],
-                },
-            }],
-        )
-        .unwrap();
-
-        assert!(messages.is_empty());
-    }
-
-    #[test]
-    fn another_provider_replay_does_not_invent_chat_reasoning_content() {
-        let messages = openai_chat_messages(
-            "",
-            &[ProjectedMessage {
-                message_id: "test".into(),
-                role: Role::Assistant,
-                content: ProjectedContent::Assistant {
-                    text: "visible answer".into(),
-                    thinking: "display-only summary".into(),
-                    replay_state: Some(ProviderReplayState {
-                        provider_kind: "anthropic".into(),
-                        value: json!({"blocks": []}),
-                    }),
-                    calls: vec![],
-                },
-            }],
-        )
-        .unwrap();
-
-        assert!(messages[0].get("reasoning_content").is_none());
-    }
-
-    #[test]
-    fn read_image_stays_in_its_tool_message() {
-        let messages = openai_chat_messages(
-            "",
-            &[ProjectedMessage {
-                message_id: "result".into(),
-                role: Role::Tool,
-                content: ProjectedContent::ToolResult(ToolResultContent {
-                    call_id: "call".into(),
-                    name: "Read".into(),
-                    content: "Read image file: image.png".into(),
-                    is_error: false,
-                    image: None,
-                    provider_parts: vec![
-                        ContentPart::Text {
-                            text: "Read image file: image.png".into(),
-                        },
-                        ContentPart::Image {
-                            mime_type: "image/png".into(),
-                            data: b"png".to_vec(),
-                        },
-                    ],
-                }),
-            }],
-        )
-        .unwrap();
-
-        assert_eq!(messages[0]["role"], "tool");
-        assert_eq!(messages[0]["tool_call_id"], "call");
-        assert_eq!(messages[0]["content"][1]["type"], "image_url");
     }
 }

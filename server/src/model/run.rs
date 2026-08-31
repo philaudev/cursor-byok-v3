@@ -1,7 +1,8 @@
+//! Defines Run identity, preparation, and action types.
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CanonicalMessage, ConversationId, ModelSpec, PromptSpec, RevisionId, RunId, ToolCall,
+    CanonicalMessage, CheckpointId, ConversationId, ModelSpec, PromptSpec, RunId, ToolCall,
     ToolRoundAssistant,
 };
 
@@ -58,5 +59,5 @@ pub struct PreparedRun {
     pub compaction_prompt: PromptSpec,
     pub initial_messages: Vec<CanonicalMessage>,
     pub action: RunAction,
-    pub base_revision_id: RevisionId,
+    pub base_checkpoint_id: CheckpointId,
 }

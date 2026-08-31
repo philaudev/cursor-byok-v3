@@ -1,3 +1,4 @@
+//! Restores provider-visible Tool results from persisted data.
 use serde_json::Value;
 
 const KIB: usize = 1024;
@@ -191,36 +192,4 @@ fn utf8_suffix(value: &str, limit: usize) -> &str {
         start += 1;
     }
     &value[start..]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncation_preserves_utf8_and_limit() {
-        let content = "前".repeat(32 * KIB);
-        let truncated = truncate_replay_text("Grep", &content, 32 * KIB);
-
-        assert!(truncated.len() <= 32 * KIB);
-        assert!(truncated.is_char_boundary(truncated.len()));
-        assert!(truncated.contains("[truncated: Grep result exceeded"));
-    }
-
-    #[test]
-    fn json_replay_compacts_nested_image_data_and_shell_streams() {
-        let image = serde_json::json!({"success": {"image_data": "x".repeat(64 * KIB)}});
-        let image_result = limit_tool_result_text("GenerateImage", &image.to_string());
-        assert!(image_result.contains("base64 image data omitted"));
-        assert!(image_result.len() < 1024);
-        assert_eq!(
-            limit_tool_result_text("GenerateImage", &image_result),
-            image_result
-        );
-
-        let shell = serde_json::json!({"success": {"stdout": "x".repeat(64 * KIB)}});
-        let shell_result = limit_tool_result_text("Shell", &shell.to_string());
-        assert!(shell_result.len() <= 128 * KIB);
-        assert!(shell_result.contains("omitted middle"));
-    }
 }

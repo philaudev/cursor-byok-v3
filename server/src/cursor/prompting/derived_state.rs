@@ -1,3 +1,4 @@
+//! Builds deterministic prompt state derived from Conversation context.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -85,7 +86,6 @@ fn normalize(value: &str) -> String {
         .flat_map(char::to_lowercase)
         .collect()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,4 @@
+//! Projects canonical Messages into provider-visible model input.
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
