@@ -29,16 +29,22 @@ pub(super) fn estimated_tokens(
     projected_messages: &[ProjectedMessage],
     anchor: Option<ContextUsageAnchor>,
 ) -> u64 {
-    anchor
-        .filter(|anchor| anchor.message_count <= projected_messages.len())
-        .map(|anchor| {
-            anchor
-                .context_input_tokens
-                .saturating_add(estimate_projected_messages_tokens(
-                    &projected_messages[anchor.message_count..],
-                ))
-        })
-        .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, projected_messages))
+    // Tier 1: Anchor từ provider response thực tế trước đó
+    if let Some(anchor) = anchor.filter(|anchor| anchor.message_count <= projected_messages.len()) {
+        return anchor
+            .context_input_tokens
+            .saturating_add(estimate_projected_messages_tokens(
+                &projected_messages[anchor.message_count..],
+            ));
+    }
+
+    // Tier 2: Checkpoint context usage từ Cursor UI/State nếu có
+    if let Some(checkpoint_tokens) = prepared.checkpoint_context_tokens.filter(|t| *t > 0) {
+        return checkpoint_tokens;
+    }
+
+    // Tier 3: Heuristic ước lượng thô từ prompt + messages
+    estimate_context_tokens(&prepared.prompt, projected_messages)
 }
 
 pub(super) fn compaction_estimate(
@@ -68,9 +74,6 @@ pub(super) fn validate_compacted(
     let Some(budget) = input_budget(prepared) else {
         return Ok(estimated);
     };
-    if estimated <= budget {
-        return Ok(estimated);
-    }
     if estimated <= budget {
         return Ok(estimated);
     }
@@ -225,6 +228,31 @@ mod tests {
         assert_eq!(
             estimated_tokens(&prepared, &projected, None),
             estimate_context_tokens(&prepared.prompt, &projected)
+        );
+    }
+
+    #[test]
+    fn invalid_anchor_message_count_uses_checkpoint_tokens_if_present() {
+        let messages = vec![CanonicalMessage::text(
+            "user",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(40_000),
+        )];
+        let projected = project_messages(&messages).unwrap();
+        let mut prepared = prepared(200_000);
+        prepared.checkpoint_context_tokens = Some(150_000);
+
+        assert_eq!(
+            estimated_tokens(
+                &prepared,
+                &projected,
+                Some(ContextUsageAnchor {
+                    context_input_tokens: 1,
+                    message_count: 2,
+                })
+            ),
+            150_000
         );
     }
 

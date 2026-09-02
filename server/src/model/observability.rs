@@ -68,7 +68,7 @@ pub use usage::*;
 mod llm_call {
     use serde::Serialize;
 
-    use super::{ProviderType, Usage};
+    use super::ProviderType;
 
     #[derive(Clone, Debug)]
     pub struct NewLlmCall {
@@ -154,13 +154,6 @@ mod llm_call {
         pub byte_count: i64,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct LlmCallUsageAnchor {
-        pub request_type: ProviderType,
-        pub usage: Usage,
-        pub message_count: usize,
-        pub tool_count: usize,
-    }
 }
 pub use llm_call::*;
 

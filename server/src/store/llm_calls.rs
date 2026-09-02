@@ -1,13 +1,8 @@
 //! Persists provider call payloads, timing, and usage.
-use std::str::FromStr;
-
 use sqlx::Row;
 
 use crate::{
-    model::{
-        ConversationId, LlmCallRequest, LlmCallResponseChunk, LlmCallSummary, LlmCallUsageAnchor,
-        NewLlmCall, ProviderType, Usage,
-    },
+    model::{LlmCallRequest, LlmCallResponseChunk, LlmCallSummary, NewLlmCall, Usage},
     Result,
 };
 
@@ -285,9 +280,10 @@ impl Store {
         conversation_id: &str,
     ) -> Result<Option<ContextUsageAnchor>> {
         let row = sqlx::query(
-            "SELECT usage_json, message_count FROM llm_calls
+            "SELECT usage_json, projected_message_count, message_count FROM llm_calls
              WHERE conversation_id = ?
                AND json_extract(usage_json, '$.context_input_tokens') IS NOT NULL
+               AND (history_fingerprint IS NOT NULL AND history_fingerprint != '')
              ORDER BY created_at_ms DESC, rowid DESC
              LIMIT 1",
         )
@@ -301,7 +297,12 @@ impl Store {
         let Some(context_input_tokens) = usage.context_input_tokens else {
             return Ok(None);
         };
-        let message_count = row.try_get::<i64, _>("message_count")?;
+        let projected_message_count = row.try_get::<i64, _>("projected_message_count").unwrap_or(0);
+        let message_count = if projected_message_count > 0 {
+            projected_message_count
+        } else {
+            row.try_get::<i64, _>("message_count")?
+        };
         let Ok(message_count) = usize::try_from(message_count) else {
             return Ok(None);
         };
@@ -328,42 +329,6 @@ impl Store {
             .transpose()
     }
 
-    pub(crate) async fn latest_llm_call_usage_anchor(
-        &self,
-        conversation_id: &ConversationId,
-        model: &str,
-    ) -> Result<Option<LlmCallUsageAnchor>> {
-        let row = sqlx::query(
-            r#"SELECT request_type, usage_json, projected_message_count, history_fingerprint, tool_count
-               FROM llm_calls
-               WHERE conversation_id = ?
-                 AND (model_hash = ? OR model_id = ?)
-                 AND status = 'completed'
-                 AND input_tokens IS NOT NULL
-                 AND usage_json IS NOT NULL
-                 AND history_fingerprint != ''
-               ORDER BY rowid DESC
-               LIMIT 1"#,
-        )
-        .bind(conversation_id.as_str())
-        .bind(model)
-        .bind(model)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(|row| {
-            let message_count =
-                usize::try_from(row.try_get::<i64, _>("projected_message_count")?).unwrap_or(usize::MAX);
-            let tool_count =
-                usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
-            Ok(LlmCallUsageAnchor {
-                request_type: ProviderType::from_str(row.try_get("request_type")?)?,
-                usage: serde_json::from_str::<Usage>(row.try_get("usage_json")?)?,
-                message_count,
-                tool_count,
-            })
-        })
-        .transpose()
-    }
     pub async fn llm_call_request(&self, call_id: &str) -> Result<Option<LlmCallRequest>> {
         let row = sqlx::query(
             "SELECT headers_json, body_json, byte_count FROM llm_call_requests WHERE call_id = ?",
