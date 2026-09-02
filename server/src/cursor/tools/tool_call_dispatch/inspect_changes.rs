@@ -7,6 +7,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -66,6 +69,13 @@ pub(super) fn start(
     })
 }
 
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd
+}
+
 async fn execute(args: InspectChangesArgs) -> std::result::Result<Value, String> {
     tokio::task::spawn_blocking(move || execute_sync(args))
         .await
@@ -95,7 +105,7 @@ fn execute_sync(args: InspectChangesArgs) -> std::result::Result<Value, String> 
     };
 
     // Strict git check on the given path - NO FALLBACK
-    let git_root_output = Command::new("git")
+    let git_root_output = git_command()
         .args(["-C", &target_dir, "rev-parse", "--show-toplevel"])
         .output();
 
@@ -128,7 +138,7 @@ fn execute_sync(args: InspectChangesArgs) -> std::result::Result<Value, String> 
 }
 
 fn get_branch_name(workspace: &str) -> Option<String> {
-    Command::new("git")
+    git_command()
         .args(["-C", workspace, "branch", "--show-current"])
         .output()
         .ok()
@@ -139,7 +149,7 @@ fn get_branch_name(workspace: &str) -> Option<String> {
                 Some(s)
             } else {
                 // If in detached HEAD state, get short commit hash
-                Command::new("git")
+                git_command()
                     .args(["-C", workspace, "rev-parse", "--short", "HEAD"])
                     .output()
                     .ok()
@@ -188,7 +198,7 @@ fn run_git_diff(workspace: &str, file_rel_path: Option<&str>) -> std::result::Re
         args.push(file);
     }
 
-    let out = Command::new("git")
+    let out = git_command()
         .args(&args)
         .output()
         .map_err(|e| format!("failed to spawn git diff: {e}"))?;
@@ -211,7 +221,7 @@ fn run_git_diff(workspace: &str, file_rel_path: Option<&str>) -> std::result::Re
             unstaged_args.push("--");
             unstaged_args.push(file);
         }
-        let unstaged_out = Command::new("git")
+        let unstaged_out = git_command()
             .args(&unstaged_args)
             .output()
             .map_err(|e| format!("failed to spawn git diff: {e}"))?;
@@ -236,7 +246,7 @@ fn run_git_diff(workspace: &str, file_rel_path: Option<&str>) -> std::result::Re
             cached_args.push("--");
             cached_args.push(file);
         }
-        let cached_out = Command::new("git")
+        let cached_out = git_command()
             .args(&cached_args)
             .output()
             .map_err(|e| format!("failed to spawn git diff --cached: {e}"))?;
@@ -258,7 +268,7 @@ fn run_git_diff(workspace: &str, file_rel_path: Option<&str>) -> std::result::Re
             unstaged_args.push("--");
             unstaged_args.push(file);
         }
-        let unstaged_out = Command::new("git")
+        let unstaged_out = git_command()
             .args(&unstaged_args)
             .output()
             .map_err(|e| format!("failed to spawn git diff: {e}"))?;
@@ -319,7 +329,7 @@ fn inspect_single_file(workspace: &str, target_path: &str) -> std::result::Resul
     }
 
     // Check git status specifically for this file to avoid false positives on clean or ignored files
-    let status_output = Command::new("git")
+    let status_output = git_command()
         .args(["-C", workspace, "status", "--porcelain=v1", "-z", "--", &rel_path])
         .output()
         .map_err(|e| format!("git status failed: {e}"))?;
@@ -419,7 +429,7 @@ fn get_diff_numstat(workspace: &str) -> HashMap<String, (usize, usize)> {
     let mut map = HashMap::new();
 
     // 1. Try HEAD numstat
-    let out = Command::new("git")
+    let out = git_command()
         .args(["-C", workspace, "diff", "HEAD", "--numstat", "-z"])
         .output();
 
@@ -431,7 +441,7 @@ fn get_diff_numstat(workspace: &str) -> HashMap<String, (usize, usize)> {
     if success {
         parse_numstat_z(&stdout, &mut map);
         // Also get unstaged numstat in case HEAD diff didn't capture something
-        if let Ok(unstaged_out) = Command::new("git")
+        if let Ok(unstaged_out) = git_command()
             .args(["-C", workspace, "diff", "--numstat", "-z"])
             .output()
         {
@@ -443,7 +453,7 @@ fn get_diff_numstat(workspace: &str) -> HashMap<String, (usize, usize)> {
     }
 
     // If HEAD failed (e.g. empty repo), try cached and unstaged
-    if let Ok(cached_out) = Command::new("git")
+    if let Ok(cached_out) = git_command()
         .args(["-C", workspace, "diff", "--cached", "--numstat", "-z"])
         .output()
     {
@@ -451,7 +461,7 @@ fn get_diff_numstat(workspace: &str) -> HashMap<String, (usize, usize)> {
             parse_numstat_z(&cached_out.stdout, &mut map);
         }
     }
-    if let Ok(unstaged_out) = Command::new("git")
+    if let Ok(unstaged_out) = git_command()
         .args(["-C", workspace, "diff", "--numstat", "-z"])
         .output()
     {
@@ -543,7 +553,7 @@ fn parse_porcelain_z(raw_bytes: &[u8], numstat_map: &HashMap<String, (usize, usi
 
 fn inspect_all_changes(workspace: &str) -> std::result::Result<Value, String> {
     let branch = get_branch_name(workspace);
-    let status_output = Command::new("git")
+    let status_output = git_command()
         .args(["-C", workspace, "status", "--porcelain=v1", "-z"])
         .output()
         .map_err(|e| format!("git status failed: {e}"))?;
