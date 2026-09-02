@@ -49,7 +49,10 @@ pub(crate) fn render(call: &ToolCall, completed: bool) -> pb::ToolCall {
 }
 
 pub(crate) fn failure(call: &ToolCall) -> ToolCompletion {
-    let error = failure_message(&call.name);
+    failure_with_message(call, failure_message(&call.name))
+}
+
+pub(crate) fn failure_with_message(call: &ToolCall, error: String) -> ToolCompletion {
     let arguments = call
         .arguments
         .as_object()

@@ -1,7 +1,7 @@
 //! Records provider requests, responses, usage, and timing.
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
@@ -71,7 +71,6 @@ struct Inner {
     base_call: NewLlmCall,
     detailed: bool,
     attempt: Mutex<AttemptState>,
-    next_attempt: AtomicU32,
     next_generation: AtomicU64,
     finished: AtomicBool,
 }
@@ -120,7 +119,6 @@ impl CallRecorder {
                 base_call: call.clone(),
                 detailed: call.detailed,
                 attempt: Mutex::new(AttemptState::new(call.call_id.clone())),
-                next_attempt: AtomicU32::new(0),
                 next_generation: AtomicU64::new(0),
                 finished: AtomicBool::new(false),
             }),
@@ -282,34 +280,6 @@ impl CallRecorder {
 
     pub async fn cancelled(&self) -> Result<()> {
         self.finish("cancelled", None, None, None).await
-    }
-
-    pub async fn retry(
-        &self,
-        error: &crate::Error,
-        headers: serde_json::Value,
-        body: &serde_json::Value,
-    ) -> Result<()> {
-        self.failed(error).await?;
-
-        let attempt_number = self.inner.next_attempt.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut call = self.inner.base_call.clone();
-        call.call_id = format!("{}:retry-{attempt_number}", self.inner.base_call.call_id);
-        {
-            let mut attempt = self.inner.attempt.lock().await;
-            *attempt = AttemptState::new(call.call_id.clone());
-            self.inner.finished.store(false, Ordering::Release);
-            if let Err(error) = self.inner.store.start_llm_call(&call).await {
-                self.inner.finished.store(true, Ordering::Release);
-                return Err(error);
-            }
-        }
-
-        if let Err(error) = self.request(headers, body).await {
-            self.failed(&error).await?;
-            return Err(error);
-        }
-        Ok(())
     }
 
     async fn finish(

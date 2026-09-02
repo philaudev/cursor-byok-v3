@@ -50,9 +50,11 @@ impl App {
             plugin_runtime.clone(),
             config.app_version.clone(),
         )?;
+        let clients = crate::network::NetworkClients::new(store.clone());
         let provider = std::sync::Arc::new(ProviderRouter::new(
             store.clone(),
             plugins.clone(),
+            clients.clone(),
             config.provider_request_timeout,
             config.provider_stream_idle_timeout,
         ));
@@ -64,10 +66,16 @@ impl App {
             plugins.clone(),
             crate::config::managed_data_dir()?.join("rules"),
         );
-        let control =
-            control::ControlService::new(store.clone(), provider, plugin_runtime, plugins)?;
+        let control = control::ControlService::new(
+            store.clone(),
+            provider,
+            plugin_runtime,
+            plugins,
+            clients.clone(),
+            config.app_version.clone(),
+        )?;
         let harness = control.cursor_harness().clone();
-        let mut router = api::router(registry.clone())?;
+        let mut router = api::router(registry.clone(), clients)?;
         router = match &config.console {
             Some(ConsoleSource::Directory(directory)) => {
                 router.merge(control::web_router(control.clone(), directory))

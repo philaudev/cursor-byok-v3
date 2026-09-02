@@ -14,10 +14,10 @@ use crate::{
 };
 
 use super::{
-    apply_body_allowlist, apply_openai_prompt_cache_key, map_sse_error, merge_extra_params,
-    provider_event_error,
+    apply_body_allowlist, apply_openai_prompt_cache_key,
+    attempt::{send_once, Attempt},
+    map_sse_error, merge_extra_params, provider_event_error,
     recorder::recorded_headers,
-    retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
 };
 
@@ -89,15 +89,12 @@ impl Provider for OpenAiResponsesProvider {
             if let Some(recorder) = &recorder {
                 recorder.request(request_headers.clone(), &body).await?;
             }
-            let attempt = send_with_retry(
+            let attempt = send_once(
                 "OpenAI Responses",
                 || client.post(&config.request_url)
                     .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body),
-                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
-                request_headers,
-                &body,
             ).await?;
             let Attempt::Response(response) = attempt else { return };
             yield ModelEvent::Start { model_call_id: call_id };
@@ -423,7 +420,12 @@ fn responses_input(messages: &[ProjectedMessage]) -> Result<Vec<Value>> {
                         .ok_or_else(|| {
                             Error::Protocol("OpenAI Responses replay state is missing items".into())
                         })?;
-                    input.extend(items.iter().cloned());
+                    input.extend(
+                        items
+                            .iter()
+                            .map(response_reasoning_input)
+                            .collect::<Result<Vec<_>>>()?,
+                    );
                 }
                 push_responses_text(&mut input, &message.role, text);
                 for call in calls {
@@ -438,6 +440,23 @@ fn responses_input(messages: &[ProjectedMessage]) -> Result<Vec<Value>> {
         }
     }
     Ok(input)
+}
+
+fn response_reasoning_input(item: &Value) -> Result<Value> {
+    let source = item
+        .as_object()
+        .filter(|object| object.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .ok_or_else(|| {
+            Error::Protocol("OpenAI Responses replay state contains a non-reasoning item".into())
+        })?;
+    let mut projected = Map::new();
+    projected.insert("type".into(), json!("reasoning"));
+    for field in ["id", "summary", "content", "encrypted_content"] {
+        if let Some(value) = source.get(field) {
+            projected.insert(field.into(), value.clone());
+        }
+    }
+    Ok(Value::Object(projected))
 }
 
 fn push_responses_parts(input: &mut Vec<Value>, role: &Role, parts: &[ContentPart]) -> Result<()> {
@@ -522,6 +541,7 @@ fn responses_usage(value: &Value) -> Usage {
 
     Usage {
         input_tokens,
+        context_input_tokens: prompt_tokens,
         output_tokens: value
             .get("output_tokens")
             .or_else(|| value.get("completion_tokens"))
@@ -536,12 +556,17 @@ fn responses_usage(value: &Value) -> Usage {
             .and_then(Value::as_u64),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::*;
     use super::{responses_input, update_response_tool, ResponseToolArguments, ResponseToolState};
-    use crate::model::{ContentPart, ProjectedContent, ProjectedMessage, Role, ToolResultContent};
+    use crate::model::{
+        ContentPart, ProjectedContent, ProjectedMessage, ProviderReplayState, Role,
+        ToolResultContent,
+    };
     use crate::provider::ModelEvent;
 
     #[test]
@@ -662,5 +687,43 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(20));
         assert_eq!(usage.total_tokens, Some(100));
         assert_eq!(usage.reasoning_tokens, Some(10));
+    }
+
+    #[test]
+    fn reasoning_replay_projects_response_items_to_valid_input_items() {
+        let messages = [ProjectedMessage {
+            message_id: "assistant-1".into(),
+            role: Role::Assistant,
+            content: ProjectedContent::Assistant {
+                text: String::new(),
+                thinking: String::new(),
+                replay_state: Some(ProviderReplayState {
+                    provider_kind: "openai_responses".into(),
+                    value: json!({
+                        "items": [{
+                            "type": "reasoning",
+                            "id": "item-1",
+                            "status": "completed",
+                            "summary": [{"type": "summary_text", "text": "why"}],
+                            "content": [],
+                            "encrypted_content": "opaque",
+                            "output_only": true
+                        }]
+                    }),
+                }),
+                calls: Vec::new(),
+            },
+        }];
+
+        assert_eq!(
+            responses_input(&messages).unwrap(),
+            vec![json!({
+                "type": "reasoning",
+                "id": "item-1",
+                "summary": [{"type": "summary_text", "text": "why"}],
+                "content": [],
+                "encrypted_content": "opaque"
+            })]
+        );
     }
 }

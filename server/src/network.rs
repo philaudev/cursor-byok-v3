@@ -1,64 +1,90 @@
-//! Provides shared network client and transport configuration.
-//! Outbound HTTP clients configured from persisted application proxy settings.
+//! Owns reusable outbound HTTP clients configured from persisted proxy settings.
 
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 
-use crate::{store::ProxySettingsSecret, store::Store, Result};
+use crate::{store::Store, Result};
 
-#[derive(Clone, Default)]
-pub struct HttpClientManager {
-    cached: Arc<RwLock<Option<(ProxySettingsSecret, Duration, reqwest::Client)>>>,
-    build_count: Arc<AtomicUsize>,
+#[derive(Clone)]
+pub struct NetworkClients {
+    store: Store,
+    cache: Arc<RwLock<ClientCache>>,
 }
 
-impl HttpClientManager {
-    pub fn new() -> Self {
+#[derive(Default)]
+struct ClientCache {
+    default: Option<reqwest::Client>,
+    cursor: Option<reqwest::Client>,
+    provider: Option<(Duration, reqwest::Client)>,
+}
+
+impl NetworkClients {
+    pub fn new(store: Store) -> Self {
         Self {
-            cached: Arc::new(RwLock::new(None)),
-            build_count: Arc::new(AtomicUsize::new(0)),
+            store,
+            cache: Arc::new(RwLock::new(ClientCache::default())),
         }
     }
 
-    pub async fn client(&self, store: &Store, timeout: Duration) -> Result<reqwest::Client> {
-        let settings = store.proxy_settings_secret().await?;
-        {
-            let guard = self.cached.read();
-            if let Some((cached_settings, cached_timeout, client)) = &*guard {
-                if cached_settings == &settings && *cached_timeout == timeout {
-                    return Ok(client.clone());
-                }
-            }
+    pub async fn default_client(&self) -> Result<reqwest::Client> {
+        if let Some(client) = self.cache.read().await.default.clone() {
+            return Ok(client);
         }
-
-        let mut builder = reqwest::Client::builder().timeout(timeout);
-        if settings.mode.is_custom() {
-            let mut proxy = reqwest::Proxy::all(&settings.address)?;
-            if settings.auth_enabled {
-                proxy = proxy.basic_auth(&settings.username, &settings.password);
-            }
-            builder = builder.no_proxy().proxy(proxy);
+        let mut cache = self.cache.write().await;
+        if let Some(client) = cache.default.clone() {
+            return Ok(client);
         }
-        let client = builder.build()?;
-        self.build_count.fetch_add(1, Ordering::Relaxed);
-        let mut guard = self.cached.write();
-        *guard = Some((settings, timeout, client.clone()));
+        let client = client_builder(&self.store).await?.build()?;
+        cache.default = Some(client.clone());
         Ok(client)
     }
 
-    pub fn invalidate(&self) {
-        let mut guard = self.cached.write();
-        *guard = None;
+    pub async fn cursor_client(&self) -> Result<reqwest::Client> {
+        if let Some(client) = self.cache.read().await.cursor.clone() {
+            return Ok(client);
+        }
+        let mut cache = self.cache.write().await;
+        if let Some(client) = cache.cursor.clone() {
+            return Ok(client);
+        }
+        let client = client_builder(&self.store)
+            .await?
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        cache.cursor = Some(client.clone());
+        Ok(client)
     }
 
-    #[cfg(test)]
-    fn build_count(&self) -> usize {
-        self.build_count.load(Ordering::Relaxed)
+    pub async fn provider_client(&self, timeout: Duration) -> Result<reqwest::Client> {
+        if let Some((_, client)) = self
+            .cache
+            .read()
+            .await
+            .provider
+            .as_ref()
+            .filter(|(cached_timeout, _)| *cached_timeout == timeout)
+        {
+            return Ok(client.clone());
+        }
+        let mut cache = self.cache.write().await;
+        if let Some((_, client)) = cache
+            .provider
+            .as_ref()
+            .filter(|(cached_timeout, _)| *cached_timeout == timeout)
+        {
+            return Ok(client.clone());
+        }
+        let client = client_builder(&self.store)
+            .await?
+            .timeout(timeout)
+            .build()?;
+        cache.provider = Some((timeout, client.clone()));
+        Ok(client)
+    }
+
+    pub async fn invalidate(&self) {
+        *self.cache.write().await = ClientCache::default();
     }
 }
 
@@ -105,27 +131,6 @@ mod tests {
     use crate::store::{ProxyMode, ProxySettingsInput};
 
     use super::*;
-
-    #[tokio::test]
-    async fn http_client_manager_reuses_client_instance_when_settings_unchanged() {
-        let store = Store::connect("sqlite::memory:").await.unwrap();
-        let manager = HttpClientManager::new();
-        let _client1 = manager
-            .client(&store, Duration::from_secs(30))
-            .await
-            .unwrap();
-        let _client2 = manager
-            .client(&store, Duration::from_secs(30))
-            .await
-            .unwrap();
-        assert_eq!(manager.build_count(), 1);
-
-        let _client3 = manager
-            .client(&store, Duration::from_secs(31))
-            .await
-            .unwrap();
-        assert_eq!(manager.build_count(), 2);
-    }
 
     #[tokio::test]
     async fn custom_proxy_applies_to_async_and_blocking_clients() {

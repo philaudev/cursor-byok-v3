@@ -184,7 +184,11 @@ pub async fn append(
     request: DecodedAppend,
     parent: Option<TransportParent>,
 ) -> Result<ai::BidiAppendResponse> {
-    let handle = registry.get_or_create(&request.request_id).await?;
+    let replace_closing = request.model_id().is_some();
+    let handle = registry
+        .get_or_create_for_append(&request.request_id, replace_closing)
+        .await?;
+    let _admission = handle.admit()?;
     if let Some(conversation_id) = request.conversation_id() {
         handle.set_conversation_id(conversation_id)?;
     }

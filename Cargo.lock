@@ -1172,10 +1172,11 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "cursor-byok-desktop"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "cursor-server",
+ "libc",
  "rfd",
  "serde",
  "serde_json",
@@ -1187,12 +1188,15 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "windows-sys 0.61.2",
+ "zip",
 ]
 
 [[package]]

@@ -18,13 +18,11 @@ use super::{
     OpenAiChatProvider, OpenAiResponsesProvider, Provider, ProviderStream,
 };
 
-const BUILTIN_PROVIDER_RETRIES: u32 = 5;
-
 pub struct ProviderRouter {
     store: Store,
     plugins: PluginRegistry,
+    clients: crate::network::NetworkClients,
     request_timeout: Duration,
-    http_client: crate::network::HttpClientManager,
     stream_idle_timeout: Duration,
 }
 
@@ -32,14 +30,15 @@ impl ProviderRouter {
     pub fn new(
         store: Store,
         plugins: PluginRegistry,
+        clients: crate::network::NetworkClients,
         request_timeout: Duration,
         stream_idle_timeout: Duration,
     ) -> Self {
         Self {
             store,
             plugins,
+            clients,
             request_timeout,
-            http_client: crate::network::HttpClientManager::new(),
             stream_idle_timeout,
         }
     }
@@ -53,9 +52,9 @@ impl Provider for ProviderRouter {
     ) -> ProviderStream {
         let store = self.store.clone();
         let plugins = self.plugins.clone();
+        let clients = self.clients.clone();
         let request_timeout = self.request_timeout;
         let stream_idle_timeout = self.stream_idle_timeout;
-        let http_client = self.http_client.clone();
         Box::pin(try_stream! {
             let selected = invocation.request.model.model_id.clone();
             // 两条分支只负责装配 Recorder 与 Provider 流;
@@ -67,17 +66,14 @@ impl Provider for ProviderRouter {
                     let plan = plugins.plan_model(&selected).await?;
                     let recorder = start_recorder(&store, &invocation, &selected, &plan.model.display_name, ProviderType::Plugin, &plan.request_url, &plan.model.model_id).await?;
                     let guard = recorder.cancel_on_drop();
-                    recorder.request(serde_json::json!({}), &crate::plugin::plugin_llm_request(&invocation)?).await?;
                     let mut routed = invocation.clone();
                     routed.request.model.display_name = Some(plan.model.display_name.clone());
-                    if let Some(tokens) = plan.model.context_window_tokens {
-                        routed.request.model.context_window_tokens.get_or_insert(tokens);
-                    }
                     if let Some(tokens) = plan.model.max_output_tokens {
                         routed.request.model.max_output_tokens.get_or_insert(tokens);
                     }
                     let provider: Arc<dyn Provider> = Arc::new(NormalizedProvider::new(Arc::new(PluginModelProvider {
                         registry: plugins.clone(),
+                        recorder: recorder.clone(),
                     })));
                     (recorder, guard, provider.stream(routed, cancellation.clone()))
                 } else {
@@ -97,10 +93,9 @@ impl Provider for ProviderRouter {
                         custom_headers: if model.custom_headers_enabled { custom_headers(&model.custom_headers)? } else { reqwest::header::HeaderMap::new() },
                         max_output_tokens: model.max_output_tokens(),
                         request_timeout,
-                        retry_count: BUILTIN_PROVIDER_RETRIES,
                         allowed_body_fields: None,
                     };
-                    let client = http_client.client(&store, config.request_timeout).await?;
+                    let client = clients.provider_client(request_timeout).await?;
                     let provider = build_observed(&config, recorder.clone(), client)?;
                     (recorder, guard, provider.stream(routed, cancellation.clone()))
                 };
@@ -237,6 +232,7 @@ async fn finish_stream(recorder: &CallRecorder, cancellation: &CancellationToken
 /// 插件模型的 Provider 实现;对路由与规范化层完全等同于内置 Provider。
 struct PluginModelProvider {
     registry: PluginRegistry,
+    recorder: CallRecorder,
 }
 
 impl Provider for PluginModelProvider {
@@ -245,7 +241,8 @@ impl Provider for PluginModelProvider {
         invocation: ModelInvocation,
         cancellation: CancellationToken,
     ) -> ProviderStream {
-        self.registry.stream_model(invocation, cancellation)
+        self.registry
+            .stream_model(invocation, cancellation, self.recorder.clone())
     }
 }
 

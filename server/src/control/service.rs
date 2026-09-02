@@ -41,6 +41,8 @@ pub struct ControlService {
     provider: Arc<dyn Provider>,
     plugin_runtime: PluginRuntime,
     plugins: PluginRegistry,
+    clients: crate::network::NetworkClients,
+    app_version: String,
     model_tests: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
 }
 
@@ -151,6 +153,8 @@ impl ControlService {
         provider: Arc<dyn Provider>,
         plugin_runtime: PluginRuntime,
         plugins: PluginRegistry,
+        clients: crate::network::NetworkClients,
+        app_version: String,
     ) -> Result<Self> {
         Ok(Self {
             cursor_harness: CursorHarness::new(store.clone())?,
@@ -158,6 +162,8 @@ impl ControlService {
             provider,
             plugin_runtime,
             plugins,
+            clients,
+            app_version,
             model_tests: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -256,13 +262,13 @@ impl ControlService {
         disabled_ad_ids: Option<&str>,
         language: &str,
     ) -> Result<AdRuntime> {
-        let client = crate::network::client(&self.store).await?;
+        let client = self.clients.default_client().await?;
         let installation_id = self.store.installation_id().await?;
         let mut request = client
             .get(ADS_ENDPOINT)
             .header(DEVICE_ID_HEADER, installation_id)
             .header(OS_HEADER, std::env::consts::OS)
-            .header(APP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
+            .header(APP_VERSION_HEADER, &self.app_version)
             .header(LANGUAGE_HEADER, language)
             .timeout(std::time::Duration::from_secs(60));
         if let Some(disabled_ad_ids) = disabled_ad_ids.filter(|value| !value.is_empty()) {
@@ -281,7 +287,7 @@ impl ControlService {
     }
 
     pub(super) async fn dismiss_ad(&self, ad_id: &str, input: &AdDismissalInput) -> Result<()> {
-        let client = crate::network::client(&self.store).await?;
+        let client = self.clients.default_client().await?;
         let installation_id = self.store.installation_id().await?;
         let mut endpoint = Url::parse(ADS_ENDPOINT).map_err(|error| {
             Error::Config(format!("advertisement endpoint is invalid: {error}"))
@@ -296,7 +302,7 @@ impl ControlService {
             .post(endpoint)
             .header(DEVICE_ID_HEADER, installation_id)
             .header(OS_HEADER, std::env::consts::OS)
-            .header(APP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
+            .header(APP_VERSION_HEADER, &self.app_version)
             .json(input)
             .timeout(std::time::Duration::from_secs(5))
             .send()
@@ -392,7 +398,6 @@ impl ControlService {
         if model_hash.starts_with(crate::plugin::ADAPTER_ID_PREFIX) {
             let descriptor = self.plugins.model_descriptor(model_hash).await?;
             model.display_name = Some(descriptor.display_name);
-            model.context_window_tokens = descriptor.context_window_tokens;
             model.max_output_tokens = Some(descriptor.max_output_tokens.unwrap_or(65_536));
         } else {
             let configured = self
@@ -514,7 +519,7 @@ impl ControlService {
     }
 
     pub async fn discover_models(&self, input: &ModelDiscoveryInput) -> Result<DiscoveredModels> {
-        let client = crate::network::client(&self.store).await?;
+        let client = self.clients.default_client().await?;
         let base_url = crate::model::normalize_request_url(&input.base_url)?;
         discover_models_from_endpoint(
             &client,
@@ -681,7 +686,9 @@ impl ControlService {
     }
 
     pub async fn set_proxy_settings(&self, settings: ProxySettingsInput) -> Result<ProxySettings> {
-        self.store.set_proxy_settings(settings).await
+        let settings = self.store.set_proxy_settings(settings).await?;
+        self.clients.invalidate().await;
+        Ok(settings)
     }
 
     pub async fn tab_settings(&self) -> Result<TabSettings> {

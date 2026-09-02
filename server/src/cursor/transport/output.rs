@@ -1,12 +1,11 @@
 //! Buffers, replays, broadcasts, and atomically closes downstream output.
 
 use bytes::Bytes;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 
 #[derive(Default)]
 pub struct OutputHub {
     state: parking_lot::Mutex<OutputState>,
-    closed: Notify,
 }
 
 #[derive(Default)]
@@ -49,17 +48,6 @@ impl OutputHub {
         state.closed = true;
         state.subscribers.clear();
         drop(state);
-        self.closed.notify_waiters();
         true
-    }
-
-    pub async fn wait_closed(&self) {
-        loop {
-            let notified = self.closed.notified();
-            if self.state.lock().closed {
-                return;
-            }
-            notified.await;
-        }
     }
 }

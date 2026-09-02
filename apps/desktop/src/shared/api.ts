@@ -235,9 +235,7 @@ export interface PluginModelDescriptor {
   description: string | null;
   icon: string;
   providerType: string;
-  contextWindowTokens: number | null;
   maxOutputTokens: number | null;
-  thinking: boolean;
   images: boolean;
 }
 

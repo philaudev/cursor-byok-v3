@@ -4,6 +4,24 @@ use serde_json::Value;
 
 use super::ProviderReplayState;
 
+pub fn normalize_tool_name(name: &str) -> String {
+    let normalized = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if normalized.is_empty() {
+        "_".into()
+    } else {
+        normalized
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
@@ -19,6 +37,7 @@ pub struct ToolCall {
     pub name: String,
     pub arguments_text: String,
     pub arguments: Value,
+    pub argument_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

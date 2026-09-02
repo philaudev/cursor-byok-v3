@@ -1,77 +1,82 @@
-//! Decides when to compact context and builds a stable fallback summary.
+//! Decides when to compact provider-visible context and builds a stable fallback summary.
 
 use std::collections::HashSet;
 
-use crate::model::{
-    CanonicalMessage, LlmCallUsageAnchor, PreparedRun, ProjectedMessage, RunAction,
+use crate::{
+    model::{
+        estimate_context_tokens, estimate_projected_messages_tokens, CanonicalMessage, PreparedRun,
+        ProjectedMessage,
+    },
+    store::ContextUsageAnchor,
 };
 
 const FALLBACK_CHARS: usize = 12_000;
 pub(super) const COMPACTION_RESERVE_TOKENS: u64 = 10_000;
 
+pub(super) const RESERVE_TOKENS: u64 = 10_000;
 pub(super) const OUTPUT_TOKENS: u64 = 4_096;
 pub(super) const INSTRUCTIONS: &str = "Summarize the conversation for the next model turn. Preserve goals, constraints, decisions, files, commands, errors, results, and unfinished work. Do not call tools. Return only the concise durable summary.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ContextUsageAnchor {
-    input_tokens: u64,
-    message_count: usize,
-    tool_count: usize,
+pub(super) fn input_budget(prepared: &PreparedRun) -> Option<u64> {
+    prepared
+        .model
+        .context_window_tokens
+        .map(|window| window.saturating_sub(RESERVE_TOKENS))
 }
 
-impl ContextUsageAnchor {
-    pub(super) fn from_llm_call(anchor: LlmCallUsageAnchor) -> Option<Self> {
-        Some(Self {
-            input_tokens: anchor.usage.context_input_tokens(anchor.request_type)?,
-            message_count: anchor.message_count,
-            tool_count: anchor.tool_count,
-        })
-    }
-}
-
-pub(super) fn should_compact(
+pub(super) fn estimated_tokens(
     prepared: &PreparedRun,
-    messages: &[CanonicalMessage],
     projected_messages: &[ProjectedMessage],
     anchor: Option<ContextUsageAnchor>,
-    checkpoint_context_tokens: Option<u64>,
-) -> bool {
-    if prepared.action != RunAction::Start {
-        return false;
-    }
-    let Some(context_window) = prepared.model.context_window_tokens else {
-        return false;
-    };
-    if context_window == 0 || messages.len() <= prepared.initial_messages.len() {
-        return false;
-    }
-    let budget = context_window.saturating_sub(COMPACTION_RESERVE_TOKENS);
-    let estimated_input = anchor
-        .filter(|anchor| {
-            anchor.message_count <= projected_messages.len()
-                && anchor.tool_count == prepared.prompt.tools.len()
-        })
+) -> u64 {
+    anchor
+        .filter(|anchor| anchor.message_count <= projected_messages.len())
         .map(|anchor| {
             anchor
-                .input_tokens
-                .saturating_add(estimate_serialized_tokens(
-                    &serde_json::to_string(&projected_messages[anchor.message_count..])
-                        .unwrap_or_default(),
+                .context_input_tokens
+                .saturating_add(estimate_projected_messages_tokens(
+                    &projected_messages[anchor.message_count..],
                 ))
         })
-        .or_else(|| {
-            checkpoint_context_tokens.map(|tokens| {
-                tokens.saturating_add(estimate_serialized_tokens(
-                    &serde_json::to_string(&prepared.initial_messages).unwrap_or_default(),
-                ))
-            })
-        })
-        .unwrap_or_else(|| {
-            estimate_serialized_tokens(
-                &serde_json::to_string(&(&prepared.prompt, messages)).unwrap_or_default(),
-            )
-        });
-    estimated_input >= budget
+        .unwrap_or_else(|| estimate_context_tokens(&prepared.prompt, projected_messages))
+}
+
+pub(super) fn compaction_estimate(
+    prepared: &PreparedRun,
+    projected_messages: &[ProjectedMessage],
+    anchor: Option<ContextUsageAnchor>,
+) -> Option<u64> {
+    let budget = input_budget(prepared)?;
+    let estimated = estimated_tokens(prepared, projected_messages, anchor);
+    (estimated > budget).then_some(estimated)
+}
+
+#[cfg(test)]
+pub(super) fn should_compact(
+    prepared: &PreparedRun,
+    projected_messages: &[ProjectedMessage],
+    anchor: Option<ContextUsageAnchor>,
+) -> bool {
+    compaction_estimate(prepared, projected_messages, anchor).is_some()
+}
+
+pub(super) fn validate_compacted(
+    prepared: &PreparedRun,
+    projected_messages: &[ProjectedMessage],
+) -> std::result::Result<u64, String> {
+    let estimated = estimate_context_tokens(&prepared.prompt, projected_messages);
+    let Some(budget) = input_budget(prepared) else {
+        return Ok(estimated);
+    };
+    if estimated <= budget {
+        return Ok(estimated);
+    }
+    if estimated <= budget {
+        return Ok(estimated);
+    }
+    Err(format!(
+        "context overflow after compaction: estimated input {estimated} tokens exceeds budget {budget} tokens"
+    ))
 }
 
 pub(super) fn partition(
@@ -110,28 +115,18 @@ pub(super) fn fallback_summary(messages: &[CanonicalMessage]) -> String {
     )
 }
 
-fn estimate_serialized_tokens(serialized: &str) -> u64 {
-    serialized
-        .chars()
-        .fold(0_u64, |units, character| {
-            units.saturating_add(if character.is_ascii() { 273 } else { 550 })
-        })
-        .div_ceil(1_000)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{
-        project_messages, CheckpointId, ConversationId, ModelSpec, Origin, PromptSpec, Role, RunId,
-        RunKind,
+        project_messages, CheckpointId, ConversationId, ModelSpec, Origin, PromptSpec, Role,
+        RunAction, RunId, RunKind,
     };
 
-    #[test]
-    fn automatic_compaction_starts_only_after_the_context_window_is_exceeded() {
+    fn prepared(context_window_tokens: u64) -> PreparedRun {
         let mut model = ModelSpec::new("model");
-        model.context_window_tokens = Some(200_000);
-        let prepared = PreparedRun {
+        model.context_window_tokens = Some(context_window_tokens);
+        PreparedRun {
             run_id: RunId::new("run"),
             cursor_request_id: None,
             conversation_id: ConversationId::new("conversation"),
@@ -149,43 +144,133 @@ mod tests {
             initial_messages: Vec::new(),
             action: RunAction::Start,
             base_checkpoint_id: CheckpointId(1),
-        };
+        }
+    }
+
+    #[test]
+    fn automatic_compaction_uses_fixed_reserve_for_every_action() {
         let messages = vec![CanonicalMessage::text(
             "user",
             Role::User,
             Origin::Runtime,
-            "hello",
+            "x".repeat(40_000),
         )];
         let projected = project_messages(&messages).unwrap();
-        let tail_tokens = estimate_serialized_tokens(&serde_json::to_string(&projected).unwrap());
-        let anchor = |estimated_input| {
-            Some(ContextUsageAnchor {
-                input_tokens: estimated_input - tail_tokens,
-                message_count: 0,
-                tool_count: 0,
-            })
-        };
+        let estimated = estimate_context_tokens(&prepared(1).prompt, &projected);
+        let mut prepared = prepared(estimated + RESERVE_TOKENS);
 
+        assert!(!should_compact(&prepared, &projected, None));
+        prepared.model.context_window_tokens = Some(estimated + RESERVE_TOKENS - 1);
+        assert!(should_compact(&prepared, &projected, None));
+
+        prepared.action = RunAction::Resume {
+            pending_tool_round: None,
+        };
+        assert!(should_compact(&prepared, &projected, None));
+    }
+
+    #[test]
+    fn provider_usage_anchor_only_estimates_messages_added_after_last_request() {
+        let messages = vec![
+            CanonicalMessage::text("old", Role::User, Origin::Runtime, "x".repeat(400_000)),
+            CanonicalMessage::text("new", Role::User, Origin::Runtime, "short follow-up"),
+        ];
+        let projected = project_messages(&messages).unwrap();
+        let anchor = ContextUsageAnchor {
+            context_input_tokens: 103_904,
+            message_count: 1,
+        };
+        let expected = 103_904 + estimate_projected_messages_tokens(&projected[1..]);
+
+        assert_eq!(
+            estimated_tokens(&prepared(200_000), &projected, Some(anchor)),
+            expected
+        );
         assert!(!should_compact(
-            &prepared,
-            &messages,
+            &prepared(200_000),
             &projected,
-            anchor(189_999),
-            None,
+            Some(anchor),
         ));
+    }
+
+    #[test]
+    fn provider_usage_anchor_triggers_after_new_messages_cross_budget() {
+        let messages = vec![
+            CanonicalMessage::text("old", Role::User, Origin::Runtime, "old"),
+            CanonicalMessage::text("new", Role::User, Origin::Runtime, "x".repeat(80_000)),
+        ];
+        let projected = project_messages(&messages).unwrap();
+
         assert!(should_compact(
-            &prepared,
-            &messages,
+            &prepared(200_000),
             &projected,
-            anchor(190_000),
-            None,
+            Some(ContextUsageAnchor {
+                context_input_tokens: 180_000,
+                message_count: 1,
+            })
         ));
-        assert!(should_compact(
-            &prepared,
-            &messages,
-            &projected,
-            anchor(200_001),
-            None,
-        ));
+    }
+
+    #[test]
+    fn missing_anchor_uses_full_fallback() {
+        let messages = vec![CanonicalMessage::text(
+            "user",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(40_000),
+        )];
+        let projected = project_messages(&messages).unwrap();
+        let prepared = prepared(200_000);
+
+        assert_eq!(
+            estimated_tokens(&prepared, &projected, None),
+            estimate_context_tokens(&prepared.prompt, &projected)
+        );
+    }
+
+    #[test]
+    fn invalid_anchor_message_count_uses_full_fallback() {
+        let messages = vec![CanonicalMessage::text(
+            "user",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(40_000),
+        )];
+        let projected = project_messages(&messages).unwrap();
+        let expected = estimate_context_tokens(&prepared(200_000).prompt, &projected);
+
+        assert_eq!(
+            estimated_tokens(
+                &prepared(200_000),
+                &projected,
+                Some(ContextUsageAnchor {
+                    context_input_tokens: 1,
+                    message_count: 2,
+                })
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn compacted_history_is_validated_against_the_same_budget() {
+        let messages = vec![CanonicalMessage::text(
+            "user",
+            Role::User,
+            Origin::Runtime,
+            "x".repeat(40_000),
+        )];
+        let projected = project_messages(&messages).unwrap();
+        let estimated = estimate_context_tokens(&prepared(1).prompt, &projected);
+
+        assert_eq!(
+            validate_compacted(&prepared(estimated + RESERVE_TOKENS), &projected),
+            Ok(estimated)
+        );
+        assert!(
+            validate_compacted(&prepared(estimated + RESERVE_TOKENS - 1), &projected)
+                .unwrap_err()
+                .contains("context overflow after compaction")
+        );
     }
 }

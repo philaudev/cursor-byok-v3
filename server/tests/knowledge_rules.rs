@@ -106,7 +106,7 @@ async fn decode<M: Message + Default>(response: Response<Body>) -> M {
 #[tokio::test]
 async fn offline_crud_round_trip_persists_markdown() {
     let (_store_dir, store) = fixtures::temp_store().await;
-    let upstream = CursorProxy::cursor(store);
+    let upstream = CursorProxy::cursor(cursor_server::network::NetworkClients::new(store));
     let rules_dir = tempfile::tempdir().unwrap();
     let rules_root = rules_dir.path().join("rules");
     let service = KnowledgeService::with_root(rules_root.clone()).unwrap();
@@ -193,7 +193,7 @@ async fn offline_crud_round_trip_persists_markdown() {
 #[tokio::test]
 async fn updating_missing_rule_reports_failure() {
     let (_store_dir, store) = fixtures::temp_store().await;
-    let upstream = CursorProxy::cursor(store);
+    let upstream = CursorProxy::cursor(cursor_server::network::NetworkClients::new(store));
     let rules_dir = tempfile::tempdir().unwrap();
     let service = KnowledgeService::with_root(rules_dir.path().join("rules")).unwrap();
 

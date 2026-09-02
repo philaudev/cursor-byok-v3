@@ -438,6 +438,85 @@ async fn runtime_cancel_action_aborts_active_exec_before_canceled_end_stream() {
 }
 
 #[tokio::test]
+async fn queued_user_message_after_turn_ended_starts_the_next_turn() {
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(text_response("first turn"));
+    provider.push(text_response("queued turn"));
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = TransportRegistry::new(
+        store,
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+    );
+    let handle = registry.get_or_create("queued-after-turn").await.unwrap();
+    let mut output = handle.subscribe();
+    handle
+        .command(TransportCommand::Append {
+            seqno: 0,
+            message: Box::new(client_run_for(
+                "queued-after-turn",
+                "queued-after-turn-conversation",
+            )),
+        })
+        .await
+        .unwrap();
+
+    let mut append_seqno = 1;
+    wait_for_turn_ended(&handle, &mut output, &mut append_seqno).await;
+    assert_transport_remains_open(&handle, &mut output, &mut append_seqno).await;
+
+    cursor_server::api::cursor::bidi::append(
+        &registry,
+        cursor_server::api::cursor::bidi::DecodedAppend {
+            request_id: "queued-after-turn".into(),
+            seqno: append_seqno,
+            message: runtime_user_message(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    append_seqno += 1;
+
+    let mut text = String::new();
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .expect("queued turn closed without EndStream");
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            assert_eq!(payload.as_ref(), b"{}");
+            break;
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        if let Some(pb::agent_server_message::Message::InteractionUpdate(update)) = server.message {
+            if let Some(pb::interaction_update::Message::TextDelta(delta)) = update.message {
+                text.push_str(&delta.text);
+            }
+        }
+        acknowledge_kv(&handle, &mut append_seqno, &frame).await;
+    }
+
+    assert!(text.contains("queued turn"));
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        &requests[1].history[..requests[0].history.len()],
+        requests[0].history.as_slice(),
+        "queued continuation must preserve the first provider request as a prefix"
+    );
+    let history = serde_json::to_string(&requests[1].history).unwrap();
+    assert!(history.contains("queued follow-up"));
+}
+
+#[tokio::test]
 async fn runtime_user_message_action_interrupts_and_continues_with_new_message() {
     let (_directory, store) = fixtures::temp_store().await;
     let provider = fake_provider::FakeProvider::default();
@@ -519,6 +598,184 @@ async fn runtime_user_message_action_interrupts_and_continues_with_new_message()
     assert_eq!(provider.requests().len(), 2);
     let history = serde_json::to_string(&provider.requests()[1].history).unwrap();
     assert!(history.contains("queued follow-up"));
+}
+
+#[tokio::test]
+async fn runtime_user_message_reports_delivered_and_appended() {
+    // A runtime user message is queued into `pending_injections` under a
+    // `user-message:{id}` key, but the commit correlation only handled the
+    // `inject-context:` prefix, so the entry was never cleared: the client
+    // never saw Delivered/UserMessageAppended and every later tool round was
+    // detached (a hang). This asserts the full delivery sequence.
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push_pending();
+    provider.push(text_response("continued after user interruption"));
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = TransportRegistry::new(
+        store,
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+    );
+    let handle = registry
+        .get_or_create("user-message-events-request")
+        .await
+        .unwrap();
+    let mut output = handle.subscribe();
+    handle
+        .command(TransportCommand::Append {
+            seqno: 0,
+            message: Box::new(client_run_for(
+                "user-message-events-request",
+                "user-message-events-conversation",
+            )),
+        })
+        .await
+        .unwrap();
+
+    let mut append_seqno = 1;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while provider.requests().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "provider did not start"
+        );
+        if let Ok(Some(frame)) =
+            tokio::time::timeout(std::time::Duration::from_millis(20), output.recv()).await
+        {
+            acknowledge_kv(&handle, &mut append_seqno, &frame).await;
+        }
+    }
+    handle
+        .command(TransportCommand::Append {
+            seqno: append_seqno,
+            message: Box::new(runtime_user_message()),
+        })
+        .await
+        .unwrap();
+    append_seqno += 1;
+
+    let mut protocol_events = Vec::new();
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .expect("RunSSE closed before successful EndStream");
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            assert_eq!(payload.as_ref(), b"{}");
+            break;
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        if let Some(pb::agent_server_message::Message::InteractionUpdate(update)) = server.message {
+            match update.message {
+                Some(pb::interaction_update::Message::ContextInjectionState(update)) => {
+                    assert_eq!(update.injection_id, "user-message:queued-user");
+                    match update.state.and_then(|state| state.state) {
+                        Some(pb::context_injection_state::State::Queued(_)) => {
+                            protocol_events.push("queued")
+                        }
+                        Some(pb::context_injection_state::State::Delivered(delivered)) => {
+                            assert!(!delivered.delivery_batch_id.is_empty());
+                            assert!(delivered.delivered_at_ms > 0);
+                            protocol_events.push("delivered");
+                        }
+                        _ => {}
+                    }
+                }
+                Some(pb::interaction_update::Message::UserMessageAppended(update)) => {
+                    let user = update.user_message.expect("appended user message");
+                    assert_eq!(user.message_id, "queued-user");
+                    assert_eq!(user.text, "queued follow-up");
+                    protocol_events.push("user_message_appended");
+                }
+                Some(pb::interaction_update::Message::TextDelta(update))
+                    if update.text.contains("continued after user interruption") =>
+                {
+                    protocol_events.push("continued_output");
+                }
+                _ => {}
+            }
+        }
+        acknowledge_kv(&handle, &mut append_seqno, &frame).await;
+    }
+
+    assert_eq!(
+        protocol_events,
+        [
+            "queued",
+            "delivered",
+            "user_message_appended",
+            "continued_output"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn tool_call_with_empty_arguments_does_not_fail_the_run() {
+    // A tool call that carries no arguments streams no argument text. Parsing it
+    // as JSON must yield an empty object (as the model cycle already does), not
+    // fail the run with `EOF while parsing a value`.
+    let (_directory, store) = fixtures::temp_store().await;
+    let provider = fake_provider::FakeProvider::default();
+    provider.push(tool_response("call-1", "UpdateCurrentStep", ""));
+    provider.push(text_response("done after empty-argument tool"));
+    let assets = PromptAssets::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("prompt/cursor")
+            .as_path(),
+    )
+    .unwrap();
+    let registry = TransportRegistry::new(
+        store,
+        Arc::new(provider.clone()),
+        PromptCompiler::new(assets),
+    );
+    let handle = registry.get_or_create("empty-args-request").await.unwrap();
+    let mut output = handle.subscribe();
+    handle
+        .command(TransportCommand::Append {
+            seqno: 0,
+            message: Box::new(client_run_for(
+                "empty-args-request",
+                "empty-args-conversation",
+            )),
+        })
+        .await
+        .unwrap();
+
+    let mut append_seqno = 1;
+    let mut saw_done = false;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .expect("RunSSE closed before successful EndStream");
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        if flags & connect::END_STREAM_FLAG != 0 {
+            assert_eq!(
+                payload.as_ref(),
+                b"{}",
+                "run failed: {}",
+                String::from_utf8_lossy(&payload)
+            );
+            break;
+        }
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        if let Some(pb::agent_server_message::Message::InteractionUpdate(update)) = server.message {
+            if let Some(pb::interaction_update::Message::TextDelta(delta)) = update.message {
+                saw_done |= delta.text.contains("done after empty-argument tool");
+            }
+        }
+        acknowledge_kv(&handle, &mut append_seqno, &frame).await;
+    }
+    assert!(saw_done);
+    assert_eq!(provider.requests().len(), 2);
 }
 
 #[tokio::test]
@@ -858,7 +1115,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
             custom_headers: serde_json::json!({}),
             anthropic_extra_params_enabled: false,
             anthropic_extra_params: serde_json::json!({}),
-            context_window_tokens: Some(10_001),
+            context_window_tokens: Some(100_000),
             max_completion_tokens: None,
             anthropic_max_tokens: None,
             anthropic_thinking_effort: None,
@@ -867,7 +1124,8 @@ async fn injected_user_context_interrupts_automatic_compaction() {
         .await
         .unwrap();
     let provider = fake_provider::FakeProvider::default();
-    provider.push(text_response("seed answer"));
+    let seed_answer = "x".repeat(400_000);
+    provider.push(text_response(&seed_answer));
     provider.push_pending();
     provider.push(text_response("continued after compacting injection"));
     let assets = PromptAssets::load(
@@ -882,7 +1140,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
         PromptCompiler::new(assets),
     );
 
-    let seed_state = run_to_end(
+    run_to_end(
         &registry,
         "seed-request",
         client_run_for_model(
@@ -902,7 +1160,7 @@ async fn injected_user_context_interrupts_automatic_compaction() {
         "inject-during-compaction",
         "compaction-injection-conversation",
         &model.model_hash,
-        Some(seed_state),
+        None,
     );
     let Some(pb::agent_client_message::Message::RunRequest(request)) =
         compacting_request.message.as_mut()
@@ -912,9 +1170,17 @@ async fn injected_user_context_interrupts_automatic_compaction() {
     request.requested_model.as_mut().unwrap().parameters.push(
         pb::requested_model::ModelParameterValue {
             id: "context".into(),
-            value: "10001".into(),
+            value: "100000".into(),
         },
     );
+    let Some(pb::conversation_action::Action::UserMessageAction(action)) = request
+        .action
+        .as_mut()
+        .and_then(|action| action.action.as_mut())
+    else {
+        panic!("expected UserMessageAction")
+    };
+    action.user_message.as_mut().unwrap().message_id = "compaction-user".into();
     handle
         .command(TransportCommand::Append {
             seqno: 0,
@@ -970,10 +1236,19 @@ async fn injected_user_context_interrupts_automatic_compaction() {
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 3);
-    assert!(requests[1]
-        .prompt
-        .instructions
-        .starts_with("You are compacting conversation history for future model turns."));
+    assert!(
+        requests[1]
+            .prompt
+            .instructions
+            .starts_with("You are compacting conversation history for future model turns.")
+            || requests[1]
+                .prompt
+                .instructions
+                .starts_with("Summarize the conversation for the next model turn."),
+        "second request was not compaction: instructions={:?}, history={:?}",
+        requests[1].prompt.instructions,
+        requests[1].history
+    );
     assert!(!serde_json::to_string(&requests[1].history)
         .unwrap()
         .contains("injected follow-up"));
@@ -1403,6 +1678,7 @@ fn text_response(text: &str) -> Vec<ModelEvent> {
         ModelEvent::TextEnd,
         ModelEvent::Usage(Usage {
             input_tokens: Some(1),
+            context_input_tokens: Some(1),
             output_tokens: Some(1),
             total_tokens: Some(2),
             ..Default::default()
@@ -1551,6 +1827,55 @@ async fn run_to_end(
             state = Some(update);
         }
         acknowledge_kv(&handle, &mut append_seqno, &frame).await;
+    }
+}
+
+async fn wait_for_turn_ended(
+    handle: &cursor_server::cursor::TransportHandle,
+    output: &mut tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    append_seqno: &mut i64,
+) {
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), output.recv())
+            .await
+            .unwrap()
+            .expect("RunSSE closed before turnEnded");
+        let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        assert_eq!(flags & connect::END_STREAM_FLAG, 0);
+        let server = pb::AgentServerMessage::decode(payload).unwrap();
+        let turn_ended = matches!(
+            server.message,
+            Some(pb::agent_server_message::Message::InteractionUpdate(
+                pb::InteractionUpdate {
+                    message: Some(pb::interaction_update::Message::TurnEnded(_)),
+                }
+            ))
+        );
+        acknowledge_kv(handle, append_seqno, &frame).await;
+        if turn_ended {
+            return;
+        }
+    }
+}
+
+async fn assert_transport_remains_open(
+    handle: &cursor_server::cursor::TransportHandle,
+    output: &mut tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    append_seqno: &mut i64,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Some(frame)) = tokio::time::timeout(remaining, output.recv()).await else {
+            return;
+        };
+        let (flags, _) = connect::decode_frames(&frame).unwrap().pop().unwrap();
+        assert_eq!(
+            flags & connect::END_STREAM_FLAG,
+            0,
+            "turnEnded closed the transport before the queued action arrived"
+        );
+        acknowledge_kv(handle, append_seqno, &frame).await;
     }
 }
 

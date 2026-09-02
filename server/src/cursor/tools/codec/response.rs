@@ -3,7 +3,7 @@ use crate::{
     cursor::{
         protocol::{events, proto::agent::v1 as pb},
         tools::{
-            edit,
+            compat, edit,
             runtime::{BackgroundShellStatus, CursorToolRuntime, ExecStage, PendingExec},
             tool_call_result::{self as result, ToolCompletion},
         },
@@ -44,16 +44,15 @@ pub async fn client_event(
             return background_shell_event(message, pending).await;
         }
         None if pending.completed_call(message.id).await.is_some() => {
-            return Err(Error::Protocol(format!(
-                "duplicate terminal ExecClientMessage id: {}",
-                message.id
-            )))
+            tracing::warn!(id = message.id, "ignoring duplicate terminal tool response");
+            return Ok(ClientExecEvent::Pending);
         }
         None => {
-            return Err(Error::Protocol(format!(
-                "unknown ExecClientMessage id: {}",
-                message.id
-            )))
+            tracing::warn!(
+                id = message.id,
+                "ignoring response for unknown tool execution"
+            );
+            return Ok(ClientExecEvent::Pending);
         }
     };
     let Some(wire_result) = &message.message else {
@@ -270,7 +269,8 @@ pub async fn stream_closed_immediate(
         return Ok(None);
     };
     let error = "Cursor Exec stream closed before returning a terminal result";
-    if entry.call.name.eq_ignore_ascii_case("Shell") {
+    if entry.call.name.eq_ignore_ascii_case("Shell") || entry.call.name.eq_ignore_ascii_case("Bash")
+    {
         let command = entry
             .call
             .arguments
@@ -299,9 +299,22 @@ pub async fn stream_closed_immediate(
     }
     let rendered = match &entry.stage {
         ExecStage::DynamicMcp(definition) => {
-            super::render_dynamic_mcp(&entry.call, definition, false)
+            Ok(super::render_dynamic_mcp(&entry.call, definition, false))
         }
-        _ => super::render_tool_call(&entry.call, false)?,
+        _ => super::render_tool_call(&entry.call, false),
+    };
+    let rendered = match rendered {
+        Ok(rendered) => rendered,
+        Err(Error::Protocol(message)) => {
+            return Ok(Some(compat::failure_with_message(&entry.call, message)));
+        }
+        Err(Error::Json(error)) => {
+            return Ok(Some(compat::failure_with_message(
+                &entry.call,
+                error.to_string(),
+            )));
+        }
+        Err(error) => return Err(error),
     };
     Ok(Some(ToolCompletion::from_rendered(
         &entry.call,
@@ -525,10 +538,10 @@ async fn advance_edit(
         pb::exec_client_message::Message::ReadResult(result)
         | pb::exec_client_message::Message::RedactedReadResult(result) => result,
         _ => {
-            return Err(Error::Protocol(format!(
-                "expected ReadResult for edit tool {}",
-                entry.call.name
-            )))
+            let message = format!("expected ReadResult for edit tool {}", entry.call.name);
+            return Ok(ClientExecEvent::Completed(Box::new(
+                compat::failure_with_message(&entry.call, message),
+            )));
         }
     };
     let write = match edit::after_read(&entry.call, read) {
@@ -573,9 +586,14 @@ fn completed(
     pending: PendingExec,
     result: pb::exec_client_message::Message,
 ) -> Result<ClientExecEvent> {
-    Ok(ClientExecEvent::Completed(Box::new(result::from_exec(
-        pending, &result,
-    )?)))
+    let call = pending.call.clone();
+    let completion = match result::from_exec(pending, &result) {
+        Ok(completion) => completion,
+        Err(Error::Protocol(message)) => compat::failure_with_message(&call, message),
+        Err(Error::Json(error)) => compat::failure_with_message(&call, error.to_string()),
+        Err(error) => return Err(error),
+    };
+    Ok(ClientExecEvent::Completed(Box::new(completion)))
 }
 
 fn shell_exit_result(

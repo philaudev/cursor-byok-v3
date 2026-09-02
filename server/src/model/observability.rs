@@ -6,11 +6,12 @@ mod usage {
 
     use serde::{Deserialize, Serialize};
 
-    use super::ProviderType;
+    use crate::model::ProviderType;
 
     #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
     pub struct Usage {
         pub input_tokens: Option<u64>,
+        pub context_input_tokens: Option<u64>,
         pub output_tokens: Option<u64>,
         pub total_tokens: Option<u64>,
         pub cache_read_tokens: Option<u64>,
@@ -46,10 +47,10 @@ mod usage {
                 .checked_add(self.cache_write_tokens.unwrap_or_default())
         }
     }
-
     impl AddAssign for Usage {
         fn add_assign(&mut self, rhs: Self) {
             self.input_tokens = sum(self.input_tokens, rhs.input_tokens);
+            self.context_input_tokens = sum(self.context_input_tokens, rhs.context_input_tokens);
             self.output_tokens = sum(self.output_tokens, rhs.output_tokens);
             self.total_tokens = sum(self.total_tokens, rhs.total_tokens);
             self.cache_read_tokens = sum(self.cache_read_tokens, rhs.cache_read_tokens);
@@ -89,14 +90,6 @@ mod llm_call {
         pub history_fingerprint: String,
         pub tool_count: usize,
         pub detailed: bool,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) struct LlmCallUsageAnchor {
-        pub request_type: ProviderType,
-        pub usage: Usage,
-        pub message_count: usize,
-        pub tool_count: usize,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -159,6 +152,14 @@ mod llm_call {
         pub received_offset_ms: i64,
         pub data: String,
         pub byte_count: i64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct LlmCallUsageAnchor {
+        pub request_type: ProviderType,
+        pub usage: Usage,
+        pub message_count: usize,
+        pub tool_count: usize,
     }
 }
 pub use llm_call::*;

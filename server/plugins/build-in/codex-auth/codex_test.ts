@@ -8,6 +8,7 @@ import type { LlmRequest, ModelEvent } from "cursor-byok:provider";
 import type { ResourceSnapshot } from "cursor-byok:resource";
 import { codexDeviceOAuth } from "./oauth.ts";
 import { parseOfficialModels } from "./models.ts";
+import { buildResponsesBody } from "cursor-byok:protocol/openai-responses";
 import { codexProvider, isQuotaError } from "./provider.ts";
 import {
   accountIdentity,
@@ -164,7 +165,10 @@ Deno.test("official model discovery excludes hidden models and puts the default 
         display_name: "GPT First",
         supported_in_api: true,
         visibility: "list",
-        supported_reasoning_efforts: ["low", "medium"],
+        supported_reasoning_levels: [
+          { effort: "low", description: "Fast responses" },
+          { effort: "medium", description: "Balanced" },
+        ],
       },
       { slug: "gpt-second", supported_in_api: true, visibility: "list" },
       { slug: "gpt-hidden", supported_in_api: true, visibility: "hidden" },
@@ -172,7 +176,7 @@ Deno.test("official model discovery excludes hidden models and puts the default 
     ],
   });
   assertEquals(models.map((model) => model.id), ["gpt-second", "gpt-first"]);
-  assertEquals(models[1].capabilities, { thinking: true, images: true });
+  assertEquals(models[1].capabilities, { images: true });
   assertEquals(models[1].privateData, { reasoningEfforts: ["low", "medium"] });
 });
 
@@ -300,6 +304,43 @@ Deno.test("invoke streams normalized events from the Codex Responses API", async
     { type: "text-end" },
     { type: "done", reason: "stop" },
   ]);
+});
+
+Deno.test("reasoning replay projects response items to valid input items", () => {
+  const replayRequest = request();
+  replayRequest.messages = [{
+    role: "assistant",
+    text: "",
+    thinking: "",
+    replayState: {
+      providerKind: "openai_responses",
+      value: {
+        items: [{
+          type: "reasoning",
+          id: "item-1",
+          status: "completed",
+          summary: [{ type: "summary_text", text: "why" }],
+          content: [],
+          encrypted_content: "opaque",
+          output_only: true,
+        }],
+      },
+    },
+    toolCalls: [],
+  }];
+
+  const body = buildResponsesBody({
+    url: "https://example.com/responses",
+    model: "gpt-test",
+    request: replayRequest,
+  });
+  assertEquals(body.input, [{
+    type: "reasoning",
+    id: "item-1",
+    summary: [{ type: "summary_text", text: "why" }],
+    content: [],
+    encrypted_content: "opaque",
+  }]);
 });
 
 Deno.test("invoke streams incremental tool calls and replays reasoning items", async () => {

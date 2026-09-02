@@ -1,9 +1,4 @@
-以下是重构后完整目标版本
-实现时，先创建所有目录和文件固化，每个文件头部都写好注释再实现
-旧服务已被备份为server_backup,/Users/leokun/Documents/cursor-byok/server 目录已创建
-行数均为目标估算，使用 `≈` 标记；不包含测试、生成代码和空行。
-实现时可做略微调整，测试要求相对于目标文件旁边的独立文件，禁止码内测试
-本文档目录 /Users/leokun/Documents/cursor-byok/cursor.md
+
 ## 完整目录
 
 ```text
@@ -656,54 +651,7 @@ store     ─X→ cursor
 model     ─X→ cursor
 ```
 
-## 当前代码迁移
 
-```text
-当前                                      目标
-
-cursor/bidi_append.rs                  → api/cursor/bidi.rs
-cursor/run_sse.rs                      → api/cursor/run_sse.rs
-cursor/handlers.rs                     → api/cursor/handlers.rs
-cursor/proxy.rs                        → api/cursor/proxy.rs
-
-cursor/sessions.rs                     → cursor/transport/registry.rs
-                                       + cursor/transport/handle.rs
-                                       + cursor/transport/output.rs
-
-cursor/inbox.rs                        → cursor/transport/inbox.rs
-
-cursor/actor.rs                        → cursor/transport/
-                                       + cursor/conversation/runtime.rs
-                                       + cursor/conversation/delivery.rs
-
-cursor/session.rs                      → cursor/conversation/runtime.rs
-                                       + cursor/conversation/output.rs
-                                       + cursor/checkpoint/
-                                       + cursor/tools/
-
-cursor/request/prepare.rs              → cursor/compile/run.rs
-cursor/request/context.rs              → cursor/compile/context.rs
-cursor/request/background.rs           → cursor/compile/insert_messages.rs
-cursor/request/runtime.rs              → cursor/compile/break_messages.rs
-cursor/request/images.rs               → cursor/compile/images.rs
-cursor/request/model.rs                → cursor/compile/model.rs
-
-cursor/interaction/mod.rs              → cursor/protocol/events.rs
-cursor/interaction/query.rs            → cursor/tools/codec/query.rs
-cursor/interaction/render.rs           → cursor/tools/codec/render.rs
-
-cursor/projection/decode.rs            → cursor/checkpoint/messages/decode.rs
-cursor/projection/encode.rs            → cursor/checkpoint/messages/encode.rs
-cursor/projection/tests.rs             → cursor/checkpoint/messages/tests.rs
-
-cursor/presentation.rs                 → cursor/checkpoint/steps.rs
-
-run/runtime.rs RunRegistry             → cursor/conversation/registry.rs
-run/runtime.rs RunActor                → run/engine.rs + run/handle.rs
-run/port.rs                            → run/command.rs + run/event.rs + run/port.rs
-
-store/revisions.rs                     → store/checkpoints.rs
-```
 
 
 ## 最终核心

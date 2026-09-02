@@ -1,11 +1,11 @@
 //! Defines the provider interface and exports provider implementations.
 mod anthropic;
+mod attempt;
 mod event;
 mod normalize;
 mod openai_chat;
 mod openai_responses;
 mod recorder;
-mod retry;
 mod router;
 
 use std::pin::Pin;

@@ -13,6 +13,12 @@ use crate::{
 
 use super::{now_ms, Store};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContextUsageAnchor {
+    pub(crate) context_input_tokens: u64,
+    pub(crate) message_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BufferedLlmChunk {
     pub(crate) seq: i64,
@@ -274,6 +280,37 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) async fn latest_context_usage(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ContextUsageAnchor>> {
+        let row = sqlx::query(
+            "SELECT usage_json, message_count FROM llm_calls
+             WHERE conversation_id = ?
+               AND json_extract(usage_json, '$.context_input_tokens') IS NOT NULL
+             ORDER BY created_at_ms DESC, rowid DESC
+             LIMIT 1",
+        )
+        .bind(conversation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let usage: Usage = serde_json::from_str(row.try_get("usage_json")?)?;
+        let Some(context_input_tokens) = usage.context_input_tokens else {
+            return Ok(None);
+        };
+        let message_count = row.try_get::<i64, _>("message_count")?;
+        let Ok(message_count) = usize::try_from(message_count) else {
+            return Ok(None);
+        };
+        Ok(Some(ContextUsageAnchor {
+            context_input_tokens,
+            message_count,
+        }))
+    }
+
     pub async fn llm_calls(&self, limit: i64) -> Result<Vec<LlmCallSummary>> {
         let rows = sqlx::query("SELECT * FROM llm_calls ORDER BY created_at_ms DESC LIMIT ?")
             .bind(limit.clamp(1, 500))
@@ -320,14 +357,13 @@ impl Store {
                 usize::try_from(row.try_get::<i64, _>("tool_count")?).unwrap_or(usize::MAX);
             Ok(LlmCallUsageAnchor {
                 request_type: ProviderType::from_str(row.try_get("request_type")?)?,
-                usage: serde_json::from_str(row.try_get("usage_json")?)?,
+                usage: serde_json::from_str::<Usage>(row.try_get("usage_json")?)?,
                 message_count,
                 tool_count,
             })
         })
         .transpose()
     }
-
     pub async fn llm_call_request(&self, call_id: &str) -> Result<Option<LlmCallRequest>> {
         let row = sqlx::query(
             "SELECT headers_json, body_json, byte_count FROM llm_call_requests WHERE call_id = ?",
@@ -421,7 +457,7 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> Result<LlmCallSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelConfigInput, ModelType};
+    use crate::model::{ModelConfigInput, ModelType, ProviderType};
 
     /// 插件模型不在 model_configs 中,调用记录必须照常落库并可按其稳定 ID 筛选。
     #[tokio::test]
@@ -553,5 +589,68 @@ mod tests {
         assert_eq!(rows[0], (0, 10, b"chunk-0".to_vec()));
         assert_eq!(rows[1], (1, 25, b"chunk-1".to_vec()));
         assert_eq!(rows[2], (2, 40, b"chunk-2".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn latest_context_usage_follows_conversation_chronology() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
+
+        for (call_id, model_id, context_input_tokens, message_count) in [
+            ("call-a-1", "model-a", 100_u64, 3_usize),
+            ("call-b", "model-b", 200_u64, 5_usize),
+            ("call-a-2", "model-a", 300_u64, 7_usize),
+        ] {
+            store
+                .start_llm_call(&NewLlmCall {
+                    call_id: call_id.into(),
+                    run_id: format!("run-{call_id}"),
+                    conversation_id: "conversation".into(),
+                    provider_call_index: 0,
+                    model_hash: model_id.into(),
+                    provider_type: ProviderType::Plugin,
+                    provider_url: "plugin://test".into(),
+                    request_type: ProviderType::Plugin,
+                    request_url: "plugin://test".into(),
+                    model_id: model_id.into(),
+                    display_name: model_id.into(),
+                    reasoning_effort: None,
+                    fast: false,
+                    message_count,
+                    projected_message_count: message_count,
+                    history_fingerprint: "fingerprint".into(),
+                    tool_count: 0,
+                    detailed: false,
+                })
+                .await
+                .unwrap();
+            store
+                .record_llm_usage(
+                    call_id,
+                    Usage {
+                        input_tokens: Some(context_input_tokens),
+                        context_input_tokens: Some(context_input_tokens),
+                        output_tokens: Some(10),
+                        total_tokens: Some(context_input_tokens + 10),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            store.latest_context_usage("conversation").await.unwrap(),
+            Some(ContextUsageAnchor {
+                context_input_tokens: 300,
+                message_count: 7,
+            })
+        );
+        assert_eq!(store.latest_context_usage("other").await.unwrap(), None);
     }
 }

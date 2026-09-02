@@ -76,7 +76,6 @@ pub struct ProviderConfig {
     pub custom_headers: reqwest::header::HeaderMap,
     pub max_output_tokens: Option<u64>,
     pub request_timeout: Duration,
-    pub retry_count: u32,
     pub allowed_body_fields: Option<std::collections::HashSet<String>>,
 }
 

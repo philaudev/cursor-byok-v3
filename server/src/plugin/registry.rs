@@ -20,8 +20,11 @@ use super::{
     worker::{PluginWorker, WorkerStreamItem},
 };
 use crate::{
-    model::ModelInvocation, provider::ModelEvent, provider::ProviderStream, store::Store, Error,
-    Result,
+    model::ModelInvocation,
+    provider::ProviderStream,
+    provider::{CallRecorder, ModelEvent},
+    store::Store,
+    Error, Result,
 };
 
 const OAUTH_SLOW_DOWN_STEP_MS: i64 = 5_000;
@@ -203,6 +206,7 @@ impl PluginRegistry {
         &self,
         invocation: ModelInvocation,
         cancellation: CancellationToken,
+        recorder: CallRecorder,
     ) -> ProviderStream {
         let registry = self.clone();
         Box::pin(try_stream! {
@@ -232,7 +236,7 @@ impl PluginRegistry {
                 "request": request,
             });
             let worker = registry.worker(&entry, &executable).await;
-            let mut items = worker.invoke_streaming("provider.invoke", params, cancellation.clone()).await?;
+            let mut items = worker.invoke_streaming("provider.invoke", params, cancellation.clone(), Some(recorder)).await?;
             yield ModelEvent::Start { model_call_id: invocation.call_id.clone() };
             while let Some(item) = items.recv().await {
                 match item {

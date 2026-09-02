@@ -95,7 +95,8 @@ export function AppLifecycleSettingsCard() {
       const nextVersion = await updateStore.check();
       message(nextVersion ? t("发现新版本 {version}", { version: nextVersion }) : t("当前已是最新版本"));
     } catch (cause) {
-      message(cause instanceof Error ? cause.message : String(cause));
+      const error = cause instanceof Error ? cause.message : String(cause);
+      message(t("检查更新失败：{error}", { error }));
     }
   };
 
@@ -103,7 +104,8 @@ export function AppLifecycleSettingsCard() {
     try {
       await updateStore.install();
     } catch (cause) {
-      message(cause instanceof Error ? cause.message : String(cause));
+      const error = cause instanceof Error ? cause.message : String(cause);
+      message(t("安装更新失败：{error}", { error }));
     }
   };
 

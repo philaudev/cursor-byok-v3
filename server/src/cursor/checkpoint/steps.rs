@@ -75,6 +75,11 @@ impl StepBuffer {
         });
     }
 
+    pub fn finish_model_attempt(&mut self) {
+        self.finish_text();
+        self.finish_thinking(Duration::ZERO);
+    }
+
     pub fn discard_model_output(&mut self) {
         self.text.clear();
         self.thinking.clear();
@@ -100,6 +105,28 @@ impl StepBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_attempt_output_is_retained_for_the_next_checkpoint() {
+        let mut buffer = StepBuffer::default();
+        buffer.text_delta("partial answer");
+        buffer.thinking_delta("partial reasoning");
+
+        buffer.finish_model_attempt();
+
+        let steps = buffer.take().steps;
+        assert_eq!(steps.len(), 2);
+        assert!(matches!(
+            &steps[0].message,
+            Some(pb::conversation_step::Message::AssistantMessage(message))
+                if message.text == "partial answer"
+        ));
+        assert!(matches!(
+            &steps[1].message,
+            Some(pb::conversation_step::Message::ThinkingMessage(message))
+                if message.text == "partial reasoning"
+        ));
+    }
 
     #[test]
     fn interrupted_model_output_is_not_persisted_as_checkpoint_steps() {

@@ -1,13 +1,19 @@
 //! Maps request IDs to active transport handles.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use tokio::sync::{mpsc, Mutex, Notify};
 
 use crate::{
     cursor::{
         conversation::ConversationRegistry, prompting::PromptCompiler,
-        services::observability::CursorTraceRecorder,
+        services::observability::CursorTraceService,
     },
     plugin::PluginRegistry,
     provider::Provider,
@@ -24,13 +30,21 @@ pub struct TransportRegistry {
 }
 
 struct RegistryInner {
-    local: Mutex<HashMap<String, TransportHandle>>,
+    local: Mutex<HashMap<String, LocalTransport>>,
+    next_local_generation: AtomicU64,
     upstream: Mutex<HashMap<String, u64>>,
     route_changed: Notify,
     store: Store,
+    traces: CursorTraceService,
     web_cache: WebCache,
     plugins: Option<PluginRegistry>,
     conversations: ConversationRegistry,
+}
+
+#[derive(Clone)]
+struct LocalTransport {
+    generation: u64,
+    handle: TransportHandle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,8 +113,10 @@ impl TransportRegistry {
         Self {
             inner: Arc::new(RegistryInner {
                 local: Mutex::new(HashMap::new()),
+                next_local_generation: AtomicU64::new(1),
                 upstream: Mutex::new(HashMap::new()),
                 route_changed: Notify::new(),
+                traces: CursorTraceService::new(store.clone()),
                 conversations: ConversationRegistry::new(
                     store.clone(),
                     provider,
@@ -119,6 +135,13 @@ impl TransportRegistry {
         &self.inner.store
     }
 
+    pub fn trace(
+        &self,
+        request_id: &str,
+    ) -> crate::cursor::services::observability::CursorTraceRecorder {
+        self.inner.traces.recorder(request_id)
+    }
+
     pub fn web_cache(&self) -> &WebCache {
         &self.inner.web_cache
     }
@@ -132,18 +155,37 @@ impl TransportRegistry {
     }
 
     pub async fn get_or_create(&self, request_id: &str) -> Result<TransportHandle> {
-        if let Some(handle) = self.inner.local.lock().await.get(request_id).cloned() {
-            return Ok(handle);
+        self.get_or_create_for_append(request_id, false).await
+    }
+
+    pub(crate) async fn get_or_create_for_append(
+        &self,
+        request_id: &str,
+        replace_closing: bool,
+    ) -> Result<TransportHandle> {
+        let mut local = self.inner.local.lock().await;
+        if let Some(transport) = local.get(request_id) {
+            if transport.handle.accepting_appends() || !replace_closing {
+                return Ok(transport.handle.clone());
+            }
         }
+        local.remove(request_id);
         let (commands, receiver) = mpsc::channel(128);
         let output = Arc::new(OutputHub::default());
-        let trace = CursorTraceRecorder::resume(self.inner.store.clone(), request_id).await;
-        let handle = TransportHandle::new(request_id.into(), commands, output.clone(), trace);
-        let mut local = self.inner.local.lock().await;
-        if let Some(existing) = local.get(request_id).cloned() {
-            return Ok(existing);
-        }
-        local.insert(request_id.into(), handle.clone());
+        let trace = self.inner.traces.recorder(request_id);
+        trace.resume();
+        let handle = TransportHandle::new(request_id.into(), commands, output, trace);
+        let generation = self
+            .inner
+            .next_local_generation
+            .fetch_add(1, Ordering::Relaxed);
+        local.insert(
+            request_id.into(),
+            LocalTransport {
+                generation,
+                handle: handle.clone(),
+            },
+        );
         drop(local);
         self.inner.route_changed.notify_waiters();
         self.inner
@@ -152,17 +194,29 @@ impl TransportRegistry {
 
         let registry = Arc::downgrade(&self.inner);
         let request_id = request_id.to_string();
+        let lifecycle = handle.clone();
         tokio::spawn(async move {
-            output.wait_closed().await;
+            lifecycle.wait_transport_closed().await;
             if let Some(registry) = registry.upgrade() {
-                registry.local.lock().await.remove(&request_id);
+                let mut local = registry.local.lock().await;
+                if local
+                    .get(&request_id)
+                    .is_some_and(|transport| transport.generation == generation)
+                {
+                    local.remove(&request_id);
+                }
             }
         });
         Ok(handle)
     }
 
     pub async fn local(&self, request_id: &str) -> Option<TransportHandle> {
-        self.inner.local.lock().await.get(request_id).cloned()
+        self.inner
+            .local
+            .lock()
+            .await
+            .get(request_id)
+            .map(|transport| transport.handle.clone())
     }
 
     pub async fn mark_upstream(&self, request_id: &str) {
@@ -206,10 +260,13 @@ impl TransportRegistry {
         self.inner.conversations.shutdown().await;
         let handles = std::mem::take(&mut *self.inner.local.lock().await);
         self.inner.upstream.lock().await.clear();
-        for handle in handles.into_values() {
-            handle.disconnect().await;
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait_closed()).await;
+        for transport in handles.into_values() {
+            transport.handle.disconnect().await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                transport.handle.wait_transport_closed(),
+            )
+            .await;
         }
     }
 }

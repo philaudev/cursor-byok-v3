@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from "react";
-import type { Update } from "@tauri-apps/plugin-updater";
 import {
   checkForUpdate,
   hasNativeAppLifecycle,
   installUpdate,
+  type AppUpdate,
 } from "../native/appLifecycle";
 
 export type UpdateSnapshot = {
@@ -17,7 +17,7 @@ let snapshot: UpdateSnapshot = {
   checking: false,
   installing: false,
 };
-let availableUpdate: Update | null = null;
+let availableUpdate: AppUpdate | null = null;
 let pendingCheck: Promise<string | null> | null = null;
 const listeners = new Set<() => void>();
 
@@ -26,7 +26,7 @@ function update(patch: Partial<UpdateSnapshot>) {
   listeners.forEach((listener) => listener());
 }
 
-async function replaceAvailableUpdate(next: Update | null) {
+async function replaceAvailableUpdate(next: AppUpdate | null) {
   const previous = availableUpdate;
   availableUpdate = next;
   update({ availableVersion: next?.version ?? null });

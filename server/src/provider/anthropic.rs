@@ -12,9 +12,9 @@ use crate::{
 };
 
 use super::{
+    attempt::{send_once, Attempt},
     map_sse_error, merge_extra_params, provider_event_error,
     recorder::recorded_headers,
-    retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
 };
 
@@ -90,17 +90,14 @@ impl Provider for AnthropicProvider {
             if let Some(recorder) = &recorder {
                 recorder.request(request_headers.clone(), &body).await?;
             }
-            let attempt = send_with_retry(
+            let attempt = send_once(
                 "Anthropic",
                 || client.post(&config.request_url)
                     .header("x-api-key", &config.api_key).header("anthropic-version", "2023-06-01")
                     .headers(config.custom_headers.clone())
                     .json(&body),
-                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
-                request_headers,
-                &body,
             ).await?;
             let Attempt::Response(response) = attempt else { return };
             yield ModelEvent::Start { model_call_id: call_id };
@@ -321,10 +318,19 @@ fn apply_model(body: &mut Value, model: &crate::model::ModelSpec) -> Result<()> 
 
 fn merge_usage(total: &mut Usage, update: Usage) {
     merge_usage_field(&mut total.input_tokens, update.input_tokens);
+    merge_usage_field(&mut total.context_input_tokens, update.context_input_tokens);
     merge_usage_field(&mut total.output_tokens, update.output_tokens);
+    merge_usage_field(&mut total.total_tokens, update.total_tokens);
     merge_usage_field(&mut total.cache_read_tokens, update.cache_read_tokens);
     merge_usage_field(&mut total.cache_write_tokens, update.cache_write_tokens);
     merge_usage_field(&mut total.reasoning_tokens, update.reasoning_tokens);
+    if let Some(request_tokens) = total
+        .context_input_tokens
+        .zip(total.output_tokens)
+        .and_then(|(input, output)| input.checked_add(output))
+    {
+        total.total_tokens = Some(request_tokens);
+    }
 }
 
 fn merge_usage_field(total: &mut Option<u64>, update: Option<u64>) {
@@ -475,14 +481,67 @@ fn required_u64(value: &Value, name: &str) -> Result<u64> {
 }
 
 fn anthropic_usage(value: &Value) -> Usage {
+    let input_tokens = value.get("input_tokens").and_then(Value::as_u64);
+    let cache_read_tokens = value.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let cache_write_tokens = value
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
+    let context_input_tokens = input_tokens.map(|input| {
+        input
+            .saturating_add(cache_read_tokens.unwrap_or_default())
+            .saturating_add(cache_write_tokens.unwrap_or_default())
+    });
     Usage {
-        input_tokens: value.get("input_tokens").and_then(Value::as_u64),
+        input_tokens,
+        context_input_tokens,
         output_tokens: value.get("output_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
-        cache_read_tokens: value.get("cache_read_input_tokens").and_then(Value::as_u64),
-        cache_write_tokens: value
-            .get("cache_creation_input_tokens")
-            .and_then(Value::as_u64),
+        cache_read_tokens,
+        cache_write_tokens,
         reasoning_tokens: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_tokens_are_included_once_in_anthropic_context_input() {
+        let usage = anthropic_usage(&serde_json::json!({
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 20,
+            "cache_creation_input_tokens": 30
+        }));
+
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.context_input_tokens, Some(60));
+        assert_eq!(usage.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn streamed_anthropic_usage_includes_cached_input_in_total() {
+        let mut usage = Usage::default();
+        merge_usage(
+            &mut usage,
+            anthropic_usage(&serde_json::json!({
+                "input_tokens": 414,
+                "output_tokens": 0,
+                "cache_read_input_tokens": 100_352,
+                "cache_creation_input_tokens": 0
+            })),
+        );
+        merge_usage(
+            &mut usage,
+            anthropic_usage(&serde_json::json!({"output_tokens": 191})),
+        );
+
+        assert_eq!(usage.input_tokens, Some(414));
+        assert_eq!(usage.cache_read_tokens, Some(100_352));
+        assert_eq!(usage.cache_write_tokens, Some(0));
+        assert_eq!(usage.context_input_tokens, Some(100_766));
+        assert_eq!(usage.output_tokens, Some(191));
+        assert_eq!(usage.total_tokens, Some(100_957));
     }
 }

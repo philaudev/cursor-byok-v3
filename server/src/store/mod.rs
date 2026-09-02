@@ -19,7 +19,7 @@ mod writer;
 
 pub use cas::*;
 pub(crate) use cursor_traces::BufferedCursorTraceChunk;
-pub(crate) use llm_calls::BufferedLlmChunk;
+pub(crate) use llm_calls::{BufferedLlmChunk, ContextUsageAnchor};
 pub use runs::*;
 pub use settings::*;
 pub(crate) use sqlite::now_ms;

@@ -62,6 +62,40 @@ impl Store {
         .await?)
     }
 
+    pub async fn append_cursor_trace_request(
+        &self,
+        request_id: &str,
+        artifact_type: &str,
+        source: &str,
+        data: &[u8],
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        let metadata_json = serde_json::to_string(metadata)?;
+        let blob_id = BlobId::digest(data);
+        let _write = self.writes.lock().await;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Self::put_blob_tx(&mut tx, &blob_id, data, &[]).await?;
+        Self::link_cursor_trace_artifact_tx(
+            &mut tx,
+            request_id,
+            artifact_type,
+            source,
+            &blob_id,
+            &metadata_json,
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE cursor_run_traces
+             SET request_bytes = request_bytes + ? WHERE request_id = ?",
+        )
+        .bind(as_i64(data.len()))
+        .bind(request_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn append_cursor_trace_artifact(
         &self,
         request_id: &str,
@@ -140,23 +174,6 @@ impl Store {
         .bind(metadata_json)
         .bind(now_ms())
         .execute(&mut **tx)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn add_cursor_trace_request_bytes(
-        &self,
-        request_id: &str,
-        bytes: usize,
-    ) -> Result<()> {
-        let _write = self.writes.lock().await;
-        sqlx::query(
-            "UPDATE cursor_run_traces
-             SET request_bytes = request_bytes + ? WHERE request_id = ?",
-        )
-        .bind(as_i64(bytes))
-        .bind(request_id)
-        .execute(&self.pool)
         .await?;
         Ok(())
     }

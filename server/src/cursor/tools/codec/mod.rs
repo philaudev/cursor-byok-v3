@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub use query::tool_query;
-pub(crate) use render::{create_plan_partial, edit_content_delta, edit_path_partial};
+pub(crate) use render::{create_plan_partial, edit_content_delta, edit_path_partial, task_partial};
 pub use render::{dynamic_mcp_placeholder, render_dynamic_mcp, tool_completed};
 pub use request::{abort, mcp_request, mcp_state_request, request};
 pub(crate) use request::{

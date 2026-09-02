@@ -14,8 +14,7 @@ pub const UPSTREAM_URL_HEADER: &str = "x-server-upstream-url";
 
 #[derive(Clone)]
 pub struct CursorProxy {
-    client: Option<reqwest::Client>,
-    store: Option<crate::store::Store>,
+    clients: crate::network::NetworkClients,
     upstream: String,
 }
 
@@ -47,23 +46,15 @@ impl BufferedResponse {
 }
 
 impl CursorProxy {
-    pub fn cursor(store: crate::store::Store) -> Self {
+    pub fn cursor(clients: crate::network::NetworkClients) -> Self {
         Self {
-            client: None,
-            store: Some(store),
+            clients,
             upstream: CURSOR_UPSTREAM.into(),
         }
     }
 
     async fn client(&self) -> Result<reqwest::Client> {
-        match (&self.client, &self.store) {
-            (Some(client), _) => Ok(client.clone()),
-            (_, Some(store)) => Ok(crate::network::client_builder(store)
-                .await?
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?),
-            _ => unreachable!("Cursor proxy always has a client or store"),
-        }
+        self.clients.cursor_client().await
     }
 }
 

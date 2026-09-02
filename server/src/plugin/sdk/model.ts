@@ -2,7 +2,6 @@ import type { JsonValue, PluginContext } from "./plugin.ts";
 import type { ResourceSnapshot } from "./resource.ts";
 
 export type ModelCapabilities = {
-  thinking?: boolean;
   images?: boolean;
 };
 
@@ -10,7 +9,6 @@ export type ModelDefinition = {
   id: string;
   displayName: string;
   description?: string;
-  contextWindowTokens?: number;
   maxOutputTokens?: number;
   capabilities?: ModelCapabilities;
   /** 之后的调用原样传回;永远不会展示给用户。 */

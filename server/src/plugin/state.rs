@@ -135,11 +135,7 @@ pub struct StoredModel {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub context_window_tokens: Option<u64>,
-    #[serde(default)]
     pub max_output_tokens: Option<u64>,
-    #[serde(default)]
-    pub thinking: bool,
     #[serde(default)]
     pub images: bool,
     #[serde(default)]
@@ -179,13 +175,9 @@ impl StoredModel {
                 .get("description")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
-            context_window_tokens: object
-                .get("contextWindowTokens")
-                .and_then(serde_json::Value::as_u64),
             max_output_tokens: object
                 .get("maxOutputTokens")
                 .and_then(serde_json::Value::as_u64),
-            thinking: capability("thinking"),
             images: capability("images"),
             private_data: object
                 .get("privateData")
@@ -200,9 +192,8 @@ impl StoredModel {
             "id": self.id,
             "displayName": self.display_name,
             "description": self.description,
-            "contextWindowTokens": self.context_window_tokens,
             "maxOutputTokens": self.max_output_tokens,
-            "capabilities": { "thinking": self.thinking, "images": self.images },
+            "capabilities": { "images": self.images },
             "privateData": self.private_data,
         })
     }
@@ -450,7 +441,7 @@ mod tests {
         let model = StoredModel::from_definition(&serde_json::json!({
             "id": "gpt-test",
             "displayName": "GPT Test",
-            "capabilities": {"thinking": true},
+            "capabilities": {"images": true},
             "privateData": {"reasoningEfforts": ["low"]},
         }))
         .unwrap();
@@ -460,7 +451,7 @@ mod tests {
             .unwrap();
         let models = store.models("dev.example", "codex").await.unwrap();
         assert_eq!(models.len(), 1);
-        assert!(models[0].thinking);
+        assert!(models[0].images);
         assert_eq!(models[0].private_data["reasoningEfforts"][0], "low");
     }
 }

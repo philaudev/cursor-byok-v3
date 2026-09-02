@@ -30,6 +30,7 @@ fn pending_tool_round_is_one_complete_assistant_message_and_round_trips() {
             name: "Read".into(),
             arguments_text: r#"{"path":"/a"}"#.into(),
             arguments: json!({"path":"/a"}),
+            argument_error: Some("Read arguments are not valid JSON".into()),
         },
         ToolCall {
             index: 1,
@@ -38,6 +39,7 @@ fn pending_tool_round_is_one_complete_assistant_message_and_round_trips() {
             name: "Grep".into(),
             arguments_text: r#"{"pattern":"x"}"#.into(),
             arguments: json!({"pattern":"x"}),
+            argument_error: None,
         },
     ];
     let pending = staged_tool_round(
@@ -54,6 +56,10 @@ fn pending_tool_round_is_one_complete_assistant_message_and_round_trips() {
     assert_eq!(
         wire["providerOptions"]["cursor"]["pendingToolExecutionContracts"]["a"]["toolIdentifier"],
         "READ"
+    );
+    assert_eq!(
+        wire["providerOptions"]["cursor"]["pendingToolExecutionContracts"]["a"]["argumentError"],
+        "Read arguments are not valid JSON"
     );
     assert_eq!(wire["role"], "assistant");
     assert_eq!(
@@ -77,6 +83,10 @@ fn pending_tool_round_is_one_complete_assistant_message_and_round_trips() {
     assert_eq!(recovered.assistant.replay_state, Some(replay_state));
     assert_eq!(recovered.calls.len(), 2);
     assert_eq!(recovered.calls[0].call_id, "a");
+    assert_eq!(
+        recovered.calls[0].argument_error.as_deref(),
+        Some("Read arguments are not valid JSON")
+    );
     assert_eq!(recovered.calls[1].call_id, "b");
 }
 
