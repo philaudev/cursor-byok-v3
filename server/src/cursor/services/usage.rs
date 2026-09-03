@@ -2,9 +2,9 @@
 use std::collections::HashSet;
 
 use crate::{
+    Result,
     cursor::protocol::proto::agent::v1 as pb,
     model::{CanonicalMessage, ContentPart, MessageContent, Origin, ToolDefinition},
-    Result,
 };
 
 const CATEGORIES: [(&str, &str); 8] = [
@@ -83,8 +83,9 @@ pub(crate) fn breakdown(
             measures[TOOLS].add(&encoded);
         }
     }
-    for message in messages {
-        measure_message(message, &mut measures)?;
+    let mut measured_static_categories = [false; 8];
+    for message in messages.iter().rev() {
+        measure_message(message, &mut measures, &mut measured_static_categories)?;
     }
 
     let mut estimates = [0_u64; 8];
@@ -147,14 +148,18 @@ pub(crate) fn breakdown(
     })
 }
 
-fn measure_message(message: &CanonicalMessage, measures: &mut [Measure; 8]) -> Result<()> {
+fn measure_message(
+    message: &CanonicalMessage,
+    measures: &mut [Measure; 8],
+    measured_static_categories: &mut [bool; 8],
+) -> Result<()> {
     measures[CONVERSATION].add_overhead(8); // estimatedTokensPerMessageOverhead
     match &message.content {
         MessageContent::Parts { parts } => {
             for part in parts {
                 if let ContentPart::Text { text } = part {
                     if message.origin == Origin::Runtime || message.origin == Origin::Prompt {
-                        measure_runtime(text, measures);
+                        measure_runtime(text, measures, measured_static_categories);
                     } else {
                         measures[CONVERSATION].add(text);
                     }
@@ -200,7 +205,11 @@ fn measure_system_prompt(text: &str, measures: &mut [Measure; 8]) {
     measures[SYSTEM].add(&text[cursor..]);
 }
 
-fn measure_runtime(text: &str, measures: &mut [Measure; 8]) {
+fn measure_runtime(
+    text: &str,
+    measures: &mut [Measure; 8],
+    measured_static_categories: &mut [bool; 8],
+) {
     let mut ranges = Vec::new();
     collect_ranges(text, "shared_user_rules", RULES, &mut ranges);
     collect_ranges(text, "rules", RULES, &mut ranges);
@@ -219,7 +228,18 @@ fn measure_runtime(text: &str, measures: &mut [Measure; 8]) {
             continue;
         }
         measures[CONVERSATION].add(&text[cursor..start]);
-        measures[category].add(&text[start..end]);
+        let chunk = &text[start..end];
+        // Skills and Subagents are static definition catalogs.
+        // We only measure them once from the most recent active context,
+        // avoiding multi-turn redundant accumulation across conversation history.
+        if category == SKILLS || category == SUBAGENTS {
+            if !measured_static_categories[category] {
+                measures[category].add(chunk);
+                measured_static_categories[category] = true;
+            }
+        } else {
+            measures[category].add(chunk);
+        }
         cursor = end;
     }
     measures[CONVERSATION].add(&text[cursor..]);
@@ -311,11 +331,13 @@ mod tests {
             1_001
         );
         for id in ["rules", "skills", "mcp", "subagents", "conversation"] {
-            assert!(snapshot
-                .categories
-                .iter()
-                .find(|category| category.id == id)
-                .is_some_and(|category| category.character_count.unwrap_or(0) > 0));
+            assert!(
+                snapshot
+                    .categories
+                    .iter()
+                    .find(|category| category.id == id)
+                    .is_some_and(|category| category.character_count.unwrap_or(0) > 0)
+            );
         }
         assert_eq!(
             snapshot.categories[SUMMARY],
@@ -448,5 +470,103 @@ mod tests {
         assert!(rules.estimated_tokens > 0);
         assert!(skills.estimated_tokens > 0);
         assert!(system.estimated_tokens > 0);
+    }
+
+    #[test]
+    fn skills_and_subagents_are_not_accumulated_across_turns() {
+        let turn1 = CanonicalMessage::text(
+            "request-context:1",
+            Role::User,
+            Origin::Prompt,
+            "<agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents>",
+        );
+        let turn2 = CanonicalMessage::text(
+            "request-context:2",
+            Role::User,
+            Origin::Prompt,
+            "<agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents>",
+        );
+        let snapshot1 = breakdown(
+            0,
+            256_000,
+            None,
+            "system",
+            &[],
+            &HashSet::new(),
+            &[turn1.clone()],
+        )
+        .unwrap();
+        let snapshot2 = breakdown(
+            0,
+            256_000,
+            None,
+            "system",
+            &[],
+            &HashSet::new(),
+            &[turn1.clone(), turn2],
+        )
+        .unwrap();
+
+        let skills1 = snapshot1
+            .categories
+            .iter()
+            .find(|c| c.id == "skills")
+            .unwrap()
+            .estimated_tokens;
+        let skills2 = snapshot2
+            .categories
+            .iter()
+            .find(|c| c.id == "skills")
+            .unwrap()
+            .estimated_tokens;
+        assert_eq!(
+            skills1, skills2,
+            "skills tokens must not double across turns"
+        );
+
+        let subagents1 = snapshot1
+            .categories
+            .iter()
+            .find(|c| c.id == "subagents")
+            .unwrap()
+            .estimated_tokens;
+        let subagents2 = snapshot2
+            .categories
+            .iter()
+            .find(|c| c.id == "subagents")
+            .unwrap()
+            .estimated_tokens;
+        assert_eq!(
+            subagents1, subagents2,
+            "subagents tokens must not double across turns"
+        );
+
+        // Verify that if a new turn updates skills, the newest catalog is measured
+        let turn3 = CanonicalMessage::text(
+            "request-context:3",
+            Role::User,
+            Origin::Prompt,
+            "<agent_skills><skill>updated larger skill definitions</skill></agent_skills>",
+        );
+        let snapshot3 = breakdown(
+            0,
+            256_000,
+            None,
+            "system",
+            &[],
+            &HashSet::new(),
+            &[turn1, turn3],
+        )
+        .unwrap();
+        let skills3 = snapshot3
+            .categories
+            .iter()
+            .find(|c| c.id == "skills")
+            .unwrap()
+            .estimated_tokens;
+        assert!(
+            skills3 > skills1,
+            "newest active skills catalog must be measured"
+        );
     }
 }
