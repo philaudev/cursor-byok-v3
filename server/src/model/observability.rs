@@ -40,6 +40,7 @@ mod usage {
         }
 
         /// Returns the provider-visible input context without counting cached tokens twice.
+        #[allow(dead_code)]
         pub(crate) fn context_input_tokens(self, _provider: ProviderType) -> Option<u64> {
             let input = self.input_tokens?;
             input

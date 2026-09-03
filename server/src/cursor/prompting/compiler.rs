@@ -16,6 +16,7 @@ use super::{assets::runtime_expression, Mode, PromptAssets};
 pub struct PromptCompiler {
     assets: PromptAssets,
     compaction_prompt_path: Option<PathBuf>,
+    #[allow(dead_code)]
     global_rules_dir: Option<PathBuf>,
 }
 

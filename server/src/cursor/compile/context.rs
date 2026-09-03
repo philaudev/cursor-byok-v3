@@ -403,6 +403,7 @@ fn is_skill_rule(rule: &pb::CursorRule) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
 }
 
+#[allow(dead_code)]
 pub fn selected_context(user: &pb::UserMessage) -> Option<String> {
     let selected = user.selected_context.as_ref()?;
     let mut sections = selected.extra_context.clone();

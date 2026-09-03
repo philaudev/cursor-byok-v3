@@ -11,10 +11,10 @@ use crate::{
 };
 
 const FALLBACK_CHARS: usize = 12_000;
-pub(super) const COMPACTION_RESERVE_TOKENS: u64 = 10_000;
 
 pub(super) const RESERVE_TOKENS: u64 = 10_000;
 pub(super) const OUTPUT_TOKENS: u64 = 4_096;
+#[allow(dead_code)]
 pub(super) const INSTRUCTIONS: &str = "Summarize the conversation for the next model turn. Preserve goals, constraints, decisions, files, commands, errors, results, and unfinished work. Do not call tools. Return only the concise durable summary.";
 
 pub(super) fn input_budget(prepared: &PreparedRun) -> Option<u64> {

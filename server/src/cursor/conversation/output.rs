@@ -61,6 +61,7 @@ struct PendingInjection {
     delivery_batch_id: String,
 }
 
+#[allow(dead_code)]
 pub(crate) enum RuntimeAction {
     Inject(pb::InjectContextAction),
     UserMessage(pb::UserMessageAction),
