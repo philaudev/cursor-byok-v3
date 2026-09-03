@@ -183,6 +183,9 @@ fn edit_notebook(call: &ToolCall, before: &str) -> std::result::Result<String, S
             .unwrap_or_default();
         let old =
             normalize_newlines(&string(call, "old_string").map_err(|error| error.to_string())?);
+        if old.is_empty() {
+            return Err("old_string must not be empty".into());
+        }
         let occurrences = source.match_indices(&old).count();
         let edited = match occurrences {
             0 => return Err("old_string was not found in the notebook cell".into()),
@@ -240,4 +243,51 @@ fn normalized(value: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::edit_notebook;
+    use crate::model::ToolCall;
+
+    fn notebook_call(old_string: &str) -> ToolCall {
+        ToolCall {
+            index: 0,
+            call_id: "call".into(),
+            model_call_id: "model".into(),
+            name: "EditNotebook".into(),
+            arguments_text: String::new(),
+            arguments: json!({
+                "target_notebook": "/notebook.ipynb",
+                "cell_idx": 0,
+                "old_string": old_string,
+                "new_string": "replacement",
+            }),
+            argument_error: None,
+        }
+    }
+
+    fn single_cell_notebook() -> String {
+        json!({
+            "cells": [{"cell_type": "code", "source": ["print('hi')\n"]}],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn edit_notebook_rejects_empty_old_string() {
+        // StrReplace rejects an empty old_string; EditNotebook must do the same
+        // instead of prepending new_string (empty cell) or reporting a
+        // misleading "not unique" error (non-empty cell).
+        let error = edit_notebook(&notebook_call(""), &single_cell_notebook()).unwrap_err();
+        assert_eq!(error, "old_string must not be empty");
+    }
+
+    #[test]
+    fn edit_notebook_replaces_a_unique_old_string() {
+        let edited = edit_notebook(&notebook_call("hi"), &single_cell_notebook()).unwrap();
+        assert!(edited.contains("print('replacement')"));
+    }
 }

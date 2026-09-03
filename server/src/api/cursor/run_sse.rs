@@ -22,7 +22,7 @@ pub async fn stream(registry: &TransportRegistry, request_id: &str) -> Result<Re
     let receiver = handle.subscribe();
     let trace = handle.trace().cloned();
     if let Some(trace) = &trace {
-        trace.response_started(StatusCode::OK.as_u16()).await;
+        trace.response_started(StatusCode::OK.as_u16());
     }
     let body_stream = local_body_stream(receiver, handle, trace);
     let mut response = Response::new(Body::from_stream(body_stream));
@@ -133,7 +133,7 @@ pub async fn upstream(
 ) -> Response<Body> {
     let (parts, body) = response.into_parts();
     if let Some(trace) = &trace {
-        trace.response_started(parts.status.as_u16()).await;
+        trace.response_started(parts.status.as_u16());
     }
     let stream = async_stream::stream! {
         let _guard = UpstreamRunGuard {
@@ -180,15 +180,15 @@ impl TraceStreamSink {
             while let Some(event) = receiver.recv().await {
                 match event {
                     TraceStreamEvent::Chunk(chunk) => {
-                        trace.response_chunk(source, &chunk).await;
+                        trace.response_chunk(source, chunk);
                     }
                     TraceStreamEvent::Finish(error) => {
-                        trace.finish(error.as_deref()).await;
+                        trace.finish(error.as_deref());
                         return;
                     }
                 }
             }
-            trace.finish(None).await;
+            trace.finish(None);
         });
         Self {
             sender: Some(sender),

@@ -102,6 +102,12 @@ pub fn decode_pending(value: &str) -> Result<RecoveredToolRound> {
         .into_iter()
         .enumerate()
         .map(|(index, call)| {
+            let argument_error = wire
+                .pointer("/providerOptions/cursor/pendingToolExecutionContracts")
+                .and_then(|contracts| contracts.get(&call.call_id))
+                .and_then(|contract| contract.get("argumentError"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Ok(ToolCall {
                 index,
                 call_id: call.call_id,
@@ -109,6 +115,7 @@ pub fn decode_pending(value: &str) -> Result<RecoveredToolRound> {
                 name: call.name,
                 arguments_text: serde_json::to_string(&call.arguments)?,
                 arguments: call.arguments,
+                argument_error,
             })
         })
         .collect::<Result<Vec<_>>>()?;

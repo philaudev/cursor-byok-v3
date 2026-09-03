@@ -53,7 +53,17 @@ function replayItems(value: JsonValue): JsonValue[] {
   if (!Array.isArray(items)) {
     throw new Error("OpenAI Responses replay state is missing items");
   }
-  return items;
+  return items.map((item) => {
+    const source = record(item);
+    if (source?.type !== "reasoning") {
+      throw new Error("OpenAI Responses replay state contains a non-reasoning item");
+    }
+    const projected: Record<string, JsonValue> = { type: "reasoning" };
+    for (const field of ["id", "summary", "content", "encrypted_content"] as const) {
+      if (field in source) projected[field] = source[field] as JsonValue;
+    }
+    return projected;
+  });
 }
 
 export function buildResponsesBody(call: OpenAiResponsesCall): Record<string, JsonValue> {

@@ -5,6 +5,7 @@ use chrono::{Offset, Utc};
 use chrono_tz::Tz;
 
 use crate::{
+    Error, Result,
     cursor::{
         compile::images,
         prompting::{Mode, PromptCompiler},
@@ -13,7 +14,6 @@ use crate::{
     },
     model::{CanonicalMessage, ContentPart, MessageContent, Origin, Role},
     store::BlobId,
-    Error, Result,
 };
 
 pub(crate) async fn compile_user_message_action(
@@ -22,9 +22,10 @@ pub(crate) async fn compile_user_message_action(
     compiler: &PromptCompiler,
     blobs: &BlobSynchronizer,
 ) -> Result<CanonicalMessage> {
-    let user = action.user_message.as_ref().ok_or_else(|| {
-        Error::Protocol("Cursor user message action has no UserMessage".into())
-    })?;
+    let user = action
+        .user_message
+        .as_ref()
+        .ok_or_else(|| Error::Protocol("Cursor user message action has no UserMessage".into()))?;
     compile(
         format!("user-message:{}", user.message_id),
         super::run::mode_from_proto(current_mode)?,
@@ -105,19 +106,16 @@ pub(crate) async fn compile(
     compiler: &PromptCompiler,
     blobs: &BlobSynchronizer,
 ) -> Result<CanonicalMessage> {
-    let time_zone = request_context
-        .env
-        .as_ref()
-        .map(|e| e.time_zone.as_str());
+    let time_zone = request_context.env.as_ref().map(|e| e.time_zone.as_str());
     let time = Time::now(time_zone)?;
-    let prompt_context = super::context::compile_context(
-        request_context,
-        &format!("{}{}", section(open_files(user)), action_context.trim()),
-    );
+    let selected = super::context::selected_context(user)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("<selected_context>\n{value}\n</selected_context>"))
+        .unwrap_or_default();
     let values = BTreeMap::from([
-        ("OPEN_FILES", open_files(user)),
-        ("SELECTED_CONTEXT", prompt_context),
-        ("ACTION_CONTEXT", action_context.to_string()),
+        ("OPEN_FILES", section(open_files(user))),
+        ("SELECTED_CONTEXT", section(selected)),
+        ("ACTION_CONTEXT", section(action_context.to_string())),
         ("TIMESTAMP", time.timestamp),
         ("CURRENT_DATE", time.today),
         ("USER_QUERY", user.text.clone()),
@@ -125,7 +123,13 @@ pub(crate) async fn compile(
         ("DEBUG_LOG_PATH", String::new()),
         ("DEBUG_SESSION_ID", String::new()),
     ]);
-    message(event_id, user, compiler.runtime_message(mode, &values)?, blobs).await
+    message(
+        event_id,
+        user,
+        compiler.runtime_message(mode, &values)?,
+        blobs,
+    )
+    .await
 }
 
 pub(super) async fn user_event_id(
@@ -149,7 +153,10 @@ pub(super) async fn user_event_id(
     )
     .await?;
     let semantic = serde_json::to_vec(&(projected_request_context, runtime.content))?;
-    Ok(format!("{input_id}:{}", BlobId::digest(&semantic).to_base64()))
+    Ok(format!(
+        "{input_id}:{}",
+        BlobId::digest(&semantic).to_base64()
+    ))
 }
 
 pub(super) fn compile_request_context(
@@ -187,7 +194,11 @@ pub async fn compile_background(
     action_context: &str,
     blobs: &BlobSynchronizer,
 ) -> Result<(CanonicalMessage, String)> {
-    let text = format!("{}\n<user_query>{}</user_query>", action_context.trim(), user.text);
+    let text = format!(
+        "{}\n<user_query>{}</user_query>",
+        action_context.trim(),
+        user.text
+    );
     Ok((message(event_id, user, text.clone(), blobs).await?, text))
 }
 

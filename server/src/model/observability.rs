@@ -6,11 +6,12 @@ mod usage {
 
     use serde::{Deserialize, Serialize};
 
-    use super::ProviderType;
+    use crate::model::ProviderType;
 
     #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
     pub struct Usage {
         pub input_tokens: Option<u64>,
+        pub context_input_tokens: Option<u64>,
         pub output_tokens: Option<u64>,
         pub total_tokens: Option<u64>,
         pub cache_read_tokens: Option<u64>,
@@ -39,6 +40,7 @@ mod usage {
         }
 
         /// Returns the provider-visible input context without counting cached tokens twice.
+        #[allow(dead_code)]
         pub(crate) fn context_input_tokens(self, _provider: ProviderType) -> Option<u64> {
             let input = self.input_tokens?;
             input
@@ -46,10 +48,10 @@ mod usage {
                 .checked_add(self.cache_write_tokens.unwrap_or_default())
         }
     }
-
     impl AddAssign for Usage {
         fn add_assign(&mut self, rhs: Self) {
             self.input_tokens = sum(self.input_tokens, rhs.input_tokens);
+            self.context_input_tokens = sum(self.context_input_tokens, rhs.context_input_tokens);
             self.output_tokens = sum(self.output_tokens, rhs.output_tokens);
             self.total_tokens = sum(self.total_tokens, rhs.total_tokens);
             self.cache_read_tokens = sum(self.cache_read_tokens, rhs.cache_read_tokens);
@@ -67,7 +69,7 @@ pub use usage::*;
 mod llm_call {
     use serde::Serialize;
 
-    use super::{ProviderType, Usage};
+    use super::ProviderType;
 
     #[derive(Clone, Debug)]
     pub struct NewLlmCall {
@@ -89,14 +91,6 @@ mod llm_call {
         pub history_fingerprint: String,
         pub tool_count: usize,
         pub detailed: bool,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) struct LlmCallUsageAnchor {
-        pub request_type: ProviderType,
-        pub usage: Usage,
-        pub message_count: usize,
-        pub tool_count: usize,
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -160,6 +154,7 @@ mod llm_call {
         pub data: String,
         pub byte_count: i64,
     }
+
 }
 pub use llm_call::*;
 

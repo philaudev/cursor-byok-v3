@@ -19,16 +19,17 @@ use crate::{
             connect,
             proto::{agent::v1 as agent, aiserver::v1 as ai},
         },
-        services::{
-            account, analytics, knowledge, model_catalog, observability::CursorTraceRecorder, tab,
-        },
+        services::{account, analytics, knowledge, model_catalog, tab},
         transport::{TransportParent, TransportRegistry},
     },
     Result,
 };
 
-pub fn router(registry: TransportRegistry) -> Result<Router> {
-    let proxy = CursorProxy::cursor(registry.store().clone());
+pub fn router(
+    registry: TransportRegistry,
+    clients: crate::network::NetworkClients,
+) -> Result<Router> {
+    let proxy = CursorProxy::cursor(clients);
     let knowledge = knowledge::KnowledgeService::managed()?;
     Ok(router_with_proxy(registry, proxy, knowledge))
 }
@@ -120,16 +121,13 @@ async fn run_sse_handler(
     let (parts, body) = buffered(request).await?;
     let request: agent::BidiRequestId = connect::decode_unary(&body)?;
     let route = registry.wait_route(&request.request_id).await;
-    let trace = CursorTraceRecorder::resume(registry.store().clone(), &request.request_id).await;
-    if let Some(trace) = &trace {
-        trace
-            .request(
-                "run_sse_request",
-                &body,
-                serde_json::json!({"request_id": request.request_id}),
-            )
-            .await;
-    }
+    let trace = registry.trace(&request.request_id);
+    trace.resume();
+    trace.request(
+        "run_sse_request",
+        body.clone(),
+        serde_json::json!({"request_id": request.request_id}),
+    );
     match route {
         crate::cursor::transport::TransportRoute::Local => {
             run_sse::stream(&registry, &request.request_id).await
@@ -140,7 +138,14 @@ async fn run_sse_handler(
                 Request::from_parts(parts, Body::from(body)),
             )
             .await?;
-            Ok(run_sse::upstream(registry, request.request_id, generation, response, trace).await)
+            Ok(run_sse::upstream(
+                registry,
+                request.request_id,
+                generation,
+                response,
+                Some(trace),
+            )
+            .await)
         }
     }
 }
@@ -156,6 +161,7 @@ async fn bidi_handler(
     let first_model = decoded.model_id().map(str::to_owned);
     let conversation_id = decoded.conversation_id().map(str::to_owned);
     let trace_metadata = decoded.trace_metadata();
+    let trace = registry.trace(&decoded.request_id);
     let local = if let Some(model_id) = decoded.model_id() {
         // 插件模型 ID 只在本地有意义,永远不转发到 Cursor 官方上游。
         if model_id.starts_with(crate::plugin::ADAPTER_ID_PREFIX)
@@ -180,14 +186,18 @@ async fn bidi_handler(
     } else if registry.upstream(&decoded.request_id).await {
         false
     } else {
+        trace.resume();
+        trace.request(
+            "bidi_request",
+            body.clone(),
+            trace_outcome(trace_metadata, false, "missing_transport", None),
+        );
         return Err(crate::Error::Protocol(
             "first BidiAppend message must select a model".into(),
         ));
     };
-    let trace = if first_model.is_some() {
-        CursorTraceRecorder::begin(
-            registry.store().clone(),
-            &decoded.request_id,
+    if first_model.is_some() {
+        trace.begin(
             conversation_id.as_deref(),
             if local {
                 "local_byok"
@@ -195,26 +205,61 @@ async fn bidi_handler(
                 "cursor_official"
             },
             first_model.as_deref(),
-        )
-        .await
+        );
     } else {
-        CursorTraceRecorder::resume(registry.store().clone(), &decoded.request_id).await
-    };
-    if let Some(trace) = &trace {
-        trace.request("bidi_request", &body, trace_metadata).await;
+        trace.resume();
     }
     if !local {
         if first_model.is_some() {
             registry.mark_upstream(&decoded.request_id).await;
         }
+        trace.request(
+            "bidi_request",
+            body.clone(),
+            trace_outcome(trace_metadata, true, "upstream", None),
+        );
         return proxy::forward(
             Extension(proxy),
             Request::from_parts(parts, Body::from(body)),
         )
         .await;
     }
-    let parent = parent_headers(&parts.headers)?;
-    bidi::append(&registry, decoded, parent).await?;
+    let parent = match parent_headers(&parts.headers) {
+        Ok(parent) => parent,
+        Err(error) => {
+            trace.request(
+                "bidi_request",
+                body,
+                trace_outcome(
+                    trace_metadata,
+                    false,
+                    "invalid_parent",
+                    Some(error.to_string()),
+                ),
+            );
+            return Err(error);
+        }
+    };
+    match bidi::append(&registry, decoded, parent).await {
+        Ok(_) => trace.request(
+            "bidi_request",
+            body,
+            trace_outcome(trace_metadata, true, "local", None),
+        ),
+        Err(error) => {
+            trace.request(
+                "bidi_request",
+                body,
+                trace_outcome(
+                    trace_metadata,
+                    false,
+                    "command_rejected",
+                    Some(error.to_string()),
+                ),
+            );
+            return Err(error);
+        }
+    }
     let mut response = Response::new(axum::body::Body::empty());
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
@@ -222,6 +267,22 @@ async fn bidi_handler(
         HeaderValue::from_static("application/proto"),
     );
     Ok(response)
+}
+
+fn trace_outcome(
+    mut metadata: serde_json::Value,
+    accepted: bool,
+    route_outcome: &str,
+    error: Option<String>,
+) -> serde_json::Value {
+    if let Some(metadata) = metadata.as_object_mut() {
+        metadata.insert("accepted".into(), accepted.into());
+        metadata.insert("route_outcome".into(), route_outcome.into());
+        if let Some(error) = error {
+            metadata.insert("error".into(), error.into());
+        }
+    }
+    metadata
 }
 
 async fn buffered(request: Request<Body>) -> Result<(axum::http::request::Parts, Bytes)> {

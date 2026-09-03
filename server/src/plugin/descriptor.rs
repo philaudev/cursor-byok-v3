@@ -107,9 +107,7 @@ pub struct PluginModelDescriptor {
     pub description: Option<String>,
     pub icon: String,
     pub provider_type: String,
-    pub context_window_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
-    pub thinking: bool,
     pub images: bool,
 }
 
@@ -209,9 +207,7 @@ impl PluginModelDescriptor {
             description: model.description.clone(),
             icon: icon.to_owned(),
             provider_type: provider.provider_type.clone(),
-            context_window_tokens: model.context_window_tokens,
             max_output_tokens: model.max_output_tokens,
-            thinking: model.thinking,
             images: model.images,
         }
     }

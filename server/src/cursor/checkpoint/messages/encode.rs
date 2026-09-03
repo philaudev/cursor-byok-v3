@@ -71,6 +71,7 @@ pub fn staged_tool_round(
             allowed_tools,
             dynamic_tools,
             started_at_ms,
+            tool_calls: Some(calls),
         }),
     )?)?)
 }
@@ -96,6 +97,7 @@ pub fn staged_final(
             allowed_tools,
             dynamic_tools,
             started_at_ms,
+            tool_calls: None,
         }),
     )?)?)
 }
@@ -105,6 +107,7 @@ pub(super) struct PendingContext<'a> {
     allowed_tools: &'a [String],
     dynamic_tools: &'a HashSet<String>,
     started_at_ms: u64,
+    tool_calls: Option<&'a [ToolCall]>,
 }
 
 pub(super) fn wire_message(
@@ -132,16 +135,23 @@ pub(super) fn wire_message(
                     calls
                         .iter()
                         .map(|call| {
-                            (
-                                call.call_id.clone(),
-                                json!({
-                                    "toolCallId": call.call_id,
-                                    "outerToolName": call.name,
-                                    "toolIdentifier": tool_identifier(&call.name, pending.dynamic_tools),
-                                    "isDynamic": pending.dynamic_tools.contains(&call.name),
-                                    "allowedToolNames": pending.allowed_tools,
-                                }),
-                            )
+                            let mut contract = json!({
+                                "toolCallId": call.call_id,
+                                "outerToolName": call.name,
+                                "toolIdentifier": tool_identifier(&call.name, pending.dynamic_tools),
+                                "isDynamic": pending.dynamic_tools.contains(&call.name),
+                                "allowedToolNames": pending.allowed_tools,
+                            });
+                            if let Some(error) = pending
+                                .tool_calls
+                                .and_then(|calls| {
+                                    calls.iter().find(|candidate| candidate.call_id == call.call_id)
+                                })
+                                .and_then(|call| call.argument_error.as_deref())
+                            {
+                                contract["argumentError"] = Value::String(error.into());
+                            }
+                            (call.call_id.clone(), contract)
                         })
                         .collect(),
                 ),

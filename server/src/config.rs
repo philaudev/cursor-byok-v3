@@ -9,6 +9,7 @@ use crate::{Error, Result};
 const DATA_DIR_NAME: &str = ".cursor-byok-v3";
 const DATABASE_FILE_NAME: &str = "cursor-byok.db";
 const RULES_DIR_NAME: &str = "rules";
+pub const COMPACTION_PROMPT_STEM: &str = "compaction";
 const COMPACTION_PROMPT_FILE_NAME: &str = "compaction.md";
 const DEFAULT_COMPACTION_PROMPT: &str = include_str!("../prompt/cursor/compaction/prompt.md");
 const V0049_DATA_DIR_NAME: &str = ".cursor-local-assistant-v2";
@@ -76,7 +77,6 @@ pub struct ProviderConfig {
     pub custom_headers: reqwest::header::HeaderMap,
     pub max_output_tokens: Option<u64>,
     pub request_timeout: Duration,
-    pub retry_count: u32,
     pub allowed_body_fields: Option<std::collections::HashSet<String>>,
 }
 

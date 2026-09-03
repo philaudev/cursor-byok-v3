@@ -223,6 +223,9 @@ impl ExecContext {
     }
 
     pub fn prepare_call(&self, call: &ToolCall) -> Result<ToolCall> {
+        if let Some(error) = &call.argument_error {
+            return Err(Error::Protocol(error.clone()));
+        }
         let mut prepared = call.clone();
         if prepared.name.eq_ignore_ascii_case("Shell")
             || prepared.name.eq_ignore_ascii_case("AwaitShell")
@@ -300,12 +303,31 @@ fn normalize_shell_block_until_ms(call: &mut ToolCall) -> Result<()> {
     let Some(value) = arguments.get("block_until_ms") else {
         return Ok(());
     };
-    let value = value.as_u64().ok_or_else(|| {
-        Error::Protocol(format!(
-            "{tool_name} block_until_ms must be a non-negative integer"
-        ))
-    })?;
-    if value > MAX_SHELL_BLOCK_UNTIL_MS {
+    let integer = if let Some(value) = value.as_i64() {
+        value
+    } else {
+        let value = value.as_f64().ok_or_else(|| {
+            Error::Protocol(format!("{tool_name} block_until_ms must be an integer"))
+        })?;
+        if !value.is_finite() || value.fract() != 0.0 {
+            return Err(Error::Protocol(format!(
+                "{tool_name} block_until_ms must be an integer"
+            )));
+        }
+        if value < i64::MIN as f64 || value > i64::MAX as f64 {
+            return Err(Error::Protocol(format!(
+                "{tool_name} block_until_ms is out of range"
+            )));
+        }
+        value as i64
+    };
+    if integer < 0 {
+        return Err(Error::Protocol(format!(
+            "{tool_name} block_until_ms is out of range"
+        )));
+    }
+    let u_val = integer as u64;
+    if u_val > MAX_SHELL_BLOCK_UNTIL_MS {
         arguments.insert(
             "block_until_ms".into(),
             serde_json::Value::from(MAX_SHELL_BLOCK_UNTIL_MS),
@@ -828,6 +850,7 @@ mod tests {
             name: "Task".into(),
             arguments_text: arguments.to_string(),
             arguments,
+            argument_error: None,
         }
     }
 
@@ -860,6 +883,7 @@ mod tests {
             name: "Shell".into(),
             arguments_text: "{}".into(),
             arguments: serde_json::json!({"command": "cargo test", "block_until_ms": 7_140_000}),
+            argument_error: None,
         };
         let oversized_await = ToolCall {
             name: "AwaitShell".into(),

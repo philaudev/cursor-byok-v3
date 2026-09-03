@@ -104,6 +104,10 @@ pub enum RunEvent {
     AutoCompactionStarted,
     AutoCompactionCompleted,
     CycleInterrupted,
+    ModelAttemptFailed {
+        attempt: u32,
+        message: String,
+    },
     TextStart,
     TextDelta(String),
     TextEnd,
@@ -125,6 +129,7 @@ pub enum RunEvent {
     ToolCallEnd {
         index: usize,
     },
+    UsageSnapshot(Usage),
     Usage(Usage),
     ExecuteToolRound {
         round_id: ToolRoundId,

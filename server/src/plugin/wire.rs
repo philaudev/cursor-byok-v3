@@ -147,8 +147,10 @@ pub fn model_event(value: &serde_json::Value) -> Result<ModelEvent> {
                 .get("usage")
                 .ok_or_else(|| Error::Protocol("plugin usage event requires usage".into()))?;
             let tokens = |name: &str| usage.get(name).and_then(serde_json::Value::as_u64);
+            let input_tokens = tokens("inputTokens");
             ModelEvent::Usage(Usage {
-                input_tokens: tokens("inputTokens"),
+                input_tokens,
+                context_input_tokens: input_tokens,
                 output_tokens: tokens("outputTokens"),
                 total_tokens: tokens("totalTokens"),
                 cache_read_tokens: tokens("cacheReadTokens"),
@@ -288,6 +290,7 @@ mod tests {
             usage,
             ModelEvent::Usage(Usage {
                 input_tokens: Some(10),
+                context_input_tokens: Some(10),
                 output_tokens: Some(2),
                 total_tokens: None,
                 cache_read_tokens: Some(4),

@@ -158,6 +158,23 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(unix)]
+    {
+        let open_file_limit = match crate::resource_limits::raise_open_file_limit() {
+            Ok(limit) => limit,
+            Err(error) => {
+                diagnostics.report_fatal(&error);
+                return ExitCode::FAILURE;
+            }
+        };
+        tracing::info!(
+            requested = crate::resource_limits::REQUESTED_OPEN_FILE_LIMIT,
+            previous = open_file_limit.previous,
+            effective = open_file_limit.effective,
+            hard = open_file_limit.hard,
+            "open file limit configured"
+        );
+    }
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         os = std::env::consts::OS,
@@ -171,7 +188,9 @@ pub fn run() -> ExitCode {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             open_compaction_prompt,
-            open_terminal_with_command
+            open_terminal_with_command,
+            crate::update::check_portable_update,
+            crate::update::install_portable_update,
         ])
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|arg| arg == AUTOSTART_ARG) {
@@ -240,6 +259,7 @@ pub fn run() -> ExitCode {
                 window.set_focus()?;
             }
             tray::create(app)?;
+            crate::update::signal_ready_if_requested()?;
             Ok(())
         })
         .build(tauri::generate_context!());

@@ -93,15 +93,16 @@ impl Store {
         for call in calls {
             sqlx::query(
                 "INSERT INTO tool_round_calls
-                 (round_id, call_index, call_id, model_call_id, name, arguments_json, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+                 (round_id, call_index, call_id, model_call_id, name, arguments_json, argument_error, status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
             )
             .bind(round_id.as_str())
             .bind(call.index as i64)
             .bind(&call.call_id)
             .bind(&call.model_call_id)
             .bind(&call.name)
-            .bind(&call.arguments_text)
+            .bind(serde_json::to_string(&call.arguments)?)
+            .bind(call.argument_error.as_deref())
             .execute(&mut *tx)
             .await?;
         }
@@ -269,7 +270,7 @@ impl Store {
             return Ok(None);
         };
         let rows = sqlx::query(
-            "SELECT call_index, call_id, model_call_id, name, arguments_json, status
+            "SELECT call_index, call_id, model_call_id, name, arguments_json, argument_error, status
              FROM tool_round_calls WHERE round_id = ? ORDER BY call_index",
         )
         .bind(round_id.as_str())
@@ -280,7 +281,7 @@ impl Store {
         for row in rows {
             let arguments_text: String = row.get(4);
             let call_id: String = row.get(1);
-            if row.get::<&str, _>(5) == "completed" {
+            if row.get::<&str, _>(6) == "completed" {
                 completed.push(call_id.clone());
             }
             calls.push(ToolCall {
@@ -290,6 +291,7 @@ impl Store {
                 name: row.get(3),
                 arguments: serde_json::from_str(&arguments_text)?,
                 arguments_text,
+                argument_error: row.get(5),
             });
         }
         Ok(Some(ToolRoundSnapshot {

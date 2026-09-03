@@ -15,7 +15,7 @@ use crate::{
     Error, Result,
 };
 
-use super::OutputHub;
+use super::{OutputHub, TransportAdmission, TransportLifecycle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransportParent {
@@ -30,7 +30,8 @@ pub struct TransportHandle {
     output: Arc<OutputHub>,
     conversation_id: Arc<OnceLock<String>>,
     parent: Arc<OnceLock<TransportParent>>,
-    trace: Option<CursorTraceRecorder>,
+    trace: CursorTraceRecorder,
+    lifecycle: TransportLifecycle,
     disconnect: CancellationToken,
 }
 
@@ -39,7 +40,7 @@ impl TransportHandle {
         request_id: String,
         commands: mpsc::Sender<TransportCommand>,
         output: Arc<OutputHub>,
-        trace: Option<CursorTraceRecorder>,
+        trace: CursorTraceRecorder,
     ) -> Self {
         Self {
             request_id,
@@ -48,6 +49,7 @@ impl TransportHandle {
             conversation_id: Arc::new(OnceLock::new()),
             parent: Arc::new(OnceLock::new()),
             trace,
+            lifecycle: TransportLifecycle::new(),
             disconnect: CancellationToken::new(),
         }
     }
@@ -127,12 +129,46 @@ impl TransportHandle {
         self.output.close()
     }
 
-    pub(crate) async fn wait_closed(&self) {
-        self.output.wait_closed().await;
+    pub(crate) fn trace(&self) -> Option<&CursorTraceRecorder> {
+        Some(&self.trace)
     }
 
-    pub(crate) fn trace(&self) -> Option<&CursorTraceRecorder> {
-        self.trace.as_ref()
+    pub(crate) fn accepting_appends(&self) -> bool {
+        self.lifecycle.is_open()
+    }
+
+    pub(crate) fn admit(&self) -> Result<TransportAdmission> {
+        self.lifecycle
+            .admit()
+            .ok_or_else(|| Error::RunNotFound(self.request_id.clone()))
+    }
+
+    pub(crate) fn begin_close(&self) {
+        self.lifecycle.begin_close();
+    }
+
+    pub(crate) fn admissions_drained(&self) -> bool {
+        self.lifecycle.admissions_drained()
+    }
+
+    pub(crate) async fn wait_admissions_drained(&self) {
+        self.lifecycle.wait_admissions_drained().await;
+    }
+
+    pub(crate) fn mark_draining(&self) {
+        self.lifecycle.mark_draining();
+    }
+
+    pub(crate) fn reopen(&self) {
+        self.lifecycle.reopen();
+    }
+
+    pub(crate) fn close_transport(&self) {
+        self.lifecycle.close();
+    }
+
+    pub(crate) async fn wait_transport_closed(&self) {
+        self.lifecycle.wait_closed().await;
     }
 
     pub(crate) fn disconnect_token(&self) -> CancellationToken {

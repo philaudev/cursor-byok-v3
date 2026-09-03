@@ -4,20 +4,21 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::{
     model::{
-        CanonicalMessage, ContentPart, MessageContent, Origin, PreparedRun, Role, RunAction,
-        ToolRoundAssistant, ToolRoundId, Usage,
+        CanonicalMessage, MessageContent, Origin, PreparedRun, Role, RunAction, ToolRoundAssistant,
+        ToolRoundId, Usage,
     },
     provider::Provider,
-    store::{RunStatus, Store},
+    store::{ContextUsageAnchor, RunStatus, Store},
 };
 
 use super::{
-    consume_model_cycle, CommitBarrier, CommitCause, MessagesCommitted, ModelCycleFailure,
-    RunCommand, RunEvent, RunFailure, RunOutcome, RunPort,
+    consume_model_cycle,
+    model_retry::{should_retry, MODEL_RETRY_DELAY},
+    CommitBarrier, CommitCause, MessagesCommitted, RunCommand, RunEvent, RunFailure, RunOutcome,
+    RunPort,
 };
 
 pub struct RunEngine {
@@ -92,6 +93,14 @@ impl RunEngine {
         cancellation: &CancellationToken,
     ) -> (RunOutcome, Option<Usage>) {
         let mut usage = None;
+        let mut context_usage_anchor = match self
+            .store
+            .latest_context_usage(prepared.conversation_id.as_str())
+            .await
+        {
+            Ok(anchor) => anchor,
+            Err(error) => return (RunOutcome::Failed(error.into()), usage),
+        };
         tracing::info!(
             checkpoint_id = checkpoint.0,
             "Run claimed conversation ownership"
@@ -163,8 +172,6 @@ impl RunEngine {
             };
         }
 
-        let mut auto_compacted = false;
-        let mut checkpoint_context_tokens = prepared.checkpoint_context_tokens;
         'model: loop {
             if cancellation.is_cancelled() {
                 return (RunOutcome::Cancelled, usage);
@@ -173,46 +180,32 @@ impl RunEngine {
                 Ok(messages) => messages,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            let context_anchor = if !auto_compacted && prepared.action == RunAction::Start {
-                match self
-                    .store
-                    .latest_llm_call_usage_anchor(
-                        &prepared.conversation_id,
-                        &prepared.model.model_id,
-                    )
-                    .await
-                {
-                    Ok(anchor) => {
-                        anchor.and_then(super::compaction::ContextUsageAnchor::from_llm_call)
-                    }
-                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
-                }
-            } else {
-                None
-            };
-            if context_anchor.is_some() {
-                checkpoint_context_tokens = None;
-            }
             let history = match crate::model::project_messages(&messages) {
                 Ok(history) => history,
                 Err(error) => return (RunOutcome::Failed(error.into()), usage),
             };
-            if !auto_compacted
-                && super::compaction::should_compact(
-                    prepared,
-                    &messages,
-                    &history,
-                    context_anchor,
-                    checkpoint_context_tokens,
+            let compaction_estimate = (prepared.action != RunAction::Compact)
+                .then(|| {
+                    super::compaction::compaction_estimate(prepared, &history, context_usage_anchor)
+                })
+                .flatten();
+            if let Some(estimated_tokens) = compaction_estimate {
+                if emit(
+                    client,
+                    RunEvent::UsageSnapshot(context_usage_snapshot(estimated_tokens)),
                 )
-            {
+                .await
+                .is_err()
+                {
+                    return (client_failure(), usage);
+                }
                 match self
                     .auto_compact(prepared, checkpoint, &messages, client, cancellation)
                     .await
                 {
                     Ok((next_checkpoint, compaction_usage)) => {
                         checkpoint = next_checkpoint;
-                        auto_compacted = true;
+                        context_usage_anchor = None;
                         if let Some(compaction_usage) = compaction_usage {
                             accumulate_usage(&mut usage, compaction_usage);
                         }
@@ -249,125 +242,239 @@ impl RunEngine {
                 model: prepared.model.clone(),
                 history,
             };
-            let invocation = crate::model::ModelInvocation {
-                call_id: format!("{}:{provider_call_index}", prepared.run_id),
-                run_id: prepared.run_id.to_string(),
-                conversation_id: prepared.conversation_id.to_string(),
-                provider_call_index,
-                canonical_message_count: messages.len(),
-                projected_message_count,
-                history_fingerprint,
-                request,
-            };
-            let cycle_cancellation = cancellation.child_token();
-            let cycle_events = client.events.clone();
-            let cycle = consume_model_cycle(
-                self.provider.stream(invocation, cycle_cancellation.clone()),
-                &cycle_events,
-                &cycle_cancellation,
-            );
-            tokio::pin!(cycle);
+            let mut retries = 0_u32;
             let mut pending_insertions = Vec::new();
-            let cycle = loop {
-                tokio::select! {
-                    biased;
-                    command = client.commands.recv() => {
-                        let interruption = match command {
-                            Some(RunCommand::InsertMessages(insertion)) => {
-                                pending_insertions.push(insertion);
-                                continue;
+            let cycle = 'attempt: loop {
+                let call_id = if retries == 0 {
+                    format!("{}:{provider_call_index}", prepared.run_id)
+                } else {
+                    format!("{}:{provider_call_index}:retry-{retries}", prepared.run_id)
+                };
+                let invocation = crate::model::ModelInvocation {
+                    call_id,
+                    run_id: prepared.run_id.to_string(),
+                    conversation_id: prepared.conversation_id.to_string(),
+                    provider_call_index,
+                    canonical_message_count: messages.len(),
+                    projected_message_count,
+                    history_fingerprint: history_fingerprint.clone(),
+                    request: request.clone(),
+                };
+                let cycle_cancellation = cancellation.child_token();
+                let cycle_events = client.events.clone();
+                let cycle = consume_model_cycle(
+                    self.provider.stream(invocation, cycle_cancellation.clone()),
+                    &cycle_events,
+                    &cycle_cancellation,
+                );
+                tokio::pin!(cycle);
+                let cycle = loop {
+                    tokio::select! {
+                        biased;
+                        command = client.commands.recv() => {
+                            let interruption = match command {
+                                Some(RunCommand::InsertMessages(insertion)) => {
+                                    pending_insertions.push(insertion);
+                                    continue;
+                                }
+                                Some(RunCommand::BreakMessages(messages)) => messages,
+                                Some(RunCommand::Cancel) => {
+                                    cycle_cancellation.cancel();
+                                    let _ = cycle.await;
+                                    let _ = emit(client, RunEvent::CycleInterrupted).await;
+                                    return (RunOutcome::Cancelled, usage);
+                                }
+                                Some(RunCommand::ToolResult(_)) => {
+                                    cycle_cancellation.cancel();
+                                    let _ = cycle.await;
+                                    let _ = emit(client, RunEvent::CycleInterrupted).await;
+                                    return (
+                                        RunOutcome::Failed(RunFailure::Protocol(
+                                            "received a tool result while the model was running".into(),
+                                        )),
+                                        usage,
+                                    );
+                                }
+                                None => {
+                                    cycle_cancellation.cancel();
+                                    let _ = cycle.await;
+                                    let _ = emit(client, RunEvent::CycleInterrupted).await;
+                                    return (client_failure(), usage);
+                                }
+                            };
+                            cycle_cancellation.cancel();
+                            let interrupted = cycle.await;
+                            match interrupted {
+                                Ok(cycle) => {
+                                    if let Some(cycle_usage) = cycle.usage {
+                                        update_context_usage_anchor(
+                                            &mut context_usage_anchor,
+                                            cycle_usage,
+                                            request.history.len(),
+                                        );
+                                        accumulate_usage(&mut usage, cycle_usage);
+                                    }
+                                }
+                                Err(failure) => {
+                                    if let Some(cycle_usage) = failure.usage {
+                                        update_context_usage_anchor(
+                                            &mut context_usage_anchor,
+                                            cycle_usage,
+                                            request.history.len(),
+                                        );
+                                        accumulate_usage(&mut usage, cycle_usage);
+                                    }
+                                }
                             }
-                            Some(RunCommand::BreakMessages(messages)) => messages,
-                            Some(RunCommand::Cancel) => {
-                                cycle_cancellation.cancel();
-                                let _ = cycle.await;
-                                let _ = emit(client, RunEvent::CycleInterrupted).await;
-                                return (RunOutcome::Cancelled, usage);
-                            }
-                            Some(RunCommand::ToolResult(_)) => {
-                                cycle_cancellation.cancel();
-                                let _ = cycle.await;
-                                let _ = emit(client, RunEvent::CycleInterrupted).await;
-                                return (
-                                    RunOutcome::Failed(RunFailure::Protocol(
-                                        "received a tool result while the model was running".into(),
-                                    )),
-                                    usage,
-                                );
-                            }
-                            None => {
-                                cycle_cancellation.cancel();
-                                let _ = cycle.await;
-                                let _ = emit(client, RunEvent::CycleInterrupted).await;
+                            if emit(client, RunEvent::CycleInterrupted).await.is_err() {
                                 return (client_failure(), usage);
                             }
-                        };
-                        cycle_cancellation.cancel();
-                        let interrupted = cycle.await;
-                        match interrupted {
-                            Ok(cycle) => {
-                                if let Some(cycle_usage) = cycle.usage {
-                                    accumulate_usage(&mut usage, cycle_usage);
-                                }
-                            }
-                            Err(failure) => {
-                                if let Some(cycle_usage) = failure.usage {
-                                    accumulate_usage(&mut usage, cycle_usage);
-                                }
-                            }
+                            checkpoint = match super::messages::append_batches(
+                                &self.store,
+                                prepared,
+                                client,
+                                cancellation,
+                                checkpoint,
+                                std::mem::take(&mut pending_insertions),
+                            )
+                            .await
+                            {
+                                Ok((checkpoint, _)) => checkpoint,
+                                Err(outcome) => return (outcome, usage),
+                            };
+                            checkpoint = match super::messages::append_batches(
+                                &self.store,
+                                prepared,
+                                client,
+                                cancellation,
+                                checkpoint,
+                                vec![interruption],
+                            )
+                            .await
+                            {
+                                Ok((checkpoint, _)) => checkpoint,
+                                Err(outcome) => return (outcome, usage),
+                            };
+                            continue 'model;
+                        },
+                        result = &mut cycle => break result,
+                    }
+                };
+                match cycle {
+                    Ok(cycle) => break 'attempt cycle,
+                    Err(cycle_failure) => {
+                        if let Some(cycle_usage) = cycle_failure.usage {
+                            update_context_usage_anchor(
+                                &mut context_usage_anchor,
+                                cycle_usage,
+                                request.history.len(),
+                            );
+                            accumulate_usage(&mut usage, cycle_usage);
                         }
-                        if emit(client, RunEvent::CycleInterrupted).await.is_err() {
+                        if cancellation.is_cancelled() {
+                            let _ = emit(client, RunEvent::CycleInterrupted).await;
+                            return (RunOutcome::Cancelled, usage);
+                        }
+                        if !should_retry(&cycle_failure, retries) {
+                            return (RunOutcome::Failed(cycle_failure.failure), usage);
+                        }
+                        retries += 1;
+                        let message = failure_message(&cycle_failure.failure);
+                        tracing::warn!(
+                            provider_call_index,
+                            retries,
+                            max_retries = super::model_retry::MAX_MODEL_RETRIES,
+                            delay_ms = MODEL_RETRY_DELAY.as_millis() as u64,
+                            %message,
+                            checkpoint_id = checkpoint.0,
+                            "model attempt failed; retrying from current checkpoint"
+                        );
+                        if emit(
+                            client,
+                            RunEvent::ModelAttemptFailed {
+                                attempt: retries,
+                                message,
+                            },
+                        )
+                        .await
+                        .is_err()
+                        {
                             return (client_failure(), usage);
                         }
-                        checkpoint = match super::messages::append_batches(
-                            &self.store,
-                            prepared,
-                            client,
-                            cancellation,
-                            checkpoint,
-                            std::mem::take(&mut pending_insertions),
-                        )
-                        .await
-                        {
-                            Ok((checkpoint, _)) => checkpoint,
-                            Err(outcome) => return (outcome, usage),
-                        };
-                        checkpoint = match super::messages::append_batches(
-                            &self.store,
-                            prepared,
-                            client,
-                            cancellation,
-                            checkpoint,
-                            vec![interruption],
-                        )
-                        .await
-                        {
-                            Ok((checkpoint, _)) => checkpoint,
-                            Err(outcome) => return (outcome, usage),
-                        };
-                        continue 'model;
-                    },
-                    result = &mut cycle => break result,
-                }
-            };
-            let cycle = match cycle {
-                Ok(cycle) => cycle,
-                Err(ModelCycleFailure {
-                    failure,
-                    usage: cycle_usage,
-                    ..
-                }) => {
-                    if let Some(cycle_usage) = cycle_usage {
-                        accumulate_usage(&mut usage, cycle_usage);
+
+                        let delay = tokio::time::sleep(MODEL_RETRY_DELAY);
+                        tokio::pin!(delay);
+                        loop {
+                            tokio::select! {
+                                biased;
+                                command = client.commands.recv() => {
+                                    let interruption = match command {
+                                        Some(RunCommand::InsertMessages(insertion)) => {
+                                            pending_insertions.push(insertion);
+                                            continue;
+                                        }
+                                        Some(RunCommand::BreakMessages(messages)) => messages,
+                                        Some(RunCommand::Cancel) => {
+                                            let _ = emit(client, RunEvent::CycleInterrupted).await;
+                                            return (RunOutcome::Cancelled, usage);
+                                        }
+                                        Some(RunCommand::ToolResult(_)) => {
+                                            return (
+                                                RunOutcome::Failed(RunFailure::Protocol(
+                                                    "received a tool result while waiting to retry the model".into(),
+                                                )),
+                                                usage,
+                                            );
+                                        }
+                                        None => return (client_failure(), usage),
+                                    };
+                                    if emit(client, RunEvent::CycleInterrupted).await.is_err() {
+                                        return (client_failure(), usage);
+                                    }
+                                    checkpoint = match super::messages::append_batches(
+                                        &self.store,
+                                        prepared,
+                                        client,
+                                        cancellation,
+                                        checkpoint,
+                                        std::mem::take(&mut pending_insertions),
+                                    )
+                                    .await
+                                    {
+                                        Ok((checkpoint, _)) => checkpoint,
+                                        Err(outcome) => return (outcome, usage),
+                                    };
+                                    checkpoint = match super::messages::append_batches(
+                                        &self.store,
+                                        prepared,
+                                        client,
+                                        cancellation,
+                                        checkpoint,
+                                        vec![interruption],
+                                    )
+                                    .await
+                                    {
+                                        Ok((checkpoint, _)) => checkpoint,
+                                        Err(outcome) => return (outcome, usage),
+                                    };
+                                    continue 'model;
+                                }
+                                _ = cancellation.cancelled() => {
+                                    let _ = emit(client, RunEvent::CycleInterrupted).await;
+                                    return (RunOutcome::Cancelled, usage);
+                                }
+                                _ = &mut delay => break,
+                            }
+                        }
                     }
-                    if cancellation.is_cancelled() {
-                        let _ = emit(client, RunEvent::CycleInterrupted).await;
-                        return (RunOutcome::Cancelled, usage);
-                    }
-                    return (RunOutcome::Failed(failure), usage);
                 }
             };
             if let Some(cycle_usage) = cycle.usage {
+                update_context_usage_anchor(
+                    &mut context_usage_anchor,
+                    cycle_usage,
+                    request.history.len(),
+                );
                 accumulate_usage(&mut usage, cycle_usage);
             }
 
@@ -608,7 +715,15 @@ impl RunEngine {
         let (compactable, retained_request_context) =
             super::compaction::partition(messages, &current_ids);
         if compactable.is_empty() {
-            return Ok((checkpoint, None));
+            let projected = crate::model::project_messages(messages)
+                .map_err(|error| RunOutcome::Failed(error.into()))?;
+            let message = super::compaction::validate_compacted(prepared, &projected)
+                .err()
+                .unwrap_or_else(|| {
+                    "context overflow after compaction: no conversation history can be compacted"
+                        .into()
+                });
+            return Err(RunOutcome::Failed(RunFailure::Protocol(message)));
         }
 
         emit(client, RunEvent::AutoCompactionStarted)
@@ -719,7 +834,7 @@ impl RunEngine {
                 )
             }
         };
-        let event_id = format!("summary:auto:{}:{}", prepared.run_id, &Uuid::new_v4().simple().to_string()[..8]);
+        let event_id = format!("summary:auto:{}:{provider_call_index}", prepared.run_id);
         let summary_message = CanonicalMessage {
             message_id: format!("runtime:{event_id}"),
             role: Role::User,
@@ -734,6 +849,10 @@ impl RunEngine {
         let mut replacement = retained_request_context.into_iter().collect::<Vec<_>>();
         replacement.push(summary_message);
         replacement.extend(prepared.initial_messages.iter().cloned());
+        let projected_replacement = crate::model::project_messages(&replacement)
+            .map_err(|error| RunOutcome::Failed(error.into()))?;
+        super::compaction::validate_compacted(prepared, &projected_replacement)
+            .map_err(|message| RunOutcome::Failed(RunFailure::Protocol(message)))?;
         let mut checkpoint = self
             .store
             .replace_checkpoint(
@@ -758,6 +877,9 @@ impl RunEngine {
         .map_err(|_| client_failure())?;
         wait_for_state_ready(ready, cancellation).await?;
         emit(client, RunEvent::AutoCompactionCompleted)
+            .await
+            .map_err(|_| client_failure())?;
+        emit(client, RunEvent::UsageSnapshot(context_usage_snapshot(0)))
             .await
             .map_err(|_| client_failure())?;
         checkpoint = super::messages::append_batches(
@@ -827,6 +949,31 @@ async fn hydrate_tool_images(
         ];
     }
     Ok(())
+}
+
+fn context_usage_snapshot(tokens: u64) -> Usage {
+    Usage {
+        input_tokens: Some(tokens),
+        context_input_tokens: Some(tokens),
+        output_tokens: Some(0),
+        total_tokens: Some(tokens),
+        cache_read_tokens: Some(0),
+        cache_write_tokens: Some(0),
+        reasoning_tokens: Some(0),
+    }
+}
+
+fn update_context_usage_anchor(
+    anchor: &mut Option<ContextUsageAnchor>,
+    usage: Usage,
+    message_count: usize,
+) {
+    if let Some(context_input_tokens) = usage.context_input_tokens {
+        *anchor = Some(ContextUsageAnchor {
+            context_input_tokens,
+            message_count,
+        });
+    }
 }
 
 fn accumulate_usage(total: &mut Option<Usage>, usage: Usage) {

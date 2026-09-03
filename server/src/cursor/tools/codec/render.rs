@@ -54,6 +54,49 @@ pub(crate) fn edit_content_delta(call: &ToolCall, content: String) -> pb::AgentS
     )))
 }
 
+pub(crate) fn task_partial(
+    call: &ToolCall,
+    description: &str,
+    prompt: &str,
+    subagent: &str,
+    model: &str,
+    resume: &str,
+    environment: &str,
+) -> pb::AgentServerMessage {
+    server_interaction(pb::interaction_update::Message::PartialToolCall(
+        pb::PartialToolCallUpdate {
+            call_id: call.call_id.clone(),
+            tool_call: Some(pb::ToolCall {
+                hook_additional_contexts: Vec::new(),
+                tool_call_id: Some(call.call_id.clone()),
+                started_at_ms: None,
+                completed_at_ms: None,
+                tool: Some(pb::tool_call::Tool::TaskToolCall(pb::TaskToolCall {
+                    args: Some(pb::TaskArgs {
+                        description: description.into(),
+                        prompt: prompt.into(),
+                        subagent_type: Some(subagent_type(subagent)),
+                        model: (!model.is_empty()).then(|| model.into()),
+                        resume: (!resume.is_empty()).then(|| resume.into()),
+                        agent_id: None,
+                        attachments: Vec::new(),
+                        mode: 0,
+                        responding_to_message_ids: Vec::new(),
+                        environment: execution_environment(
+                            (!environment.is_empty()).then_some(environment),
+                        ),
+                        machine: None,
+                    }),
+                    result: None,
+                    ..Default::default()
+                })),
+            }),
+            args_text_delta: String::new(),
+            model_call_id: call.model_call_id.clone(),
+        },
+    ))
+}
+
 pub(crate) fn create_plan_partial(
     call: &ToolCall,
     name: &str,
@@ -167,7 +210,7 @@ pub fn tool_completed(call: &ToolCall, completion: &ToolCompletion) -> pb::Agent
 pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
     use pb::tool_call::Tool;
     let tool = match normalized(name).as_str() {
-        "shell" => Tool::ShellToolCall(pb::ShellToolCall::default()),
+        "shell" | "bash" => Tool::ShellToolCall(pb::ShellToolCall::default()),
         "delete" => Tool::DeleteToolCall(pb::DeleteToolCall::default()),
         "glob" => Tool::GlobToolCall(pb::GlobToolCall::default()),
         "ls" => Tool::LsToolCall(pb::LsToolCall::default()),
@@ -546,4 +589,24 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_placeholder;
+    use crate::cursor::protocol::proto::agent::v1 as pb;
+
+    #[test]
+    fn bash_renders_as_a_shell_placeholder() {
+        // The dispatcher treats `bash`/`Bash` as a Shell alias, so the streaming
+        // placeholder must too; otherwise a `Bash` tool call aborts the turn with
+        // `unsupported tool: bash` before it ever runs.
+        for name in ["shell", "Shell", "bash", "Bash"] {
+            let tool = tool_placeholder(name, "call-1").unwrap().tool;
+            assert!(
+                matches!(tool, Some(pb::tool_call::Tool::ShellToolCall(_))),
+                "{name} should render as a Shell tool"
+            );
+        }
+    }
 }

@@ -278,19 +278,17 @@ impl CheckpointBuilder {
             ),
         });
         if let Some(trace) = handle.trace() {
-            trace
-                .artifact(
-                    "checkpoint",
-                    "byok_server",
-                    &checkpoint.encode_to_vec(),
-                    serde_json::json!({
-                        "root_message_count": checkpoint.root_prompt_messages_json.len(),
-                        "turn_count": checkpoint.turns.len(),
-                        "pending_tool_call_count": checkpoint.pending_tool_calls.len(),
-                        "emit_status": if result.is_ok() { "sent" } else { "error" },
-                    }),
-                )
-                .await;
+            trace.artifact(
+                "checkpoint",
+                "byok_server",
+                &checkpoint.encode_to_vec(),
+                serde_json::json!({
+                    "root_message_count": checkpoint.root_prompt_messages_json.len(),
+                    "turn_count": checkpoint.turns.len(),
+                    "pending_tool_call_count": checkpoint.pending_tool_calls.len(),
+                    "emit_status": if result.is_ok() { "sent" } else { "error" },
+                }),
+            );
         }
         result
     }

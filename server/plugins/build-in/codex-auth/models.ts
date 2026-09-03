@@ -24,7 +24,11 @@ function positiveInteger(value: unknown): number | null {
 }
 
 function parseReasoningEfforts(model: Record<string, unknown>): string[] {
-  const source = model.supported_reasoning_efforts ??
+  const source = model.supported_reasoning_levels ??
+    model.supportedReasoningLevels ??
+    model.reasoning_levels ??
+    model.reasoningLevels ??
+    model.supported_reasoning_efforts ??
     model.supportedReasoningEfforts ??
     model.reasoning_efforts ??
     model.reasoningEfforts;
@@ -61,10 +65,6 @@ export function parseOfficialModels(body: unknown): ModelDefinition[] {
     seen.add(id);
     const efforts = parseReasoningEfforts(model);
     const description = text(model.description);
-    const contextWindowTokens = positiveInteger(
-      model.context_window_tokens ?? model.contextWindowTokens ?? model.context_window ??
-        model.contextWindow,
-    );
     const maxOutputTokens = positiveInteger(
       model.max_output_tokens ?? model.maxOutputTokens ?? model.max_completion_tokens ??
         model.maxCompletionTokens,
@@ -74,9 +74,8 @@ export function parseOfficialModels(body: unknown): ModelDefinition[] {
       displayName: text(model.display_name ?? model.displayName ?? model.title ?? model.name) ??
         id,
       ...(description ? { description } : {}),
-      ...(contextWindowTokens !== null ? { contextWindowTokens } : {}),
       ...(maxOutputTokens !== null ? { maxOutputTokens } : {}),
-      capabilities: { thinking: efforts.length > 0, images: true },
+      capabilities: { images: true },
       privateData: { reasoningEfforts: efforts },
     });
   }

@@ -7,6 +7,7 @@ mod event;
 mod handle;
 mod messages;
 mod model_cycle;
+mod model_retry;
 mod port;
 mod tool_round;
 

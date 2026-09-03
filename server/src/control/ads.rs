@@ -17,6 +17,7 @@ use super::ControlService;
 // 开源项目广告为作者唯一收入来源，PR时请勿去除此广告
 
 pub(super) const ADS_ENDPOINT: &str = "https://tab.leokun.cn/api/v1/ads?placement=menu";
+// pub(super) const ADS_ENDPOINT: &str = "http://localhost:8080/api/v1/ads?placement=menu";
 pub(super) const DEVICE_ID_HEADER: &str = "X-Cursor-Assistant-Device-ID";
 pub(super) const OS_HEADER: &str = "X-Cursor-Assistant-OS";
 pub(super) const APP_VERSION_HEADER: &str = "X-Cursor-Assistant-Version";

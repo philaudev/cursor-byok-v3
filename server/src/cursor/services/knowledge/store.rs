@@ -80,7 +80,7 @@ impl RuleStore {
             let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
                 continue;
             };
-            if validate_id(id).is_err() {
+            if id == crate::config::COMPACTION_PROMPT_STEM || validate_id(id).is_err() {
                 continue;
             }
             let knowledge = std::fs::read_to_string(&path)?;
@@ -162,7 +162,7 @@ impl RuleStore {
             let keep = path
                 .file_stem()
                 .and_then(|value| value.to_str())
-                .is_some_and(|id| meta.rules.contains_key(id));
+                .is_some_and(|id| id == crate::config::COMPACTION_PROMPT_STEM || meta.rules.contains_key(id));
             if !keep {
                 remove_file_if_exists(&path)?;
             }
@@ -450,9 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn replace_all_mirrors_upstream_state() {
+    fn replace_all_mirrors_upstream_state_and_preserves_compaction_prompt() {
         let root = tempfile::tempdir().unwrap();
-        let store = RuleStore::open(root.path().join("rules")).unwrap();
+        let rules_path = root.path().join("rules");
+        let store = RuleStore::open(rules_path.clone()).unwrap();
+        let compaction_file = rules_path.join("compaction.md");
+        std::fs::write(&compaction_file, "custom user compaction prompt").unwrap();
+
         store
             .upsert(&record("stale", "gone soon", "2026-01-01T00:00:00.000Z"))
             .unwrap();
@@ -470,6 +474,11 @@ mod tests {
         assert_eq!(listed[0].id, "17353272");
         assert_eq!(listed[0].knowledge, "from upstream");
         assert!(store.get("stale").unwrap().is_none());
+        assert!(compaction_file.exists());
+        assert_eq!(
+            std::fs::read_to_string(&compaction_file).unwrap(),
+            "custom user compaction prompt"
+        );
     }
 
     #[test]

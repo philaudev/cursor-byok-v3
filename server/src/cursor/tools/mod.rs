@@ -103,10 +103,20 @@ impl ToolDispatcher {
             }
             let message_index = first_tool_index + position;
             let publish_started = !state.started.contains(&call.call_id);
+            if let Some(error) = &call.argument_error {
+                dispatched.push(validation_failure(call, error.clone()));
+                continue;
+            }
             let edit_path = if dynamic_mcp.contains_key(&call.name) {
                 None
             } else {
-                edit::execution_path(call)?
+                match edit::execution_path(call) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        dispatched.push(recover_validation_failure(call, error)?);
+                        continue;
+                    }
+                }
             };
             if let Some(path) = edit_path {
                 let next = self.edit_schedule.lock().await.start_or_defer(
@@ -121,22 +131,28 @@ impl ToolDispatcher {
                 let Some(next) = next else {
                     continue;
                 };
-                dispatched.push(
-                    self.start(
+                let started = self
+                    .start(
                         &next.call,
                         next.message_index,
                         next.publish_started,
                         dynamic_mcp,
                         &next.context,
                     )
-                    .await?,
-                );
+                    .await;
+                dispatched.push(match started {
+                    Ok(started) => started,
+                    Err(error) => recover_validation_failure(&next.call, error)?,
+                });
                 continue;
             }
-            dispatched.push(
-                self.start(call, message_index, publish_started, dynamic_mcp, context)
-                    .await?,
-            );
+            let started = self
+                .start(call, message_index, publish_started, dynamic_mcp, context)
+                .await;
+            dispatched.push(match started {
+                Ok(started) => started,
+                Err(error) => recover_validation_failure(call, error)?,
+            });
         }
         Ok(dispatched)
     }
@@ -146,15 +162,19 @@ impl ToolDispatcher {
         let Some(next) = next else {
             return Ok(None);
         };
-        self.start(
-            &next.call,
-            next.message_index,
-            next.publish_started,
-            &BTreeMap::new(),
-            &next.context,
-        )
-        .await
-        .map(Some)
+        match self
+            .start(
+                &next.call,
+                next.message_index,
+                next.publish_started,
+                &BTreeMap::new(),
+                &next.context,
+            )
+            .await
+        {
+            Ok(started) => Ok(Some(started)),
+            Err(error) => recover_validation_failure(&next.call, error).map(Some),
+        }
     }
 
     pub async fn interrupt_for_message(&self) -> Vec<u32> {
@@ -203,34 +223,64 @@ impl ToolDispatcher {
         let pending = match self.runtime.take_interaction(response.id).await {
             Some(pending) => pending,
             None if self.runtime.completed_call(response.id).await.is_some() => {
-                return Err(Error::Protocol(format!(
-                    "duplicate terminal InteractionResponse id: {}",
-                    response.id
-                )));
+                tracing::warn!(
+                    id = response.id,
+                    "ignoring duplicate terminal interaction response"
+                );
+                return Ok(ClientToolEvent::Pending);
             }
             None => {
-                return Err(Error::Protocol(format!(
-                    "unknown InteractionResponse id: {}",
-                    response.id
-                )));
+                tracing::warn!(
+                    id = response.id,
+                    "ignoring response for unknown interaction"
+                );
+                return Ok(ClientToolEvent::Pending);
             }
         };
-        Ok(
-            match tool_call_dispatch::resume_interaction(
-                &self.results,
-                &self.search,
-                &self.fetch,
-                pending,
-                response,
-            )
-            .await?
-            {
-                tool_call_dispatch::InteractionContinuation::Completed(completion) => {
-                    ClientToolEvent::Completed(completion)
-                }
-                tool_call_dispatch::InteractionContinuation::Pending => ClientToolEvent::Pending,
-            },
+        let call = pending.call.clone();
+        let continuation = match tool_call_dispatch::resume_interaction(
+            &self.results,
+            &self.search,
+            &self.fetch,
+            pending,
+            response,
         )
+        .await
+        {
+            Ok(continuation) => continuation,
+            Err(Error::Protocol(message)) => {
+                return Ok(ClientToolEvent::Completed(Box::new(
+                    compat::failure_with_message(&call, message),
+                )));
+            }
+            Err(Error::Json(error)) => {
+                return Ok(ClientToolEvent::Completed(Box::new(
+                    compat::failure_with_message(&call, error.to_string()),
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(match continuation {
+            tool_call_dispatch::InteractionContinuation::Completed(completion) => {
+                ClientToolEvent::Completed(completion)
+            }
+            tool_call_dispatch::InteractionContinuation::Pending => ClientToolEvent::Pending,
+        })
+    }
+}
+
+fn validation_failure(call: &ToolCall, message: String) -> DispatchedTool {
+    DispatchedTool {
+        messages: Vec::new(),
+        completion: Some(compat::failure_with_message(call, message)),
+    }
+}
+
+fn recover_validation_failure(call: &ToolCall, error: Error) -> Result<DispatchedTool> {
+    match error {
+        Error::Protocol(message) => Ok(validation_failure(call, message)),
+        Error::Json(error) => Ok(validation_failure(call, error.to_string())),
+        error => Err(error),
     }
 }
 

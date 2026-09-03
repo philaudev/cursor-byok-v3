@@ -132,9 +132,7 @@ pub(crate) async fn prepare(
             "selected_source": history_source,
         });
         let encoded = serde_json::to_vec(&summary)?;
-        trace
-            .artifact("history_projection", "byok_server", &encoded, summary)
-            .await;
+        trace.artifact("history_projection", "byok_server", &encoded, summary);
     }
     let mut request_context = context::hydrate(request, context_sync).await?;
     if let Some(rules_dir) = local_rules_dir {

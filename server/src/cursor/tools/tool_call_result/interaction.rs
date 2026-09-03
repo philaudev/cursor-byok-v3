@@ -406,6 +406,7 @@ mod tests {
                 name: "WebFetch".into(),
                 arguments_text: r#"{"url":"https://example.com"}"#.into(),
                 arguments: json!({"url": "https://example.com"}),
+                argument_error: None,
             },
             started_at_ms: 1,
         }

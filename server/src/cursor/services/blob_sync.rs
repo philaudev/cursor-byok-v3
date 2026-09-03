@@ -20,6 +20,9 @@ use crate::{
 
 type BlobSetSender = oneshot::Sender<Result<()>>;
 
+const SET_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const GET_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 #[derive(Clone)]
 pub struct BlobSynchronizer {
     inner: Arc<Inner>,
@@ -73,22 +76,20 @@ impl BlobSynchronizer {
         let id = self.inner.store.put_blob(data, edges).await?;
         let result = self.ensure_set(&id, data).await;
         if let Some(trace) = self.inner.handle.trace() {
-            trace
-                .linked_blob(
-                    "blob_set",
-                    "byok_server",
-                    &id,
-                    serde_json::json!({
-                        "byte_count": data.len(),
-                        "status": if result.is_ok() { "acknowledged" } else { "error" },
-                        "error": result.as_ref().err().map(ToString::to_string),
-                        "edges": edges.iter().map(|edge| serde_json::json!({
-                            "child_blob_id": edge.child.to_base64(),
-                            "field_name": edge.field_name,
-                        })).collect::<Vec<_>>(),
-                    }),
-                )
-                .await;
+            trace.linked_blob(
+                "blob_set",
+                "byok_server",
+                &id,
+                serde_json::json!({
+                    "byte_count": data.len(),
+                    "status": if result.is_ok() { "acknowledged" } else { "error" },
+                    "error": result.as_ref().err().map(ToString::to_string),
+                    "edges": edges.iter().map(|edge| serde_json::json!({
+                        "child_blob_id": edge.child.to_base64(),
+                        "field_name": edge.field_name,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
         }
         result?;
         Ok(id)
@@ -130,7 +131,7 @@ impl BlobSynchronizer {
         let result = tokio::select! {
             result = receiver => result.map_err(|_| Error::Protocol("KV SET response channel closed".into()))?,
             _ = cancellation.cancelled() => Err(Error::Cancelled),
-            _ = tokio::time::sleep(Duration::from_secs(60)) => Err(Error::Protocol(format!("KV SET timed out: {}", blob_id.to_base64()))),
+            _ = tokio::time::sleep(SET_TIMEOUT) => Err(Error::Protocol(format!("KV SET timed out: {}", blob_id.to_base64()))),
         };
         if result.is_err() {
             self.inner.set_requests.lock().await.remove(&id);
@@ -141,18 +142,16 @@ impl BlobSynchronizer {
     pub async fn get(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>> {
         if let Some(data) = self.inner.store.get_blob(blob_id).await? {
             if let Some(trace) = self.inner.handle.trace() {
-                trace
-                    .linked_blob(
-                        "blob_get",
-                        "byok_server",
-                        blob_id,
-                        serde_json::json!({
-                            "byte_count": data.len(),
-                            "source": "local_store",
-                            "status": "found",
-                        }),
-                    )
-                    .await;
+                trace.linked_blob(
+                    "blob_get",
+                    "byok_server",
+                    blob_id,
+                    serde_json::json!({
+                        "byte_count": data.len(),
+                        "source": "local_store",
+                        "status": "found",
+                    }),
+                );
             }
             return Ok(Some(data));
         }
@@ -183,7 +182,7 @@ impl BlobSynchronizer {
         let result = tokio::select! {
             result = receiver => result.map_err(|_| Error::Protocol("KV GET response channel closed".into()))?,
             _ = cancellation.cancelled() => Err(Error::Cancelled),
-            _ = tokio::time::sleep(Duration::from_secs(60)) => Err(Error::Protocol(format!("KV GET timed out: {}", blob_id.to_base64()))),
+            _ = tokio::time::sleep(GET_TIMEOUT) => Err(Error::Protocol(format!("KV GET timed out: {}", blob_id.to_base64()))),
         };
         if result.is_err() {
             self.inner.get_requests.lock().await.remove(&id);
@@ -191,45 +190,39 @@ impl BlobSynchronizer {
         if let Some(trace) = self.inner.handle.trace() {
             match &result {
                 Ok(Some(data)) => {
-                    trace
-                        .linked_blob(
-                            "blob_get",
-                            "cursor_client",
-                            blob_id,
-                            serde_json::json!({
-                                "byte_count": data.len(),
-                                "source": "cursor_client",
-                                "status": "found",
-                            }),
-                        )
-                        .await;
+                    trace.linked_blob(
+                        "blob_get",
+                        "cursor_client",
+                        blob_id,
+                        serde_json::json!({
+                            "byte_count": data.len(),
+                            "source": "cursor_client",
+                            "status": "found",
+                        }),
+                    );
                 }
                 Ok(None) => {
-                    trace
-                        .artifact(
-                            "blob_get",
-                            "cursor_client",
-                            &[],
-                            serde_json::json!({
-                                "blob_id": blob_id.to_base64(),
-                                "status": "missing",
-                            }),
-                        )
-                        .await;
+                    trace.artifact(
+                        "blob_get",
+                        "cursor_client",
+                        &[],
+                        serde_json::json!({
+                            "blob_id": blob_id.to_base64(),
+                            "status": "missing",
+                        }),
+                    );
                 }
                 Err(error) => {
-                    trace
-                        .artifact(
-                            "blob_get",
-                            "cursor_client",
-                            &[],
-                            serde_json::json!({
-                                "blob_id": blob_id.to_base64(),
-                                "status": "error",
-                                "error": error.to_string(),
-                            }),
-                        )
-                        .await;
+                    trace.artifact(
+                        "blob_get",
+                        "cursor_client",
+                        &[],
+                        serde_json::json!({
+                            "blob_id": blob_id.to_base64(),
+                            "status": "error",
+                            "error": error.to_string(),
+                        }),
+                    );
                 }
             }
         }
@@ -316,5 +309,20 @@ impl BlobSynchronizer {
             None => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_timeout_allows_slow_cursor_acknowledgements() {
+        assert_eq!(SET_TIMEOUT, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn get_timeout_allows_slow_cursor_responses() {
+        assert_eq!(GET_TIMEOUT, Duration::from_secs(10 * 60));
     }
 }

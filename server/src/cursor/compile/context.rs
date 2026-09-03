@@ -12,7 +12,7 @@ use crate::{
         protocol::proto::agent::v1 as pb, services::context_sync::RequestContextSynchronizer,
         tools::runtime::McpRoute,
     },
-    model::ToolDefinition,
+    model::{normalize_tool_name, ToolDefinition},
     store::BlobId,
     Error, Result,
 };
@@ -403,6 +403,7 @@ fn is_skill_rule(rule: &pb::CursorRule) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
 }
 
+#[allow(dead_code)]
 pub fn selected_context(user: &pb::UserMessage) -> Option<String> {
     let selected = user.selected_context.as_ref()?;
     let mut sections = selected.extra_context.clone();
@@ -489,7 +490,7 @@ pub fn dynamic_mcp(
             })?),
         };
         let parameters = normalize_mcp_parameters(&wire.name, parameters)?;
-        let name = model_tool_name(&wire.name);
+        let name = normalize_tool_name(&wire.name);
         let definition = ToolDefinition {
             name: name.clone(),
             description: wire.description.clone(),
@@ -547,18 +548,6 @@ fn invalid_mcp_parameters(tool_name: &str) -> Error {
     Error::Protocol(format!(
         "MCP tool {tool_name} input schema must describe an object"
     ))
-}
-
-fn model_tool_name(name: &str) -> String {
-    name.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn prost_value(value: &prost_types::Value) -> Value {

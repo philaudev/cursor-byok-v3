@@ -103,7 +103,7 @@ async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     )
     .unwrap();
     let registry = TransportRegistry::new(
-        store,
+        store.clone(),
         Arc::new(fake_provider::FakeProvider::default()),
         PromptCompiler::new(assets),
     );
@@ -118,7 +118,8 @@ async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     encoder.write_all(&wire).unwrap();
     let compressed = encoder.finish().unwrap();
 
-    let response = cursor::router(registry)
+    let clients = cursor_server::network::NetworkClients::new(store);
+    let response = cursor::router(registry, clients)
         .unwrap()
         .oneshot(
             Request::post("/aiserver.v1.BidiService/BidiAppend")

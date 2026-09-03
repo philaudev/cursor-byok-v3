@@ -17,10 +17,10 @@ use crate::{
 };
 
 use super::{
-    apply_body_allowlist, apply_openai_prompt_cache_key, map_sse_error, merge_extra_params,
-    provider_event_error,
+    apply_body_allowlist, apply_openai_prompt_cache_key,
+    attempt::{send_once, Attempt},
+    map_sse_error, merge_extra_params, provider_event_error,
     recorder::recorded_headers,
-    retry::{send_with_retry, Attempt, RetryPolicy},
     CallRecorder, FinishReason, ModelEvent, Provider, ProviderStream,
 };
 
@@ -92,15 +92,12 @@ impl Provider for OpenAiChatProvider {
             if let Some(recorder) = &recorder {
                 recorder.request(request_headers.clone(), &body).await?;
             }
-            let attempt = send_with_retry(
+            let attempt = send_once(
                 "OpenAI Chat",
                 || client.post(&config.request_url)
                     .bearer_auth(&config.api_key).headers(config.custom_headers.clone()).json(&body),
-                RetryPolicy { retries: config.retry_count, ..RetryPolicy::default() },
                 &cancellation,
                 recorder.as_ref(),
-                request_headers,
-                &body,
             ).await?;
             let Attempt::Response(response) = attempt else { return };
             yield ModelEvent::Start { model_call_id: call_id };
@@ -433,6 +430,7 @@ pub(crate) fn openai_usage(value: &Value) -> Usage {
 
     Usage {
         input_tokens,
+        context_input_tokens: prompt_tokens,
         output_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
         cache_read_tokens: cached_tokens,

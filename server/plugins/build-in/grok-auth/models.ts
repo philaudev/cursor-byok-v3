@@ -9,12 +9,12 @@ export const FALLBACK_MODELS: ModelDefinition[] = [
   {
     id: "grok-4.6",
     displayName: "Grok 4.6",
-    capabilities: { thinking: false, images: true },
+    capabilities: { images: true },
   },
   {
     id: "grok-4.5",
     displayName: "Grok 4.5",
-    capabilities: { thinking: false, images: true },
+    capabilities: { images: true },
   },
 ];
 
@@ -26,15 +26,6 @@ function object(value: unknown): Record<string, unknown> | null {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function positiveInteger(value: unknown): number | null {
-  const parsed = typeof value === "number"
-    ? value
-    : typeof value === "string"
-    ? Number(value)
-    : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
 }
 
 function modalities(value: unknown): string[] {
@@ -66,15 +57,10 @@ export function parseGrokModels(body: unknown): ModelDefinition[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const inputs = modalities(model?.input_modalities ?? model?.inputModalities);
-    const contextWindowTokens = positiveInteger(
-      model?.context_window ?? model?.contextWindow ?? model?.max_prompt_length,
-    );
     models.push({
       id,
       displayName: displayName(id),
-      ...(contextWindowTokens !== null ? { contextWindowTokens } : {}),
       capabilities: {
-        thinking: false,
         images: inputs.length === 0 || inputs.includes("image"),
       },
     });
