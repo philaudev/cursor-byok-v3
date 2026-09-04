@@ -141,7 +141,7 @@
       "type": "function",
       "function": {
         "name": "SembleSearch",
-        "description": "Primary codebase exploration and semantic search tool. Use FIRST when discovering unknown implementations, understanding architecture/behavior, tracing concept flows, or locating symbols across the repository. The repo parameter must be the absolute workspace directory.\n\nWrite queries in natural English; keep identifiers and code fragments intact. For exact text/regex matches, use Grep. To expand and find related code around a result, use SembleFindRelated.",
+        "description": "Semantic code search for focused technical investigation. Prefer fast-context MCP first when it is available for broad codebase discovery, architecture/behavior exploration, or tracing feature flows. Use SembleSearch to narrow an investigation to specific symbols, algorithms, or implementation details, or when fast-context MCP is unavailable. The repo parameter must be the absolute workspace directory.\n\nWrite queries in natural English; keep identifiers and code fragments intact. For exact text/regex matches, use Grep. To expand a SembleSearch result and trace connected code, use SembleFindRelated.",
         "parameters": {
           "type": "object",
           "properties": {
