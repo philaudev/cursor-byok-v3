@@ -183,6 +183,19 @@ async fn local_markdown_rules_land_in_the_request_context_message() {
     registry.shutdown().await;
 }
 
+fn set_blob_result(id: u32) -> pb::AgentClientMessage {
+    pb::AgentClientMessage {
+        message: Some(pb::agent_client_message::Message::KvClientMessage(
+            pb::KvClientMessage {
+                id,
+                message: Some(pb::kv_client_message::Message::SetBlobResult(
+                    pb::SetBlobResult { error: None },
+                )),
+            },
+        )),
+    }
+}
+
 fn user_run() -> pb::AgentClientMessage {
     pb::AgentClientMessage {
         message: Some(pb::agent_client_message::Message::RunRequest(

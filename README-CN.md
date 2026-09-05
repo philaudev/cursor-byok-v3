@@ -128,7 +128,6 @@ cursor-byok/
 │   │   │   ├── i18n/     # 本地化运行时与语言目录
 │   │   │   └── styles/   # 全局主题与排版令牌
 │   │   └── src-tauri/    # Tauri 桌面生命周期
-│   └── docs/          # Next.js 与 Fumadocs 中文/英文文档站
 ├── server/
 │   ├── src/
 │   │   ├── cursor/    # Cursor 协议适配
@@ -167,7 +166,6 @@ cursor-byok/
 
 ```bash
 npm --prefix apps/desktop install
-npm --prefix apps/docs install
 ```
 
 ### 启动开发环境
@@ -184,14 +182,6 @@ make dev-web
 make dev-desktop
 ```
 
-启动文档站：
-
-```bash
-make dev-docs
-```
-
-文档站默认地址为 <http://localhost:3000>。
-
 ### 检查与构建
 
 运行完整检查：
@@ -205,12 +195,9 @@ make check
 ```bash
 make build-web       # 构建桌面前端
 make build-server    # 构建 Rust 本地服务
-make build-docs      # 构建文档站
 make build-desktop   # 构建 Tauri 桌面安装包
 make build-docker    # 构建 Docker 镜像
 ```
-
-文档内容位于 `apps/docs/content/docs` 和 `apps/docs/content/blog`。修改文档侧边栏时同步更新 `apps/docs/content/docs/meta.json`。
 
 ## 路线图
 

@@ -1,6 +1,7 @@
 //! Exposes the local desktop application integration.
 mod account;
 mod ca;
+mod process;
 mod proxy;
 mod settings;
 
@@ -21,8 +22,16 @@ pub(crate) fn proxy_host_allowed(host: &str) -> bool {
     proxy::is_cursor_host(host)
 }
 
-fn integration_prerequisites_ready(ca: &CaState, backend_ready: bool) -> bool {
-    matches!(ca, CaState::Ready) && backend_ready
+pub(crate) fn request_uses_local_cursor_token(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(account::is_local_cursor_authorization)
+}
+
+#[cfg(test)]
+pub(crate) fn local_cursor_authorization() -> String {
+    format!("Bearer {}", account::local_token().unwrap())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,6 +58,7 @@ pub struct CursorHarnessStatus {
     pub configured_models: usize,
     pub enabled_models: usize,
     pub integration: IntegrationState,
+    pub settings_applied: bool,
     pub proxy_url: Option<String>,
     pub ca_install_command: Option<String>,
 }
@@ -90,6 +100,10 @@ impl CursorHarness {
         *self.inner.backend_addr.write() = Some(addr);
     }
 
+    pub async fn proxy_port(&self) -> Option<u16> {
+        self.inner.proxy.lock().await.port()
+    }
+
     pub async fn cleanup_stale_settings(&self) -> Result<()> {
         settings::clear_stale_managed_settings()
     }
@@ -99,7 +113,10 @@ impl CursorHarness {
         let configured_models = models.len();
         let enabled_models = configured_models;
         let ca = self.inner.ca.state()?;
-        if integration_prerequisites_ready(&ca, self.inner.backend_addr.read().is_some()) {
+        if self.inner.store.cursor_takeover_enabled().await?
+            && matches!(ca, CaState::Ready)
+            && self.inner.backend_addr.read().is_some()
+        {
             self.enable().await?;
         }
         let proxy = self.inner.proxy.lock().await;
@@ -120,6 +137,7 @@ impl CursorHarness {
             configured_models,
             enabled_models,
             integration,
+            settings_applied,
             proxy_url,
             ca_install_command: self.inner.ca.install_command(),
         })
@@ -136,8 +154,10 @@ impl CursorHarness {
 
     pub async fn set_enabled(&self, enabled: bool) -> Result<CursorHarnessStatus> {
         if enabled {
+            self.inner.store.set_cursor_takeover_enabled(true).await?;
             self.enable().await?;
         } else {
+            self.inner.store.set_cursor_takeover_enabled(false).await?;
             self.disable().await?;
         }
         self.status().await
@@ -161,6 +181,15 @@ impl CursorHarness {
             .read()
             .ok_or_else(|| Error::Config("desktop management server is not ready".into()))?;
         let mut proxy = self.inner.proxy.lock().await;
+        let settings_applied = proxy
+            .url()
+            .as_deref()
+            .map(settings::settings_match)
+            .transpose()?
+            .unwrap_or(false);
+        if !settings_applied {
+            process::terminate_cursor().await?;
+        }
         if proxy.running() {
             if let Some(url) = proxy.url() {
                 apply_cursor_configuration(&url).await?;

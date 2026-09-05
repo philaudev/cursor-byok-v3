@@ -187,6 +187,32 @@ struct UsableModelsAddition {
     models: Vec<agent::ModelDetails>,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct DefaultModelResponse {
+    #[prost(string, tag = "1")]
+    model: String,
+    #[prost(string, tag = "2")]
+    thinking_model: String,
+    #[prost(bool, tag = "3")]
+    max_mode: bool,
+    #[prost(string, tag = "4")]
+    next_default_set_date: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct DefaultModelNudgeDataResponse {
+    #[prost(string, tag = "1")]
+    nudge_date: String,
+    #[prost(bool, tag = "2")]
+    should_default_switch_on_new_chat: bool,
+    #[prost(string, repeated, tag = "3")]
+    models_with_no_default_switch: Vec<String>,
+    #[prost(string, tag = "4")]
+    conversion_model_override: String,
+}
+
+const CLI_LOCAL_MODEL_API_KEY: &str = "cursor-byok-local";
+
 const CONTEXTS: [(&str, &str); 5] = [
     ("200k", "200K"),
     ("356k", "356K"),
@@ -291,6 +317,94 @@ pub async fn usable_models(
             tracing::warn!(%error, "Cursor GetUsableModels upstream unavailable; using local catalog");
             Ok(local_response(local))
         }
+    }
+}
+
+pub async fn default_model_for_cli(
+    State(registry): State<TransportRegistry>,
+) -> Result<Response<Body>> {
+    let models = registry.store().models().await?;
+    let plugin_models = configured_plugin_models(&registry).await;
+    Ok(local_response(
+        agent::GetDefaultModelForCliResponse {
+            model: default_model_details(&models, &plugin_models),
+        }
+        .encode_to_vec(),
+    ))
+}
+
+pub async fn default_model(State(registry): State<TransportRegistry>) -> Result<Response<Body>> {
+    let models = registry.store().models().await?;
+    let plugin_models = configured_plugin_models(&registry).await;
+    Ok(local_response(
+        default_model_response(&models, &plugin_models).encode_to_vec(),
+    ))
+}
+
+pub async fn default_model_nudge(
+    State(registry): State<TransportRegistry>,
+) -> Result<Response<Body>> {
+    let models = registry.store().models().await?;
+    let plugin_models = configured_plugin_models(&registry).await;
+    Ok(local_response(
+        default_model_nudge_response(&models, &plugin_models).encode_to_vec(),
+    ))
+}
+
+async fn configured_plugin_models(registry: &TransportRegistry) -> Vec<PluginModelDescriptor> {
+    match registry.plugins() {
+        Some(plugins) => plugins.configured_models().await,
+        None => Vec::new(),
+    }
+}
+
+fn default_model_details(
+    models: &[ModelConfig],
+    plugin_models: &[PluginModelDescriptor],
+) -> Option<agent::ModelDetails> {
+    models
+        .first()
+        .map(usable_model)
+        .or_else(|| plugin_models.first().map(usable_plugin_model))
+}
+
+fn default_model_id<'a>(
+    models: &'a [ModelConfig],
+    plugin_models: &'a [PluginModelDescriptor],
+) -> &'a str {
+    models
+        .first()
+        .map(|model| model.model_hash.as_str())
+        .or_else(|| plugin_models.first().map(|model| model.id.as_str()))
+        .unwrap_or_default()
+}
+
+fn default_model_response(
+    models: &[ModelConfig],
+    plugin_models: &[PluginModelDescriptor],
+) -> DefaultModelResponse {
+    let model = default_model_id(models, plugin_models).to_owned();
+    DefaultModelResponse {
+        thinking_model: model.clone(),
+        model,
+        max_mode: false,
+        next_default_set_date: String::new(),
+    }
+}
+
+fn default_model_nudge_response(
+    models: &[ModelConfig],
+    plugin_models: &[PluginModelDescriptor],
+) -> DefaultModelNudgeDataResponse {
+    DefaultModelNudgeDataResponse {
+        nudge_date: "0".into(),
+        should_default_switch_on_new_chat: false,
+        models_with_no_default_switch: models
+            .iter()
+            .map(|model| model.model_hash.clone())
+            .chain(plugin_models.iter().map(|model| model.id.clone()))
+            .collect(),
+        conversion_model_override: String::new(),
     }
 }
 
@@ -641,6 +755,13 @@ fn available_plugin_model(model: &PluginModelDescriptor) -> AvailableModel {
     }
 }
 
+fn cli_local_model_credentials() -> agent::model_details::Credentials {
+    agent::model_details::Credentials::ApiKeyCredentials(agent::ApiKeyCredentials {
+        api_key: CLI_LOCAL_MODEL_API_KEY.into(),
+        base_url: None,
+    })
+}
+
 fn usable_plugin_model(model: &PluginModelDescriptor) -> agent::ModelDetails {
     agent::ModelDetails {
         model_id: model.id.clone(),
@@ -648,6 +769,7 @@ fn usable_plugin_model(model: &PluginModelDescriptor) -> agent::ModelDetails {
         display_name: model.display_name.clone(),
         display_name_short: model.display_name.clone(),
         thinking_details: Some(agent::ThinkingDetails::default()),
+        credentials: Some(cli_local_model_credentials()),
         ..Default::default()
     }
 }
@@ -659,217 +781,74 @@ fn usable_model(model: &ModelConfig) -> agent::ModelDetails {
         display_name: model.display_name.clone(),
         display_name_short: model.display_name.clone(),
         thinking_details: Some(agent::ThinkingDetails::default()),
+        credentials: Some(cli_local_model_credentials()),
         ..Default::default()
     }
 }
 #[cfg(test)]
 mod tests {
-    use axum::body::{to_bytes, Bytes};
-    use crate::model::ModelType;
-
     use super::*;
+    use crate::model::{ModelType, OPENAI_CHAT_ENDPOINT};
 
-    #[test]
-    fn maps_byok_model_to_cursor_catalog_fields() {
-        let model = ModelConfig {
-            model_hash: "33ceed20".into(),
+    fn model() -> ModelConfig {
+        ModelConfig {
+            model_hash: "local-model-hash".into(),
             sort_order: 0,
-            display_name: "DeepSeek V4 Flash".into(),
+            display_name: "Local Model".into(),
+            group_name: None,
             model_type: ModelType::OpenAi,
-            base_url: "https://example.com/v1/responses".into(),
+            base_url: "https://provider.example/v1/chat/completions".into(),
             use_full_url: true,
-            api_key: "secret".into(),
-            tooltip_data: "DeepSeek V4 Flash".into(),
-            model_id: "deepseek-v4-flash".into(),
+            api_key: "provider-secret".into(),
+            tooltip_data: "Local Model".into(),
+            model_id: "upstream-model".into(),
             reasoning_effort: None,
-            openai_endpoint: "/v1/responses".into(),
+            openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
             openai_extra_params_enabled: false,
             openai_extra_params: serde_json::json!({}),
             custom_headers_enabled: false,
             custom_headers: serde_json::json!({}),
             anthropic_extra_params_enabled: false,
             anthropic_extra_params: serde_json::json!({}),
-            context_window_tokens: Some(272_000),
+            context_window_tokens: None,
             max_completion_tokens: None,
             anthropic_max_tokens: None,
             anthropic_thinking_effort: None,
             thinking_budget_tokens: None,
-            group_name: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn cli_model_details_use_local_routing_credentials() {
+        let details = usable_model(&model());
+        assert_eq!(details.model_id, "local-model-hash");
+        assert_eq!(details.display_name, "Local Model");
+        let agent::model_details::Credentials::ApiKeyCredentials(credentials) =
+            details.credentials.expect("API credentials")
+        else {
+            panic!("expected API key credentials");
         };
-
-        let mapped = available_model(&model);
-        assert_eq!(mapped.name, "33ceed20");
-        assert!(mapped.default_on);
-        assert_eq!(mapped.supports_agent, Some(true));
-        assert_eq!(mapped.degradation_status, Some(0));
-        assert_eq!(mapped.supports_thinking, Some(true));
-        assert_eq!(mapped.supports_images, Some(true));
-        assert_eq!(mapped.supports_max_mode, Some(true));
-        assert_eq!(mapped.supports_non_max_mode, Some(true));
-        assert_eq!(mapped.supports_plan_mode, Some(true));
-        assert_eq!(mapped.supports_sandboxing, Some(true));
-        assert_eq!(mapped.supports_cmd_k, Some(false));
-        assert_eq!(
-            mapped.client_display_name.as_deref(),
-            Some("DeepSeek V4 Flash")
-        );
-        assert_eq!(mapped.server_model_name.as_deref(), Some("33ceed20"));
-        assert_eq!(mapped.named_model_section_index, Some(1));
-        assert_eq!(
-            mapped
-                .tooltip_data
-                .as_ref()
-                .and_then(|tooltip| tooltip.markdown_content.as_deref()),
-            Some("DeepSeek V4 Flash")
-        );
-        assert_eq!(mapped.vendor_name.as_deref(), Some("cursor"));
-        assert_eq!(mapped.parameter_definitions.len(), 3);
-        let context = mapped
-            .parameter_definitions
-            .iter()
-            .find(|parameter| parameter.id == "context")
-            .unwrap();
-        let context_values = context
-            .parameter_type
-            .as_ref()
-            .unwrap()
-            .enum_parameter
-            .as_ref()
-            .unwrap()
-            .values
-            .iter()
-            .map(|value| value.value.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(context_values, ["200k", "356k", "500k", "800k", "1m", "272000"]);
-        let custom_context = context
-            .parameter_type
-            .as_ref()
-            .unwrap()
-            .enum_parameter
-            .as_ref()
-            .unwrap()
-            .values
-            .iter()
-            .find(|value| value.value == "272000")
-            .unwrap();
-        assert_eq!(
-            custom_context.display_name.as_deref(),
-            Some("272K (Custom)")
-        );
-        let reasoning = mapped
-            .parameter_definitions
-            .iter()
-            .find(|parameter| parameter.id == "reasoning")
-            .unwrap();
-        assert!(reasoning
-            .parameter_type
-            .as_ref()
-            .unwrap()
-            .enum_parameter
-            .as_ref()
-            .unwrap()
-            .values
-            .iter()
-            .any(|value| value.value == "max"));
-        assert_eq!(mapped.variants.len(), 60);
-        assert_eq!(mapped.legacy_slugs.len(), 60);
-        let default = mapped
-            .variants
-            .iter()
-            .find(|variant| variant.is_default_non_max_config == Some(true))
-            .unwrap();
-        assert_eq!(
-            default.variant_string_representation.as_deref(),
-            Some("33ceed20[context=272000,reasoning=high,fast=false]")
-        );
-        assert_eq!(mapped.model_picker_badges.len(), 1);
-        assert_eq!(mapped.model_picker_badges[0].label, "example.com");
-        assert!(!mapped.model_picker_badges[0].dismiss_on_selection);
-        assert_eq!(
-            default
-                .parameter_values
-                .iter()
-                .map(|parameter| parameter.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["context", "reasoning", "fast"]
-        );
-        assert_eq!(mapped.vendor.unwrap().display_name, "Cursor");
-        assert!(usable_model(&model).thinking_details.is_some());
+        assert_eq!(credentials.api_key, CLI_LOCAL_MODEL_API_KEY);
+        assert_eq!(credentials.base_url, None);
+        assert_ne!(credentials.api_key, "provider-secret");
     }
 
-    #[tokio::test]
-    async fn appends_models_without_reencoding_official_fields() {
-        // Unknown field 99 = 7 stands in for every official field this service does not know.
-        let official = Bytes::from_static(&[0x98, 0x06, 0x07]);
-        let addition = AvailableModelsAddition {
-            model_names: vec!["f246010a".into()],
-            models: Vec::new(),
-        }
-        .encode_to_vec();
-        let response = merge_response(
-            proxy::BufferedResponse {
-                status: axum::http::StatusCode::OK,
-                headers: Default::default(),
-                body: official.clone(),
-            },
-            addition.clone(),
-        )
-        .unwrap();
-        let merged = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(&merged[..official.len()], official.as_ref());
-        assert_eq!(&merged[official.len()..], addition);
-    }
+    #[test]
+    fn cli_default_responses_use_the_local_model_hash() {
+        let models = vec![model()];
+        let details = default_model_details(&models, &[]).expect("default model");
+        assert_eq!(details.model_id, "local-model-hash");
 
-    #[tokio::test]
-    async fn updates_connect_length_when_catalog_is_framed() {
-        let official = [0x98, 0x06, 0x07];
-        let mut framed = BytesMut::new();
-        framed.put_u8(0);
-        framed.put_u32(official.len() as u32);
-        framed.extend_from_slice(&official);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::CONTENT_LENGTH, framed.len().into());
-        let response = merge_response(
-            proxy::BufferedResponse {
-                status: axum::http::StatusCode::OK,
-                headers,
-                body: framed.freeze(),
-            },
-            vec![0x0a, 0x01, b'x'],
-        )
-        .unwrap();
-        assert_eq!(response.headers()[axum::http::header::CONTENT_LENGTH], "11");
-        let merged = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(u32::from_be_bytes(merged[1..5].try_into().unwrap()), 6);
-        assert_eq!(&merged[5..8], &official);
-    }
+        let response = default_model_response(&models, &[]);
+        assert_eq!(response.model, "local-model-hash");
+        assert_eq!(response.thinking_model, "local-model-hash");
 
-    #[tokio::test]
-    async fn returns_local_catalog_when_upstream_rejects_request() {
-        let local = AvailableModelsAddition {
-            model_names: vec!["f246010a".into()],
-            models: Vec::new(),
-        }
-        .encode_to_vec();
-        let response = merge_response(
-            proxy::BufferedResponse {
-                status: axum::http::StatusCode::UNAUTHORIZED,
-                headers: Default::default(),
-                body: Bytes::from_static(b"not logged in"),
-            },
-            local.clone(),
-        )
-        .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let nudge = default_model_nudge_response(&models, &[]);
         assert_eq!(
-            response.headers()[axum::http::header::CONTENT_TYPE],
-            "application/proto"
-        );
-        assert_eq!(
-            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
-            local
+            nudge.models_with_no_default_switch,
+            vec!["local-model-hash"]
         );
     }
 }

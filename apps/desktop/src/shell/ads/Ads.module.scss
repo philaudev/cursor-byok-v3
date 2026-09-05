@@ -24,19 +24,14 @@
   padding: 0 32px 0 8px;
   color: inherit;
   text-align: left;
-  background: transparent;
-  border: 1px solid var(--vscode-sideBar-border);
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+  border: 2px solid #be8d180d;
   border-radius: 6px;
 
   &:hover,
   &[aria-expanded="true"] {
-    background: var(--vscode-list-hoverBackground);
-     border: 1px solid var(--vscode-sideBar-border);
-  }
-
-  &:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 1px;
+    background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+    border-color: #be8d180d;
   }
 }
 
@@ -47,7 +42,7 @@
   width: 16px;
   height: 16px;
   padding: 0;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   color: color-mix(in srgb, var(--vscode-descriptionForeground) 42%, transparent);
@@ -64,6 +59,10 @@
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: 1px;
   }
+}
+
+.menuSlotContainer:hover .menuDismiss {
+  display: flex;
 }
 
 .unreadDot {
@@ -85,7 +84,9 @@
 }
 
 .menuCopy {
+  flex: 1 1 0;
   min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -93,9 +94,41 @@
 
 .menuTitle,
 .menuSubtitle {
+  display: block;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.menuOverflow {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.menuMarquee {
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.menuMarquee .menuTitle,
+.menuMarquee .menuSubtitle {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menuMarquee [data-rcm-t] {
+    animation-play-state: running !important;
+  }
 }
 
 .menuTitle {
@@ -121,15 +154,19 @@
   flex-direction: column;
   overflow: hidden;
   color: var(--vscode-foreground);
-  background: var(--vscode-editorWidget-background);
+  background: color-mix(in srgb, var(--vscode-editorWidget-background) 92%, var(--vscode-foreground) 8%);
   border-radius: 15px;
-  border: none;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
   box-shadow: 0 24px 20px rgb(0 0 0 / 28%);
   animation: ad-enter 180ms ease-out;
 
   &:focus {
     outline: none;
   }
+}
+
+:global(:root[data-theme="default-light"]) .floatingAd {
+  background: var(--vscode-editorWidget-background);
 }
 
 .hero {

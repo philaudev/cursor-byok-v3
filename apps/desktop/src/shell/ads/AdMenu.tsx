@@ -1,4 +1,5 @@
-import type { RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { Marquee } from "react-css-marquee";
 import { Icon } from "../../shared/ui/Icon";
 import { windowCloseIcon } from "../../shared/ui/icons";
 import type { AdSlot } from "./types";
@@ -13,6 +14,49 @@ type AdMenuProps = {
   onOpen: (ad: AdSlot) => void;
   onDismiss: (ad: AdSlot) => void;
 };
+
+type OverflowTextProps = {
+  children: string;
+  className: string;
+};
+
+function OverflowText({ children, className }: OverflowTextProps) {
+  const container = useRef<HTMLDivElement>(null);
+  const text = useRef<HTMLSpanElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    const viewport = container.current;
+    if (!viewport) return;
+
+    const update = () => {
+      const element = text.current;
+      if (!element) return;
+      setOverflowing(element.scrollWidth > viewport.clientWidth + 1);
+    };
+
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(viewport);
+    if (text.current) observer.observe(text.current);
+    let disposed = false;
+    void document.fonts?.ready.then(() => {
+      if (!disposed) update();
+    });
+    return () => {
+      disposed = true;
+      observer.disconnect();
+    };
+  }, [children, overflowing]);
+
+  return <div ref={container} className={styles.menuOverflow}>
+    {overflowing
+      ? <Marquee className={styles.menuMarquee} repeat loop={0} speed={12} gap={24}>
+        <span ref={text} className={className}>{children}</span>
+      </Marquee>
+      : <span ref={text} className={className}>{children}</span>}
+  </div>;
+}
 
 export function AdMenu({ ads, activeAdId, dismissingAdId, readAdIds, triggerRefs, onOpen, onDismiss }: AdMenuProps) {
   return <div className={styles.menuSlots} aria-label={t("推荐内容")}>
@@ -33,10 +77,10 @@ export function AdMenu({ ads, activeAdId, dismissingAdId, readAdIds, triggerRefs
       >
         {!readAdIds.has(ad.id) && <span className={styles.unreadDot} aria-hidden="true" />}
         <img className={styles.menuImage} src={ad.target.imageUrl} alt="" />
-        <span className={styles.menuCopy}>
-          <span className={styles.menuTitle}>{ad.target.title}</span>
-          <span className={styles.menuSubtitle}>{ad.target.description}</span>
-        </span>
+        <div className={styles.menuCopy}>
+          <OverflowText className={styles.menuTitle}>{ad.target.title}</OverflowText>
+          <OverflowText className={styles.menuSubtitle}>{ad.target.description}</OverflowText>
+        </div>
       </button>
       <button
         type="button"

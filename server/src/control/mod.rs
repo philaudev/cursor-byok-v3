@@ -111,9 +111,13 @@ fn proxy_error(error: impl std::fmt::Display) -> Response<Body> {
 
 pub fn api_router(service: ControlService) -> Router {
     Router::new()
-        .route("/__byok-api__/api/ads", get(ads::get))
+        .route("/__byok-api__/api/promotions", get(ads::get))
         .route(
-            "/__byok-api__/api/ads/{ad_id}/dismissals",
+            "/__byok-api__/api/promotions/images/{file_name}",
+            get(ads::image),
+        )
+        .route(
+            "/__byok-api__/api/promotions/{ad_id}/dismissals",
             post(ads::dismiss),
         )
         .route(
@@ -169,12 +173,20 @@ pub fn api_router(service: ControlService) -> Router {
             axum::routing::delete(plugins::delete_resource),
         )
         .route(
+            "/__byok-api__/api/plugins/{plugin_id}/resources/{resource_type}/{resource_id}/actions/{action_id}",
+            post(plugins::action),
+        )
+        .route(
             "/__byok-api__/api/plugins/{plugin_id}/resources/{resource_type}/{resource_id}/refresh",
             post(plugins::refresh_resource),
         )
         .route(
             "/__byok-api__/api/plugins/{plugin_id}/providers/{provider_id}/models/sync",
             post(plugins::sync_models),
+        )
+        .route(
+            "/__byok-api__/api/plugins/{plugin_id}/providers/{provider_id}/models/enabled",
+            put(plugins::set_model_enabled),
         )
         .route(
             "/__byok-api__/api/settings/observability",
@@ -199,6 +211,10 @@ pub fn api_router(service: ControlService) -> Router {
         .route(
             "/__byok-api__/api/settings/desktop",
             get(settings::get_desktop).put(settings::update_desktop),
+        )
+        .route(
+            "/__byok-api__/api/settings/commit",
+            get(settings::get_commit).put(settings::update_commit),
         )
         .route(
             "/__byok-api__/api/harness/cursor/status",

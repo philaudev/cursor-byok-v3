@@ -11,7 +11,13 @@ pub struct DerivedState {
 }
 
 pub fn fold_derived_state(messages: &[CanonicalMessage]) -> DerivedState {
-    let mut state = DerivedState::default();
+    fold_derived_state_from(messages, DerivedState::default())
+}
+
+pub fn fold_derived_state_from(
+    messages: &[CanonicalMessage],
+    mut state: DerivedState,
+) -> DerivedState {
     let mut calls = std::collections::HashMap::<String, (String, Value)>::new();
     for message in messages {
         match &message.content {
@@ -203,5 +209,6 @@ mod tests {
             }),
             runtime_event_id: None,
         }
+
     }
 }

@@ -323,6 +323,18 @@ fn model_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ModelConfig> {
     })
 }
 
+fn optional_u64(row: &sqlx::sqlite::SqliteRow, column: &str) -> Result<Option<u64>> {
+    row.try_get::<Option<i64>, _>(column)?
+        .map(|value| {
+            u64::try_from(value).map_err(|_| Error::Config(format!("{column} cannot be negative")))
+        })
+        .transpose()
+}
+
+fn to_i64(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Config("token value is too large".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,16 +398,4 @@ mod tests {
         assert_eq!(cleared.model_hash, created.model_hash);
         assert_eq!(cleared.group_name, None);
     }
-}
-
-fn optional_u64(row: &sqlx::sqlite::SqliteRow, column: &str) -> Result<Option<u64>> {
-    row.try_get::<Option<i64>, _>(column)?
-        .map(|value| {
-            u64::try_from(value).map_err(|_| Error::Config(format!("{column} cannot be negative")))
-        })
-        .transpose()
-}
-
-fn to_i64(value: u64) -> Result<i64> {
-    i64::try_from(value).map_err(|_| Error::Config("token value is too large".into()))
 }

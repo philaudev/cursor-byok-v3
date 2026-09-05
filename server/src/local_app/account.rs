@@ -52,23 +52,24 @@ async fn inject_if_missing_at(path: &Path) -> Result<()> {
     .execute(&mut connection)
     .await?;
 
+    let token = local_token()?;
     let account = sqlx::query("SELECT CAST(value AS TEXT) AS value FROM ItemTable WHERE key = ?")
         .bind("cursorAuth/accessToken")
         .fetch_optional(&mut connection)
         .await?;
     if account.is_some_and(|row| {
         row.try_get::<String, _>("value")
-            .is_ok_and(|value| !value.trim().is_empty())
+            .is_ok_and(|value| !value.trim().is_empty() && value != token)
     }) {
         return Ok(());
     }
 
-    let token = local_token()?;
     let values = [
         ("cursorAuth/accessToken", token.as_str()),
         ("cursorAuth/refreshToken", token.as_str()),
         ("cursorAuth/cachedEmail", EMAIL),
         ("cursorAuth/cachedSignUpType", SIGN_UP_TYPE),
+        ("cursorAuth/stripeMembershipAuthId", SUBJECT),
         ("cursorAuth/stripeMembershipType", MEMBERSHIP_TYPE),
         ("cursorAuth/stripeSubscriptionStatus", SUBSCRIPTION_STATUS),
     ];
@@ -89,7 +90,17 @@ async fn inject_if_missing_at(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn local_token() -> Result<String> {
+pub(crate) fn is_local_cursor_authorization(authorization: &str) -> bool {
+    authorization
+        .strip_prefix("Bearer ")
+        .is_some_and(is_local_cursor_token)
+}
+
+fn is_local_cursor_token(token: &str) -> bool {
+    local_token().is_ok_and(|local| local == token)
+}
+
+pub(super) fn local_token() -> Result<String> {
     let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({
         "sub": SUBJECT,
@@ -100,4 +111,65 @@ fn local_token() -> Result<String> {
         "exp": 4070908800_u64
     }))?);
     Ok(format!("{header}.{payload}.{SUBJECT}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reinjection_repairs_local_membership_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.vscdb");
+        inject_if_missing_at(&path).await.unwrap();
+
+        let mut connection = SqliteConnection::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE ItemTable SET value = 'free' WHERE key = ?")
+            .bind("cursorAuth/stripeMembershipType")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM ItemTable WHERE key = ?")
+            .bind("cursorAuth/stripeMembershipAuthId")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        drop(connection);
+
+        inject_if_missing_at(&path).await.unwrap();
+
+        let mut connection = SqliteConnection::connect(&format!("sqlite:{}", path.display()))
+            .await
+            .unwrap();
+        let membership_type: String =
+            sqlx::query_scalar("SELECT CAST(value AS TEXT) FROM ItemTable WHERE key = ?")
+                .bind("cursorAuth/stripeMembershipType")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+        let membership_auth_id: String =
+            sqlx::query_scalar("SELECT CAST(value AS TEXT) FROM ItemTable WHERE key = ?")
+                .bind("cursorAuth/stripeMembershipAuthId")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+
+        assert_eq!(membership_type, MEMBERSHIP_TYPE);
+        assert_eq!(membership_auth_id, SUBJECT);
+    }
+
+    #[test]
+    fn recognizes_only_the_injected_cursor_token() {
+        let token = local_token().unwrap();
+        assert!(is_local_cursor_token(&token));
+        assert!(is_local_cursor_authorization(&format!("Bearer {token}")));
+        assert!(!is_local_cursor_authorization(&token));
+        assert!(!is_local_cursor_authorization(
+            "Bearer official-cursor-token"
+        ));
+        assert!(!is_local_cursor_token("official-cursor-token"));
+        assert!(!is_local_cursor_token(""));
+    }
 }

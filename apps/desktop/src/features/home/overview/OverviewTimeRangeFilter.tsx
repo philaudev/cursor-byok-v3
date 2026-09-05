@@ -4,22 +4,25 @@ import { createPortal } from "react-dom";
 import { parseTimeInput } from "../../../shared/utils/parseTimeInput";
 import controls from "../../../shared/ui/Controls.module.scss";
 import { Icon } from "../../../shared/ui/Icon";
-import { MultiSelect, type MultiSelectOption } from "../../../shared/ui/MultiSelect";
+import { ModelSelect, type ModelSelectOption } from "../../../shared/ui/ModelSelect";
 import { TooltipTrigger } from "../../../shared/ui/TooltipTrigger";
 import { refreshIcon } from "../../../shared/ui/icons";
 import styles from "./OverviewTimeRangeFilter.module.scss";
 
 export type OverviewRangePreset = "ten-minutes" | "hour" | "today" | "week" | "month" | "custom";
+export type QuickPreset = "four-hours" | "twenty-four-hours";
 
-export function OverviewTimeRangeFilter({ value, customOpen, customStart, customEnd, modelOptions, selectedModels, busy, onSelect, onCustomOpenChange, onCustomStartChange, onCustomEndChange, onSelectedModelsChange, onCustomApply, onRefresh }: {
+export function OverviewTimeRangeFilter({ value, quick, customOpen, customStart, customEnd, modelOptions, selectedModels, busy, onSelect, onQuickSelect, onCustomOpenChange, onCustomStartChange, onCustomEndChange, onSelectedModelsChange, onCustomApply, onRefresh }: {
   value: OverviewRangePreset;
+  quick: QuickPreset | null;
   customOpen: boolean;
   customStart: string;
   customEnd: string;
-  modelOptions: MultiSelectOption[];
+  modelOptions: ModelSelectOption[];
   selectedModels: string[];
   busy: boolean;
   onSelect: (value: Exclude<OverviewRangePreset, "custom">) => void;
+  onQuickSelect: (durationMs: number) => void;
   onCustomOpenChange: (open: boolean) => void;
   onCustomStartChange: (value: string) => void;
   onCustomEndChange: (value: string) => void;
@@ -33,6 +36,10 @@ export function OverviewTimeRangeFilter({ value, customOpen, customStart, custom
     { value: "ten-minutes", label: t("近10分钟") },
     { value: "week", label: t("近一周") },
     { value: "month", label: t("近一个月") },
+  ];
+  const quickPresets: Array<{ value: QuickPreset; label: string }> = [
+    { value: "four-hours", label: t("近4小时") },
+    { value: "twenty-four-hours", label: t("近24小时") },
   ];
   const customButton = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
@@ -66,7 +73,6 @@ export function OverviewTimeRangeFilter({ value, customOpen, customStart, custom
   const parsedStart = parseTimeInput(customStart);
   const parsedEnd = parseTimeInput(customEnd);
   const customValid = parsedStart !== null && parsedEnd !== null && parsedStart < parsedEnd;
-
   return <div className={styles.root} aria-label={t("概览时间范围")}>
     <div className={styles.presets}>
       {presets.map((preset) => <button
@@ -95,6 +101,7 @@ export function OverviewTimeRangeFilter({ value, customOpen, customStart, custom
       role="dialog"
       aria-label={t("自定义概览筛选")}
       style={position}
+      onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -103,9 +110,17 @@ export function OverviewTimeRangeFilter({ value, customOpen, customStart, custom
         }
       }}
     >
+      <div className={styles.quickPresets} aria-label={t("快捷时间范围")}>
+        {quickPresets.map((preset) => <button
+          key={preset.value}
+          type="button"
+          aria-pressed={quick === preset.value}
+          onClick={() => onQuickSelect(preset.value === "four-hours" ? 4 * 60 * 60_000 : 24 * 60 * 60_000)}
+        >{preset.label}</button>)}
+      </div>
       <label><span>{t("开始时间")}</span><input type="text" placeholder={t("如：2026-08-23 09:00、1小时前")} value={customStart} onChange={(event) => onCustomStartChange(event.target.value)} /></label>
       <label><span>{t("结束时间")}</span><input type="text" placeholder={t("如：现在、2026-08-23 18:00")} value={customEnd} onChange={(event) => onCustomEndChange(event.target.value)} /></label>
-      <div className={styles.filterRow}><MultiSelect label={t("模型")} value={selectedModels} options={modelOptions} onChange={onSelectedModelsChange} /></div>
+      <div className={styles.filterRow}><ModelSelect mode="multiple" label={t("模型")} value={selectedModels} options={modelOptions} onChange={onSelectedModelsChange} /></div>
       <div className={styles.popoverActions}>
         <button type="button" className={controls.secondary} onClick={() => onCustomOpenChange(false)}>{t("取消")}</button>
         <button type="button" className={controls.primary} disabled={!customValid} onClick={onCustomApply}>{t("应用")}</button>

@@ -19,7 +19,10 @@ use crate::{
             connect,
             proto::{agent::v1 as agent, aiserver::v1 as ai},
         },
-        services::{account, analytics, knowledge, model_catalog, tab},
+        services::{
+            account, analytics, commit_message, compatibility, entitlement::FreeEntitlementCache,
+            knowledge, model_catalog, server_config, tab,
+        },
         transport::{TransportParent, TransportRegistry},
     },
     Result,
@@ -40,10 +43,35 @@ fn router_with_proxy(
     knowledge_service: knowledge::KnowledgeService,
 ) -> Router {
     let web_cache = registry.web_cache().router();
+    let free_entitlements = FreeEntitlementCache::default();
     Router::new()
         .route("/__byok-api__/healthz", get(health))
         .route("/agent.v1.AgentService/RunSSE", post(run_sse_handler))
         .route("/aiserver.v1.BidiService/BidiAppend", post(bidi_handler))
+        .route(
+            "/aiserver.v1.AiService/AvailableDocs",
+            post(compatibility::available_docs),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetEffectiveUserPlugins",
+            post(compatibility::effective_user_plugins),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetUserPrivacyMode",
+            post(compatibility::user_privacy_mode),
+        )
+        .route(
+            "/agent.v1.AgentService/UpdateConversationMetadata",
+            post(compatibility::update_conversation_metadata),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetServerConfig",
+            post(server_config::get),
+        )
+        .route(
+            "/aiserver.v1.ServerConfigService/GetServerConfig",
+            post(server_config::get),
+        )
         .route(
             "/aiserver.v1.AiService/AvailableModels",
             post(model_catalog::available_models),
@@ -57,8 +85,36 @@ fn router_with_proxy(
             post(model_catalog::usable_models),
         )
         .route(
+            "/aiserver.v1.AiService/WriteGitCommitMessage",
+            post(commit_message::write_git_commit_message),
+        )
+        .route(
+            "/aiserver.v1.NetworkService/IsConnected",
+            post(is_connected),
+        )
+        .route(
+            "/agent.v1.AgentService/GetDefaultModelForCli",
+            post(model_catalog::default_model_for_cli),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetDefaultModelForCli",
+            post(model_catalog::default_model_for_cli),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetDefaultModel",
+            post(model_catalog::default_model),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetDefaultModelNudgeData",
+            post(model_catalog::default_model_nudge),
+        )
+        .route(
             "/aiserver.v1.AuthService/GetEmail",
             post(account::get_email),
+        )
+        .route(
+            "/aiserver.v1.AuthService/GetUserMeta",
+            post(account::get_user_meta),
         )
         .route("/aiserver.v1.DashboardService/GetMe", post(account::get_me))
         .route(
@@ -98,6 +154,7 @@ fn router_with_proxy(
             post(analytics::bootstrap_statsig),
         )
         .route("/auth/full_stripe_profile", get(account::stripe_profile))
+        .route("/auth/stripe_profile", get(account::stripe_profile))
         .merge(tab::router())
         .route_layer(DefaultBodyLimit::disable())
         .route_layer(RequestDecompressionLayer::new())
@@ -105,12 +162,30 @@ fn router_with_proxy(
         .method_not_allowed_fallback(proxy::forward)
         .layer(Extension(proxy))
         .layer(Extension(knowledge_service))
+        .layer(Extension(free_entitlements))
         .with_state(registry)
         .merge(web_cache)
 }
 
 async fn health() -> StatusCode {
     StatusCode::NO_CONTENT
+}
+
+/// `NetworkService/IsConnected` probe. Cursor's always-local extension checks
+/// connectivity roughly 10s after any slow request starts; a 404/error here is
+/// treated as "network disconnected" and aborts in-flight work (e.g. commit
+/// message generation) even while the model is still streaming. Always answer
+/// connected with an empty `IsConnectedResponse` so local BYOK generation is
+/// never cancelled by this probe.
+async fn is_connected() -> Result<Response<Body>> {
+    let payload = connect::encode_message(&ai::IsConnectedResponse {})?;
+    let mut response = Response::new(Body::from(payload));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/proto"),
+    );
+    Ok(response)
 }
 
 async fn run_sse_handler(

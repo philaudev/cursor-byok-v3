@@ -28,8 +28,8 @@ use crate::{
     plugin::{PluginDescriptor, PluginRegistry, PluginRuntime, PluginRuntimeStatus},
     provider::{is_valid_response_event, ModelEvent, Provider},
     store::{
-        DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput, StatisticsStorage, Store,
-        TabSettings,
+        CommitSettings, DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput,
+        StatisticsStorage, Store, TabSettings,
     },
     Error, Result,
 };
@@ -226,6 +226,19 @@ impl ControlService {
             .await
     }
 
+    pub async fn plugin_resource_action(
+        &self,
+        plugin_id: &str,
+        resource_type: &str,
+        resource_id: &str,
+        action_id: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.plugins
+            .resource_action(plugin_id, resource_type, resource_id, action_id, input)
+            .await
+    }
+
     pub async fn plugin_delete_resource(
         &self,
         plugin_id: &str,
@@ -239,6 +252,18 @@ impl ControlService {
 
     pub async fn plugin_sync_models(&self, plugin_id: &str, provider_id: &str) -> Result<usize> {
         self.plugins.sync_models(plugin_id, provider_id).await
+    }
+
+    pub async fn plugin_set_model_enabled(
+        &self,
+        plugin_id: &str,
+        provider_id: &str,
+        model_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        self.plugins
+            .set_model_enabled(plugin_id, provider_id, model_id, enabled)
+            .await
     }
 
     pub async fn remove_plugin_configuration(&self, plugin_id: &str) -> Result<()> {
@@ -283,7 +308,9 @@ impl ControlService {
                 message.chars().take(200).collect::<String>()
             )));
         }
-        response.json::<AdRuntime>().await?.into_menu_slots()
+        let mut runtime = response.json::<AdRuntime>().await?.into_menu_slots()?;
+        runtime.cache_images(&client).await;
+        Ok(runtime)
     }
 
     pub(super) async fn dismiss_ad(&self, ad_id: &str, input: &AdDismissalInput) -> Result<()> {
@@ -327,8 +354,11 @@ impl ControlService {
         start_ms: Option<i64>,
         end_ms: Option<i64>,
         model_hashes: Option<&str>,
+        bucket_ms: Option<i64>,
     ) -> Result<Overview> {
-        self.store.overview(start_ms, end_ms, model_hashes).await
+        self.store
+            .overview(start_ms, end_ms, model_hashes, bucket_ms)
+            .await
     }
 
     pub async fn create_models(&self, models: &[ModelConfigInput]) -> Result<Vec<ModelConfig>> {
@@ -686,6 +716,13 @@ impl ControlService {
     }
 
     pub async fn set_proxy_settings(&self, settings: ProxySettingsInput) -> Result<ProxySettings> {
+        if settings.mode.is_custom() {
+            let local_proxy_port = match self.cursor_harness.proxy_port().await {
+                Some(port) => port,
+                None => self.store.port_settings().await?.proxy_port,
+            };
+            crate::network::reject_self_proxy(&settings.address, local_proxy_port)?;
+        }
         let settings = self.store.set_proxy_settings(settings).await?;
         self.clients.invalidate().await;
         Ok(settings)
@@ -705,6 +742,14 @@ impl ControlService {
 
     pub async fn set_desktop_settings(&self, settings: DesktopSettings) -> Result<()> {
         self.store.set_desktop_settings(settings).await
+    }
+
+    pub async fn commit_settings(&self) -> Result<CommitSettings> {
+        self.store.commit_settings().await
+    }
+
+    pub async fn set_commit_settings(&self, settings: CommitSettings) -> Result<CommitSettings> {
+        self.store.set_commit_settings(settings).await
     }
 }
 

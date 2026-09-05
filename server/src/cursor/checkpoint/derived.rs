@@ -4,10 +4,13 @@ use std::collections::HashMap;
 use prost::Message;
 
 use crate::{
-    cursor::{prompting::fold_derived_state, protocol::proto::agent::v1 as pb},
+    cursor::{
+        prompting::{fold_derived_state, fold_derived_state_from, DerivedState},
+        protocol::proto::agent::v1 as pb,
+    },
     model::{CanonicalMessage, MessageContent},
     store::BlobId,
-    Result,
+    Error, Result,
 };
 
 use super::CheckpointBuilder;
@@ -17,13 +20,37 @@ impl CheckpointBuilder {
         &self,
         messages: &[CanonicalMessage],
     ) -> Result<(Vec<BlobId>, Option<BlobId>)> {
-        let state = fold_derived_state(messages);
+        let changes = fold_derived_state(messages);
+        let state = if changes.todos.is_some() && !self.base.todos.is_empty() {
+            fold_derived_state_from(
+                messages,
+                DerivedState {
+                    todos: Some(self.base_todo_state().await?),
+                    plan: None,
+                },
+            )
+        } else {
+            changes
+        };
         let todo_values = state
             .todos
             .as_ref()
-            .and_then(|value| value.get("todos"))
-            .and_then(serde_json::Value::as_array);
-        let mut todo_ids = Vec::new();
+            .map(|value| {
+                value
+                    .get("todos")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| Error::Protocol("TodoWrite state is missing todos[]".into()))
+            })
+            .transpose()?;
+        let mut todo_ids = if todo_values.is_none() {
+            self.base
+                .todos
+                .iter()
+                .map(|raw| BlobId::from_bytes(raw))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         for (index, todo) in todo_values.into_iter().flatten().enumerate() {
             let status = match todo
                 .get("status")
@@ -89,9 +116,43 @@ impl CheckpointBuilder {
                 }
             }
         } else {
-            None
+            self.base
+                .plan
+                .as_deref()
+                .map(BlobId::from_bytes)
+                .transpose()?
         };
         Ok((todo_ids, plan_id))
+    }
+
+    async fn base_todo_state(&self) -> Result<serde_json::Value> {
+        let mut todos = Vec::with_capacity(self.base.todos.len());
+        for raw_id in &self.base.todos {
+            let id = BlobId::from_bytes(raw_id)?;
+            let data = self.sync.get(&id).await?.ok_or_else(|| {
+                Error::Protocol(format!("Cursor Todo Blob is missing: {}", id.to_base64()))
+            })?;
+            let todo = pb::TodoItem::decode(data.as_slice())?;
+            let status = match pb::TodoStatus::try_from(todo.status) {
+                Ok(pb::TodoStatus::InProgress) => "in_progress",
+                Ok(pb::TodoStatus::Completed) => "completed",
+                Ok(pb::TodoStatus::Cancelled) => "cancelled",
+                Ok(pb::TodoStatus::Pending) => "pending",
+                Ok(pb::TodoStatus::Unspecified) | Err(_) => {
+                    return Err(Error::Protocol(format!(
+                        "unknown Cursor Todo status: {}",
+                        todo.status
+                    )))
+                }
+            };
+            todos.push(serde_json::json!({
+                "id": todo.id,
+                "content": todo.content,
+                "status": status,
+                "dependencies": todo.dependencies,
+            }));
+        }
+        Ok(serde_json::json!({"merge": false, "todos": todos}))
     }
 }
 
