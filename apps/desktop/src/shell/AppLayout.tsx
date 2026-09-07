@@ -6,6 +6,7 @@ import cursorIconUrl from "../shared/assets/icons/cursor.svg";
 import { api } from "../shared/api";
 import { AdMenu } from "./ads/AdMenu";
 import { FloatingAd } from "./ads/FloatingAd";
+import { loadCachedAds, saveCachedAds } from "./ads/cache";
 import { AdActionType, type AdAction, type AdSlot } from "./ads/types";
 import { PageLayout } from "./layout/PageLayout";
 import { Card } from "../shared/ui/Card";
@@ -43,14 +44,14 @@ function loadStoredAdIds(key: string): Set<string> {
 }
 
 export function AppLayout() {
-  const { busy } = useAppStore();
+  const { busy, cursorHarness } = useAppStore();
   const { availableVersion } = useUpdateStore();
   const { locale } = useI18n();
   const message = useMessage();
   const location = useLocation();
   const [leftActionTarget, setLeftActionTarget] = useState<HTMLDivElement | null>(null);
   const [rightActionTarget, setRightActionTarget] = useState<HTMLDivElement | null>(null);
-  const [ads, setAds] = useState<AdSlot[]>([]);
+  const [ads, setAds] = useState<AdSlot[]>(() => loadCachedAds());
   const [activeAd, setActiveAd] = useState<AdSlot | null>(null);
   const [dismissCandidate, setDismissCandidate] = useState<AdSlot | null>(null);
   const [dismissReason, setDismissReason] = useState("");
@@ -99,6 +100,8 @@ export function AppLayout() {
     let disposed = false;
     let pending = false;
     let lastRequestedAt = 0;
+    setAds(loadCachedAds());
+    setActiveAd(null);
     const refreshAds = () => {
       const now = Date.now();
       if (pending || now - lastRequestedAt < 10_000) return;
@@ -106,6 +109,7 @@ export function AppLayout() {
       lastRequestedAt = now;
       void api.ads(dismissedAdIdsRef.current, locale)
         .then((runtime) => {
+          saveCachedAds(runtime.slots);
           if (disposed) return;
           setAds(runtime.slots);
           setActiveAd((current) => current
@@ -113,9 +117,7 @@ export function AppLayout() {
             : null);
         })
         .catch(() => {
-          if (disposed) return;
-          setAds([]);
-          setActiveAd(null);
+          // Keep the current ads and local cache available when refreshing fails.
         })
         .finally(() => { pending = false; });
     };
@@ -216,6 +218,12 @@ export function AppLayout() {
                 ? <Icon src={item.icon} size="1.3em" />
                 : <Icon icon={item.icon} size="1.3em" />}
               <span>{item.label}</span>
+              {item.path === "/harness/cursor" && cursorHarness && <span
+                className={styles.menuStatusTag}
+                data-taken={cursorHarness.settings_applied || undefined}
+              >
+                {cursorHarness.settings_applied ? t("已接管") : t("未接管")}
+              </span>}
               {item.path === "/settings" && availableVersion && <span className={styles.menuIndicatorDot} aria-hidden="true" />}
             </NavLink>
           </div>}

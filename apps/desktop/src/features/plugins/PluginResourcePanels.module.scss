@@ -85,6 +85,50 @@
   }
 }
 
+.modelToolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.modelTableWrap {
+  min-width: min(520px, 70vw);
+}
+
+.modelTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+
+  th,
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--vscode-sideBar-border);
+    text-align: left;
+  }
+
+  th:last-child,
+  td:last-child {
+    width: 72px;
+    text-align: center;
+  }
+
+  td:first-child {
+    min-width: 0;
+  }
+
+  .modelName {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  td span {
+    color: var(--vscode-descriptionForeground);
+    font-size: type.$font-size-xs;
+  }
+}
+
 .resourceSection {
   display: flex;
   flex-direction: column;
@@ -111,6 +155,43 @@
     flex-direction: column;
     gap: 3px;
   }
+
+  span {
+    color: var(--vscode-descriptionForeground);
+    font-size: type.$font-size-xs;
+  }
+}
+
+.actionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.actionDescription {
+  color: var(--vscode-descriptionForeground);
+  font-size: type.$font-size-xs;
+}
+
+.actionCardList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionCard {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.actionCardMain {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 
   span {
     color: var(--vscode-descriptionForeground);

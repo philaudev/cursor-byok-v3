@@ -103,6 +103,7 @@ export interface CursorHarnessStatus {
   configured_models: number;
   enabled_models: number;
   integration: IntegrationState;
+  settings_applied: boolean;
   proxy_url: string | null;
   ca_install_command: string | null;
 }
@@ -120,7 +121,7 @@ export interface StatisticsStorage {
 
 export type StatisticsStorageScope = "details" | "all";
 
-export type ProxyMode = "system" | "custom";
+export type ProxyMode = "default" | "custom";
 
 export interface ProxySettings {
   mode: ProxyMode;
@@ -148,6 +149,16 @@ export interface TabSettings {
 export interface DesktopSettings {
   silent_start: boolean;
   show_dock_icon: boolean;
+}
+
+export interface CommitSettings {
+  model_id: string;
+  prompt: string;
+  prompt_locale: Locale;
+}
+
+export interface CommitSettingsView extends CommitSettings {
+  default_prompt: string;
 }
 
 export type PluginRuntimeState = "uninitialized" | "initializing" | "ready" | "failed" | "unsupported";
@@ -202,10 +213,11 @@ export interface PluginResourceView {
 }
 
 export interface PluginAddMethod {
-  type: "oauth2.0";
+  type: "oauth2.0" | "oauth2.authorization-code";
   id: string;
   displayName: PluginLocalizedText;
   description: PluginLocalizedText | null;
+  callback?: { port: number | null; path: string | null };
 }
 
 export interface PluginImportDescriptor {
@@ -215,6 +227,35 @@ export interface PluginImportDescriptor {
   multiple: boolean;
 }
 
+export interface PluginResourceAction {
+  id: string;
+  displayName: PluginLocalizedText;
+  description: PluginLocalizedText | null;
+  target: "resource" | "card";
+  destructive: boolean;
+}
+
+export interface PluginResourceActionField {
+  id: string;
+  label: PluginLocalizedText;
+  value: string;
+}
+
+export interface PluginResourceActionCard {
+  id: string;
+  title: PluginLocalizedText;
+  status: PluginLocalizedText | null;
+  grantedAtMs: number | null;
+  expiresAtMs: number | null;
+  fields: PluginResourceActionField[];
+}
+
+export interface PluginResourceActionResult {
+  title: PluginLocalizedText;
+  description: PluginLocalizedText | null;
+  cards: PluginResourceActionCard[];
+}
+
 export interface PluginResourceDescriptor {
   type: string;
   displayName: PluginLocalizedText;
@@ -222,6 +263,7 @@ export interface PluginResourceDescriptor {
   import: PluginImportDescriptor | null;
   canRefresh: boolean;
   canRemove: boolean;
+  actions: PluginResourceAction[];
   resources: PluginResourceView[];
 }
 
@@ -237,6 +279,7 @@ export interface PluginModelDescriptor {
   providerType: string;
   maxOutputTokens: number | null;
   images: boolean;
+  enabled: boolean;
 }
 
 export interface PluginProviderDescriptor {
@@ -263,7 +306,7 @@ export interface PluginDescriptor {
 
 export interface PluginOAuthBegin {
   sessionId: string;
-  userCode: string;
+  userCode: string | null;
   verificationUrl: string;
   verificationUrlComplete: string | null;
   expiresAtMs: number;
@@ -288,20 +331,9 @@ export interface PluginImportResult {
   modelSyncError: string | null;
 }
 
-export type ConfiguredModel =
-  | { kind: "builtin"; id: string; name: string; builtin: Model }
-  | { kind: "plugin"; id: string; name: string; plugin: PluginModelDescriptor };
-
 export function configuredPluginModels(plugins: PluginDescriptor[]): PluginModelDescriptor[] {
   return plugins.flatMap((plugin) =>
-    plugin.providers.flatMap((provider) => provider.configured ? provider.models : []));
-}
-
-export function configuredModels(models: Model[], plugins: PluginDescriptor[]): ConfiguredModel[] {
-  return [
-    ...models.map((model): ConfiguredModel => ({ kind: "builtin", id: model.model_hash, name: model.display_name, builtin: model })),
-    ...configuredPluginModels(plugins).map((model): ConfiguredModel => ({ kind: "plugin", id: model.id, name: model.displayName, plugin: model })),
-  ];
+    plugin.providers.flatMap((provider) => provider.configured ? provider.models.filter((model) => model.enabled) : []));
 }
 
 export interface OverviewMetrics {
@@ -435,14 +467,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   ads: (disabledAdIds: Iterable<string>, locale: Locale) => {
     const value = [...disabledAdIds].join(",");
-    return request<AdRuntime>("/ads", {
+    return request<AdRuntime>("/promotions", {
       headers: {
         "accept-language": locale,
         ...(value ? { "disable-ad-ids": value } : {}),
       },
     });
   },
-  dismissAd: (id: string, reason: string) => request<void>(`/ads/${encodeURIComponent(id)}/dismissals`, { method: "POST", body: JSON.stringify({ reason }) }),
+  dismissAd: (id: string, reason: string) => request<void>(`/promotions/${encodeURIComponent(id)}/dismissals`, { method: "POST", body: JSON.stringify({ reason }) }),
   models: () => request<Model[]>("/models"),
   createModels: (models: ModelInput[]) => request<Model[]>("/models", { method: "POST", body: JSON.stringify({ models }) }),
   reorderModels: (modelHashes: string[]) => request<Model[]>("/models/order", { method: "PUT", body: JSON.stringify({ model_hashes: modelHashes }) }),
@@ -453,12 +485,13 @@ export const api = {
   deleteModel: (hash: string) => request<void>(`/models/${hash}`, { method: "DELETE" }),
   testModel: (hash: string, testId: string, signal?: AbortSignal) => request<ModelConnectivityResult>(`/models/${encodeURIComponent(hash)}/test/${encodeURIComponent(testId)}`, { method: "POST", signal }),
   cancelModelTest: (hash: string, testId: string) => request<void>(`/models/${encodeURIComponent(hash)}/test/${encodeURIComponent(testId)}`, { method: "DELETE" }),
-  overview: (filter?: { startMs: number; endMs: number; modelHashes?: string[] }) => {
+  overview: (filter?: { startMs: number; endMs: number; modelHashes?: string[]; bucketMs?: number }) => {
     const params = new URLSearchParams();
     if (filter) {
       params.set("start_ms", String(filter.startMs));
       params.set("end_ms", String(filter.endMs));
       if (filter.modelHashes?.length) params.set("model_hashes", JSON.stringify(filter.modelHashes));
+      if (filter.bucketMs) params.set("bucket_ms", String(filter.bucketMs));
     }
     const query = params.toString();
     return request<Overview>(`/overview${query ? `?${query}` : ""}`);
@@ -475,8 +508,10 @@ export const api = {
   pluginOAuthPoll: (sessionId: string, signal?: AbortSignal) => request<PluginOAuthPoll>(`/plugins/oauth/${encodeURIComponent(sessionId)}/poll`, { method: "POST", signal }),
   importPluginResources: (pluginId: string, resourceType: string, files: PluginImportFile[]) => request<PluginImportResult>(`/plugins/${encodeURIComponent(pluginId)}/resources/${encodeURIComponent(resourceType)}/import`, { method: "POST", body: JSON.stringify(files) }),
   refreshPluginResource: (pluginId: string, resourceType: string, resourceId: string) => request<void>(`/plugins/${encodeURIComponent(pluginId)}/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/refresh`, { method: "POST" }),
+  pluginResourceAction: (pluginId: string, resourceType: string, resourceId: string, actionId: string, input: unknown = {}) => request<PluginResourceActionResult>(`/plugins/${encodeURIComponent(pluginId)}/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/actions/${encodeURIComponent(actionId)}`, { method: "POST", body: JSON.stringify(input) }),
   deletePluginResource: (pluginId: string, resourceType: string, resourceId: string) => request<void>(`/plugins/${encodeURIComponent(pluginId)}/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`, { method: "DELETE" }),
   syncPluginModels: (pluginId: string, providerId: string) => request<{ models: number }>(`/plugins/${encodeURIComponent(pluginId)}/providers/${encodeURIComponent(providerId)}/models/sync`, { method: "POST" }),
+  setPluginModelEnabled: (pluginId: string, providerId: string, modelId: string, enabled: boolean) => request<void>(`/plugins/${encodeURIComponent(pluginId)}/providers/${encodeURIComponent(providerId)}/models/enabled`, { method: "PUT", body: JSON.stringify({ modelId, enabled }) }),
   pluginResourceExportUrl: (servicePort: number, pluginId: string, resourceType: string) => `http://127.0.0.1:${servicePort}${API_ROOT}/plugins/${encodeURIComponent(pluginId)}/resources/${encodeURIComponent(resourceType)}/export`,
   removePluginConfiguration: (pluginId: string) => request<void>(`/plugins/${encodeURIComponent(pluginId)}`, { method: "DELETE" }),
   pluginRuntime: () => request<PluginRuntimeStatus>("/plugins/runtime"),
@@ -513,4 +548,6 @@ export const api = {
   setTabSettings: (settings: TabSettings) => request<TabSettings>("/settings/tab", { method: "PUT", body: JSON.stringify(settings) }),
   desktopSettings: () => request<DesktopSettings>("/settings/desktop"),
   setDesktopSettings: (settings: DesktopSettings) => request<DesktopSettings>("/settings/desktop", { method: "PUT", body: JSON.stringify(settings) }),
+  commitSettings: (locale: Locale) => request<CommitSettingsView>("/settings/commit", { headers: { "accept-language": locale } }),
+  setCommitSettings: (settings: CommitSettings) => request<CommitSettingsView>("/settings/commit", { method: "PUT", body: JSON.stringify(settings) }),
 };

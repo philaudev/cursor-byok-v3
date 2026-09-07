@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::{Error, Result};
 
+const NO_PROXY_KEY: &str = "http.noProxy";
 const KEYS: [&str; 5] = [
     "http.proxy",
     "http.proxyKerberosServicePrincipal",
@@ -60,6 +61,7 @@ fn write(settings: &BTreeMap<String, Value>) -> Result<()> {
 
 pub fn write_proxy_settings(proxy_url: &str) -> Result<()> {
     let mut settings = read()?;
+    settings.remove(NO_PROXY_KEY);
     settings.insert(KEYS[0].into(), Value::String(proxy_url.into()));
     settings.insert(KEYS[1].into(), Value::String(proxy_url.into()));
     settings.insert(KEYS[2].into(), Value::String("on".into()));

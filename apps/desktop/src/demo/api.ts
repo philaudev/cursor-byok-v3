@@ -73,12 +73,13 @@ const calls: LlmCall[] = Array.from({ length: 24 }, (_, index) => {
   };
 });
 
-const harnessStatus: CursorHarnessStatus = {
+let harnessStatus: CursorHarnessStatus = {
   platform: "macos",
   ca: "ready",
   configured_models: models.length,
   enabled_models: models.length,
   integration: "enabled",
+  settings_applied: true,
   proxy_url: "http://127.0.0.1:54321",
   ca_install_command: null,
 };
@@ -86,7 +87,7 @@ const harnessStatus: CursorHarnessStatus = {
 let detailed = true;
 let portSettings = { proxy_port: 0, service_port: 0 };
 let proxySettings: ProxySettings = {
-  mode: "system",
+  mode: "default",
   address: "",
   auth_enabled: false,
   username: "",
@@ -107,7 +108,7 @@ export function installDemoApi() {
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     const body = await readBody(input, init);
 
-    if (path === "/ads") return json({ slots: [] });
+    if (path === "/promotions") return json({ slots: [] });
     if (path === "/models" && method === "GET") return json(models);
     if (path === "/models" && method === "POST") return json(models);
     if (path === "/models/order") return json(models);
@@ -126,7 +127,17 @@ export function installDemoApi() {
     if (path === "/llm-calls") return json(calls);
     if (path.startsWith("/llm-calls/")) return json(createCallDetail(path.slice("/llm-calls/".length)));
     if (path === "/harness/cursor/status") return json(harnessStatus);
-    if (path === "/harness/cursor/ca/initialize" || path === "/harness/cursor/enabled") return json(harnessStatus);
+    if (path === "/harness/cursor/ca/initialize") return json(harnessStatus);
+    if (path === "/harness/cursor/enabled") {
+      const enabled = Boolean((body as { enabled?: unknown } | null)?.enabled);
+      harnessStatus = {
+        ...harnessStatus,
+        integration: enabled ? "enabled" : "disabled",
+        settings_applied: enabled,
+        proxy_url: enabled ? "http://127.0.0.1:54321" : null,
+      };
+      return json(harnessStatus);
+    }
     if (path === "/settings/observability" && method === "GET") return json({ detailed });
     if (path === "/settings/observability") {
       detailed = Boolean((body as { detailed?: unknown } | null)?.detailed);

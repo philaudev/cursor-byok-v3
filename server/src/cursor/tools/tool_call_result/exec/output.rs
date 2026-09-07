@@ -12,7 +12,7 @@ pub(super) fn output(
         Message::WriteResult(value) => write(value),
         Message::DeleteResult(value) => delete(value),
         Message::GrepResult(value) => grep(value),
-        Message::DiagnosticsResult(value) => diagnostics(value),
+        Message::DiagnosticsResult(value) => diagnostics(value, call),
         Message::LsResult(value) => ls(value),
         Message::McpResult(value) => mcp(value),
         Message::ReadMcpResourceExecResult(value) => read_mcp(value),
@@ -213,14 +213,14 @@ fn grep_truncation(
     }
 }
 
-fn diagnostics(value: &pb::DiagnosticsResult) -> Result<(String, bool)> {
+fn diagnostics(value: &pb::DiagnosticsResult, call: &ToolCall) -> Result<(String, bool)> {
     use pb::diagnostics_result::Result as R;
     match value
         .result
         .as_ref()
         .ok_or_else(|| missing("diagnostics"))?
     {
-        R::Success(value) => Ok((diagnostics_success(value), false)),
+        R::Success(value) => Ok((diagnostics_success(value, call), false)),
         R::Error(value) => Ok((value.error.clone(), true)),
         R::Rejected(value) => Ok((value.reason.clone(), true)),
         R::FileNotFound(value) => Ok((format!("file not found: {}", value.path), true)),
@@ -228,9 +228,40 @@ fn diagnostics(value: &pb::DiagnosticsResult) -> Result<(String, bool)> {
     }
 }
 
-fn diagnostics_success(value: &pb::DiagnosticsSuccess) -> String {
+/// `codec::request` encodes only `paths[0]` into the `DiagnosticsArgs` exec, and
+/// `DiagnosticsSuccess` carries a single `path`, so a multi-path ReadLints call
+/// only ever inspects the first entry. Name the rest instead of letting a clean
+/// result for one file read as a clean bill of health for all of them.
+fn unchecked_lint_paths(call: &ToolCall) -> Vec<&str> {
+    call.arguments
+        .get("paths")
+        .and_then(serde_json::Value::as_array)
+        .map(|paths| {
+            paths
+                .iter()
+                .skip(1)
+                .filter_map(serde_json::Value::as_str)
+                .filter(|path| !path.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn diagnostics_success(value: &pb::DiagnosticsSuccess, call: &ToolCall) -> String {
+    let unchecked = unchecked_lint_paths(call);
+    let notice = (!unchecked.is_empty()).then(|| {
+        format!(
+            "[Only {} was checked; ReadLints reads one path per call. Not checked: {}]",
+            value.path,
+            unchecked.join(", ")
+        )
+    });
     if value.diagnostics.is_empty() {
-        return format!("No diagnostics found in {}", value.path);
+        let clean = format!("No diagnostics found in {}", value.path);
+        return match notice {
+            Some(notice) => format!("{clean}\n{notice}"),
+            None => clean,
+        };
     }
     let mut lines = value
         .diagnostics
@@ -262,6 +293,7 @@ fn diagnostics_success(value: &pb::DiagnosticsSuccess) -> String {
             value.diagnostics.len()
         ));
     }
+    lines.extend(notice);
     lines.join("\n")
 }
 
@@ -453,4 +485,84 @@ fn creates_subagent(call: &ToolCall) -> bool {
 
 fn missing(name: &str) -> Error {
     Error::Protocol(format!("{name} returned no result"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn read_lints(paths: serde_json::Value) -> ToolCall {
+        ToolCall {
+            index: 0,
+            call_id: "lints".into(),
+            model_call_id: "model:0".into(),
+            name: "ReadLints".into(),
+            arguments_text: String::new(),
+            arguments: json!({ "paths": paths }),
+            argument_error: None,
+        }
+    }
+
+    fn clean_result(path: &str) -> pb::exec_client_message::Message {
+        pb::exec_client_message::Message::DiagnosticsResult(pb::DiagnosticsResult {
+            result: Some(pb::diagnostics_result::Result::Success(
+                pb::DiagnosticsSuccess {
+                    path: path.into(),
+                    diagnostics: Vec::new(),
+                    total_diagnostics: 0,
+                },
+            )),
+        })
+    }
+
+    /// The codec encodes only `paths[0]` into the DiagnosticsArgs exec, so a
+    /// clean result for that one path must not read as "these files are all
+    /// clean" for the paths that were never looked at.
+    #[test]
+    fn read_lints_names_the_paths_it_did_not_check() {
+        let call = read_lints(json!(["a.ts", "b.ts", "c.ts"]));
+        let (content, is_error) = output(&clean_result("a.ts"), &call).unwrap();
+        assert!(!is_error);
+        assert!(content.contains("a.ts"));
+        assert!(
+            content.contains("b.ts") && content.contains("c.ts"),
+            "unchecked paths must be reported, got: {content}"
+        );
+    }
+
+    /// The overwhelmingly common single-path call must be byte-for-byte
+    /// unchanged.
+    #[test]
+    fn read_lints_single_path_result_is_unchanged() {
+        let call = read_lints(json!(["a.ts"]));
+        let (content, _) = output(&clean_result("a.ts"), &call).unwrap();
+        assert_eq!(content, "No diagnostics found in a.ts");
+    }
+
+    /// The notice belongs on a result that did report diagnostics too: those
+    /// diagnostics are still only a.ts's.
+    #[test]
+    fn read_lints_reports_unchecked_paths_alongside_diagnostics() {
+        let call = read_lints(json!(["a.ts", "b.ts"]));
+        let message = pb::exec_client_message::Message::DiagnosticsResult(pb::DiagnosticsResult {
+            result: Some(pb::diagnostics_result::Result::Success(
+                pb::DiagnosticsSuccess {
+                    path: "a.ts".into(),
+                    diagnostics: vec![pb::Diagnostic {
+                        message: "unused import".into(),
+                        severity: pb::DiagnosticSeverity::Warning as i32,
+                        ..Default::default()
+                    }],
+                    total_diagnostics: 1,
+                },
+            )),
+        });
+        let (content, _) = output(&message, &call).unwrap();
+        assert!(content.contains("unused import"));
+        assert!(
+            content.contains("Not checked: b.ts"),
+            "unchecked paths must be reported, got: {content}"
+        );
+    }
 }

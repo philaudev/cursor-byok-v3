@@ -41,7 +41,7 @@ pub async fn consume_model_cycle(
     mut stream: ProviderStream,
     client: &mpsc::Sender<RunEvent>,
     cancellation: &CancellationToken,
-) -> std::result::Result<ModelCycleResult, ModelCycleFailure> {
+) -> std::result::Result<ModelCycleResult, Box<ModelCycleFailure>> {
     let mut model_call_id = None;
     let mut text = String::new();
     let mut reasoning = String::new();
@@ -372,15 +372,15 @@ fn failure(
     partial_text: String,
     partial_reasoning: String,
     usage: Option<Usage>,
-) -> ModelCycleFailure {
+) -> Box<ModelCycleFailure> {
     let retryable = matches!(failure, RunFailure::Protocol(_) | RunFailure::Provider(_));
-    ModelCycleFailure {
+    Box::new(ModelCycleFailure {
         failure,
         partial_text,
         partial_reasoning,
         usage,
         retryable,
-    }
+    })
 }
 
 fn terminal_failure(
@@ -388,14 +388,14 @@ fn terminal_failure(
     partial_text: String,
     partial_reasoning: String,
     usage: Option<Usage>,
-) -> ModelCycleFailure {
-    ModelCycleFailure {
+) -> Box<ModelCycleFailure> {
+    Box::new(ModelCycleFailure {
         failure,
         partial_text,
         partial_reasoning,
         usage,
         retryable: false,
-    }
+    })
 }
 
 #[cfg(test)]

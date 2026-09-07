@@ -229,10 +229,10 @@ fn measure_runtime(
         }
         measures[CONVERSATION].add(&text[cursor..start]);
         let chunk = &text[start..end];
-        // Skills and Subagents are static definition catalogs.
-        // We only measure them once from the most recent active context,
+        // Static definition catalogs (Rules, Skills, Subagents, MCP tools)
+        // are measured only once from the most recent active context,
         // avoiding multi-turn redundant accumulation across conversation history.
-        if category == SKILLS || category == SUBAGENTS {
+        if category == RULES || category == SKILLS || category == SUBAGENTS || category == MCP {
             if !measured_static_categories[category] {
                 measures[category].add(chunk);
                 measured_static_categories[category] = true;
@@ -473,18 +473,18 @@ mod tests {
     }
 
     #[test]
-    fn skills_and_subagents_are_not_accumulated_across_turns() {
+    fn static_categories_are_not_accumulated_across_turns() {
         let turn1 = CanonicalMessage::text(
             "request-context:1",
             Role::User,
             Origin::Prompt,
-            "<agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents>",
+            "<rules><user_rule>rule content</user_rule></rules><agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents><mcp_meta_tools><mcp_tool name=\"tool1\"/></mcp_meta_tools>",
         );
         let turn2 = CanonicalMessage::text(
             "request-context:2",
             Role::User,
             Origin::Prompt,
-            "<agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents>",
+            "<rules><user_rule>rule content</user_rule></rules><agent_skills><skill>skill definitions</skill></agent_skills><subagents><subagent>subagent definitions</subagent></subagents><mcp_meta_tools><mcp_tool name=\"tool1\"/></mcp_meta_tools>",
         );
         let snapshot1 = breakdown(
             0,
@@ -506,6 +506,20 @@ mod tests {
             &[turn1.clone(), turn2],
         )
         .unwrap();
+
+        let rules1 = snapshot1
+            .categories
+            .iter()
+            .find(|c| c.id == "rules")
+            .unwrap()
+            .estimated_tokens;
+        let rules2 = snapshot2
+            .categories
+            .iter()
+            .find(|c| c.id == "rules")
+            .unwrap()
+            .estimated_tokens;
+        assert_eq!(rules1, rules2, "rules tokens must not double across turns");
 
         let skills1 = snapshot1
             .categories
@@ -540,6 +554,20 @@ mod tests {
             subagents1, subagents2,
             "subagents tokens must not double across turns"
         );
+
+        let mcp1 = snapshot1
+            .categories
+            .iter()
+            .find(|c| c.id == "mcp")
+            .unwrap()
+            .estimated_tokens;
+        let mcp2 = snapshot2
+            .categories
+            .iter()
+            .find(|c| c.id == "mcp")
+            .unwrap()
+            .estimated_tokens;
+        assert_eq!(mcp1, mcp2, "mcp tokens must not double across turns");
 
         // Verify that if a new turn updates skills, the newest catalog is measured
         let turn3 = CanonicalMessage::text(

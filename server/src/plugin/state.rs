@@ -138,8 +138,14 @@ pub struct StoredModel {
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
     pub images: bool,
+    #[serde(default = "default_model_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub private_data: serde_json::Value,
+}
+
+fn default_model_enabled() -> bool {
+    true
 }
 
 impl StoredModel {
@@ -179,6 +185,7 @@ impl StoredModel {
                 .get("maxOutputTokens")
                 .and_then(serde_json::Value::as_u64),
             images: capability("images"),
+            enabled: true,
             private_data: object
                 .get("privateData")
                 .cloned()
@@ -328,6 +335,39 @@ impl PluginStateStore {
         provider_id: &str,
         models: &[StoredModel],
     ) -> Result<()> {
+        let previous = self.models(plugin_id, provider_id).await?;
+        let models = models
+            .iter()
+            .cloned()
+            .map(|mut model| {
+                if let Some(old) = previous.iter().find(|old| old.id == model.id) {
+                    model.enabled = old.enabled;
+                }
+                model
+            })
+            .collect::<Vec<_>>();
+        self.data
+            .update(
+                plugin_id,
+                &model_key(provider_id),
+                &serde_json::to_value(models)?,
+            )
+            .await
+    }
+
+    pub async fn set_model_enabled(
+        &self,
+        plugin_id: &str,
+        provider_id: &str,
+        model_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let mut models = self.models(plugin_id, provider_id).await?;
+        let model = models
+            .iter_mut()
+            .find(|model| model.id == model_id)
+            .ok_or_else(|| Error::RunNotFound(format!("plugin model {model_id}")))?;
+        model.enabled = enabled;
         self.data
             .update(
                 plugin_id,

@@ -151,9 +151,8 @@ impl Provider for OpenAiResponsesProvider {
                         if !thinking_open { thinking_open = true; yield ModelEvent::ThinkingStart; }
                         if let Some(delta) = value.get("delta").and_then(Value::as_str) { yield ModelEvent::ThinkingDelta(delta.into()); }
                     }
-                    "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
-                        if thinking_open { thinking_open = false; yield ModelEvent::ThinkingEnd; }
-                    }
+                    "response.reasoning_summary_text.done" | "response.reasoning_text.done"
+                        if thinking_open => { thinking_open = false; yield ModelEvent::ThinkingEnd; }
                     "response.output_item.added" => {
                         let item = value.get("item").unwrap_or(&Value::Null);
                         if item.get("type").and_then(Value::as_str) == Some("function_call") {

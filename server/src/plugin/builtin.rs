@@ -109,7 +109,70 @@ const GROK_AUTH: &[(&str, &str)] = &[
     ),
 ];
 
-const PLUGINS: &[(&str, &[(&str, &str)])] = &[("codex-auth", CODEX_AUTH), ("grok-auth", GROK_AUTH)];
+const ANTIGRAVITY_AUTH: &[(&str, &str)] = &[
+    (
+        "plugin.json",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/plugin.json"
+        )),
+    ),
+    (
+        "main.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/main.ts"
+        )),
+    ),
+    (
+        "provider.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/provider.ts"
+        )),
+    ),
+    (
+        "models.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/models.ts"
+        )),
+    ),
+    (
+        "oauth.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/oauth.ts"
+        )),
+    ),
+    (
+        "google_oauth.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/google_oauth.ts"
+        )),
+    ),
+    (
+        "resources.ts",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/resources.ts"
+        )),
+    ),
+    (
+        "assets/antigravity.svg",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/plugins/build-in/antigravity-auth/assets/antigravity.svg"
+        )),
+    ),
+];
+
+const PLUGINS: &[(&str, &[(&str, &str)])] = &[
+    ("codex-auth", CODEX_AUTH),
+    ("grok-auth", GROK_AUTH),
+    ("antigravity-auth", ANTIGRAVITY_AUTH),
+];
 
 /// 把内置插件预装到 installed 目录。manifest 的 version 是缓存键:
 /// 版本一致时零写盘;版本变化时整目录同步并清理旧版本残留文件。
@@ -209,6 +272,10 @@ mod tests {
             std::fs::read_to_string(plugin.join("main.ts")).unwrap(),
             embedded_main()
         );
+        assert!(root
+            .path()
+            .join("antigravity-auth/assets/antigravity.svg")
+            .is_file());
 
         // 版本一致:本地改动与额外文件保持原样,不发生任何写盘。
         std::fs::write(plugin.join("main.ts"), "edited").unwrap();

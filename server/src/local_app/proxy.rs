@@ -33,6 +33,13 @@ impl ProxyRuntime {
     pub fn url(&self) -> Option<String> {
         self.running().then(|| self.url.clone()).flatten()
     }
+    pub fn port(&self) -> Option<u16> {
+        if self.running() {
+            self.port
+        } else {
+            None
+        }
+    }
 
     pub async fn start(
         &mut self,
@@ -152,10 +159,21 @@ fn is_local_path(path: &str) -> bool {
         path,
         "/agent.v1.AgentService/RunSSE"
             | "/aiserver.v1.BidiService/BidiAppend"
+            | "/aiserver.v1.AiService/AvailableDocs"
+            | "/aiserver.v1.DashboardService/GetEffectiveUserPlugins"
+            | "/aiserver.v1.DashboardService/GetUserPrivacyMode"
+            | "/agent.v1.AgentService/UpdateConversationMetadata"
+            | "/aiserver.v1.AiService/GetServerConfig"
+            | "/aiserver.v1.ServerConfigService/GetServerConfig"
             | "/aiserver.v1.AiService/AvailableModels"
             | "/agent.v1.AgentService/GetUsableModels"
             | "/aiserver.v1.AiService/GetUsableModels"
+            | "/agent.v1.AgentService/GetDefaultModelForCli"
+            | "/aiserver.v1.AiService/GetDefaultModelForCli"
+            | "/aiserver.v1.AiService/GetDefaultModel"
+            | "/aiserver.v1.AiService/GetDefaultModelNudgeData"
             | "/aiserver.v1.AuthService/GetEmail"
+            | "/aiserver.v1.AuthService/GetUserMeta"
             | "/aiserver.v1.DashboardService/GetMe"
             | "/aiserver.v1.DashboardService/GetTeams"
             | "/aiserver.v1.DashboardService/GetUserProfile"
@@ -166,11 +184,40 @@ fn is_local_path(path: &str) -> bool {
             | "/aiserver.v1.AiService/KnowledgeBaseUpdate"
             | "/aiserver.v1.AiService/KnowledgeBaseRemove"
             | "/aiserver.v1.AiService/FetchRelevantKnowledgeForConversation"
+            | "/aiserver.v1.AiService/WriteGitCommitMessage"
+            | "/aiserver.v1.NetworkService/IsConnected"
             | "/aiserver.v1.AnalyticsService/BootstrapStatsig"
             | "/auth/full_stripe_profile"
+            | "/auth/stripe_profile"
     )
 }
 
 fn should_route_locally(path: &str, tab_mode: TabMode) -> bool {
     is_local_path(path) || (is_tab_path(path) && tab_mode != TabMode::Direct)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_cli_transport_and_model_metadata_routes_stay_local() {
+        for path in [
+            "/aiserver.v1.AiService/GetServerConfig",
+            "/aiserver.v1.ServerConfigService/GetServerConfig",
+            "/agent.v1.AgentService/GetDefaultModelForCli",
+            "/aiserver.v1.AiService/GetDefaultModelForCli",
+            "/aiserver.v1.AiService/GetDefaultModel",
+            "/aiserver.v1.AiService/GetDefaultModelNudgeData",
+            "/aiserver.v1.AiService/AvailableDocs",
+            "/aiserver.v1.DashboardService/GetEffectiveUserPlugins",
+            "/aiserver.v1.DashboardService/GetUserPrivacyMode",
+            "/aiserver.v1.AuthService/GetUserMeta",
+            "/agent.v1.AgentService/UpdateConversationMetadata",
+            "/auth/full_stripe_profile",
+            "/auth/stripe_profile",
+        ] {
+            assert!(is_local_path(path), "{path} must not reach Cursor upstream");
+        }
+    }
 }
