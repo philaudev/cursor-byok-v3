@@ -33,9 +33,11 @@ pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 const AUTOSTART_ARG: &str = "--autostart";
 
 struct DesktopRuntime {
+    address: std::net::SocketAddr,
     shutdown: CancellationToken,
     server: Mutex<Option<JoinHandle<Result<()>>>>,
     exiting: AtomicBool,
+    tray_only: AtomicBool,
 }
 
 #[tauri::command]
@@ -150,6 +152,28 @@ fn create_main_window(
     builder.build()
 }
 
+pub(crate) fn show_main_window(app: &AppHandle) -> tauri::Result<()> {
+    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+        Some(window) => window,
+        None => create_main_window(app, app.state::<DesktopRuntime>().address)?,
+    };
+    window.unminimize()?;
+    window.show()?;
+    window.set_focus()?;
+    app.state::<DesktopRuntime>()
+        .tray_only
+        .store(false, Ordering::Release);
+    Ok(())
+}
+
+fn destroy_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Err(error) = window.destroy() {
+            tracing::warn!(%error, "failed to destroy main window");
+        }
+    }
+}
+
 pub fn run() -> ExitCode {
     let diagnostics = match StartupDiagnostics::initialize() {
         Ok(diagnostics) => diagnostics,
@@ -247,9 +271,11 @@ pub fn run() -> ExitCode {
                 result
             });
             app.manage(DesktopRuntime {
+                address,
                 shutdown,
                 server: Mutex::new(Some(task)),
                 exiting: AtomicBool::new(false),
+                tray_only: AtomicBool::new(false),
             });
             let window = create_main_window(app.handle(), address)?;
             if desktop_settings.silent_start && started_by_autostart {
@@ -280,13 +306,19 @@ pub fn run() -> ExitCode {
             let runtime = app.state::<DesktopRuntime>();
             if !runtime.exiting.load(Ordering::Acquire) {
                 api.prevent_close();
-                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-                    let _ = window.hide();
-                }
+                runtime.tray_only.store(true, Ordering::Release);
+                destroy_main_window(app);
             }
         }
-        RunEvent::ExitRequested { api, .. } => {
+        RunEvent::ExitRequested { api, code, .. } => {
             let runtime = app.state::<DesktopRuntime>();
+            if code.is_none()
+                && runtime.tray_only.load(Ordering::Acquire)
+                && !runtime.exiting.load(Ordering::Acquire)
+            {
+                api.prevent_exit();
+                return;
+            }
             if !runtime.exiting.swap(true, Ordering::AcqRel) {
                 api.prevent_exit();
                 runtime.shutdown.cancel();

@@ -1,13 +1,13 @@
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    App, AppHandle, Manager,
+    App, AppHandle,
 };
 
 #[cfg(target_os = "windows")]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 
-use crate::desktop::MAIN_WINDOW_LABEL;
+use crate::desktop;
 
 const OPEN_MENU_ID: &str = "tray-open";
 const QUIT_MENU_ID: &str = "tray-quit";
@@ -47,9 +47,7 @@ pub fn create(app: &mut App) -> tauri::Result<()> {
 }
 
 pub fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    if let Err(error) = desktop::show_main_window(app) {
+        tracing::warn!(%error, "failed to show main window");
     }
 }
