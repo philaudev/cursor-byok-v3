@@ -1,17 +1,6 @@
 //! High-performance trigram-indexed search adapter using Microsoft tgrep.
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use serde_json::Value;
-
-// Track repos currently being indexed to avoid duplicate concurrent indexing builds
-static INDEXING_REPOS: std::sync::OnceLock<Arc<Mutex<HashSet<PathBuf>>>> =
-    std::sync::OnceLock::new();
-
-fn indexing_set() -> &'static Arc<Mutex<HashSet<PathBuf>>> {
-    INDEXING_REPOS.get_or_init(|| Arc::new(Mutex::new(HashSet::new())))
-}
+use std::path::{Path, PathBuf};
 
 /// Resolves the absolute path to the `tgrep` binary on the host machine.
 pub fn resolve_tgrep_binary(configured_path: Option<&str>) -> Option<PathBuf> {
@@ -87,14 +76,22 @@ pub fn resolve_tgrep_binary(configured_path: Option<&str>) -> Option<PathBuf> {
 
 /// Finds the root directory of the repository/project for a given path.
 pub fn find_repo_root(path: &Path) -> PathBuf {
-    let candidate_path = if path.is_dir() {
+    let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf())
+        std::env::current_dir()
+            .map(|directory| directory.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let candidate_path = if path.is_dir() {
+        path.clone()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.clone())
     };
 
     let mut current = candidate_path.as_path();
-    let mut found_root = None;
 
     while let Some(parent) = current.parent() {
         if current.join(".git").exists()
@@ -102,19 +99,16 @@ pub fn find_repo_root(path: &Path) -> PathBuf {
             || current.join("Cargo.toml").exists()
             || current.join("package.json").exists()
         {
-            found_root = Some(current.to_path_buf());
-            // Continue up to find outermost repo if nested
+            return current.to_path_buf();
         }
         current = parent;
     }
 
-    found_root.unwrap_or_else(|| {
-        if path.is_dir() {
-            path.to_path_buf()
-        } else {
-            path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
-        }
-    })
+    if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+    }
 }
 
 /// Checks if `tgrep` is available on the machine.
@@ -129,44 +123,182 @@ fn tgrep_command(binary: &Path) -> tokio::process::Command {
     cmd
 }
 
-/// Automatically builds the index in the background for a repository if missing.
-pub async fn auto_ensure_index(root: &Path, configured_path: Option<&str>) {
-    let index_dir = root.join(".tgrep");
-    if index_dir.exists() {
-        return;
+/// Executes a search using `tgrep` and returns a typed outcome for engine routing.
+pub(crate) async fn execute_tgrep_outcome(
+    arguments: &Value,
+    configured_path: Option<&str>,
+    force_no_index: bool,
+) -> crate::search::TgrepOutcome {
+    if let Err(failure) = validate_tgrep_arguments(arguments) {
+        return crate::search::TgrepOutcome::Failure(failure);
     }
 
-    let Some(binary) = resolve_tgrep_binary(configured_path) else {
-        return;
+    let binary = match resolve_tgrep_binary(configured_path) {
+        Some(binary) => binary,
+        None => {
+            return crate::search::TgrepOutcome::Failure(
+                crate::search::TgrepFailure::Unavailable,
+            )
+        }
     };
 
-    let root_buf = root.to_path_buf();
-    let set = indexing_set();
-    let mut lock = set.lock().await;
-    if lock.contains(&root_buf) {
-        return;
+    let pattern = arguments
+        .get("pattern")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let target_path_str = arguments
+        .get("path")
+        .or_else(|| arguments.get("target_directory"))
+        .and_then(Value::as_str)
+        .unwrap_or(".");
+    let target_path = Path::new(target_path_str);
+    let repo_root = find_repo_root(target_path);
+    let mut args: Vec<String> = vec!["--color".into(), "never".into(), "--no-heading".into()];
+    if force_no_index {
+        args.push("--no-index".into());
+    } else {
+        let index_dir = repo_root.join(".tgrep");
+        if index_dir.exists() {
+            args.extend(["--index-path".into(), index_dir.to_string_lossy().into()]);
+        }
     }
-    lock.insert(root_buf.clone());
-    drop(lock);
 
-    let set_clone = set.clone();
-    tokio::spawn(async move {
-        tracing::info!(repo = ?root_buf, "tgrep: building trigram index in background");
-        let _ = tgrep_command(&binary)
-            .args(["index", root_buf.to_string_lossy().as_ref()])
-            .output()
-            .await;
-        let mut lock = set_clone.lock().await;
-        lock.remove(&root_buf);
-        tracing::info!(repo = ?root_buf, "tgrep: trigram index build finished");
-    });
+    let output_mode = arguments
+        .get("output_mode")
+        .and_then(Value::as_str)
+        .unwrap_or("content");
+    match output_mode {
+        "files_with_matches" => args.push("-l".into()),
+        "count" => args.push("-c".into()),
+        _ => args.extend(["-n".into(), "-H".into()]),
+    }
+    if arguments.get("-i").and_then(Value::as_bool).unwrap_or(false) {
+        args.push("-i".into());
+    }
+    for (key, flag) in [("-B", "-B"), ("-A", "-A"), ("-C", "-C")] {
+        if let Some(value) = arguments.get(key).and_then(Value::as_u64) {
+            args.extend([flag.into(), value.to_string()]);
+        }
+    }
+    if let Some(glob) = arguments
+        .get("glob")
+        .or_else(|| arguments.get("glob_pattern"))
+        .and_then(Value::as_str)
+    {
+        args.extend(["-g".into(), glob.into()]);
+    }
+    if arguments.get("multiline").and_then(Value::as_bool).unwrap_or(false) {
+        args.push("-U".into());
+    }
+    if let Some(file_type) = arguments.get("type").and_then(Value::as_str) {
+        args.extend(["-t".into(), file_type.into()]);
+    }
+    if let Some(limit) = arguments.get("head_limit").and_then(Value::as_u64) {
+        args.extend(["-m".into(), limit.to_string()]);
+    }
+    if !pattern.is_empty() {
+        args.push(pattern.into());
+    } else if output_mode == "files_with_matches" {
+        args.push(".*".into());
+    }
+    args.push(target_path_str.into());
+
+    let output = match tgrep_command(&binary).args(&args).output().await {
+        Ok(output) => output,
+        Err(error) => {
+            return crate::search::TgrepOutcome::Failure(
+                crate::search::TgrepFailure::Infrastructure {
+                    reason: format!("failed to spawn tgrep: {error}"),
+                },
+            )
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match output.status.code() {
+        Some(0) if stdout.is_empty() => crate::search::TgrepOutcome::NoMatch,
+        Some(0) => crate::search::TgrepOutcome::Match(stdout),
+        Some(1) => crate::search::TgrepOutcome::NoMatch,
+        code => crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Infrastructure {
+            reason: if stderr.is_empty() {
+                format!("tgrep exited with code {code:?}")
+            } else {
+                format!("tgrep error: {stderr}")
+            },
+        }),
+    }
 }
 
-/// Executes a search using `tgrep` with arguments matching Cursor's Grep tool schema.
+fn validate_tgrep_arguments(arguments: &Value) -> std::result::Result<(), crate::search::TgrepFailure> {
+    let invalid = |reason: &str| crate::search::TgrepFailure::InvalidRequest {
+        reason: reason.into(),
+    };
+    if arguments
+        .get("pattern")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(invalid("pattern must be non-empty"));
+    }
+    if arguments.get("type").is_some_and(|value| {
+        value.as_str().is_none_or(|file_type| file_type.trim().is_empty())
+    }) {
+        return Err(invalid("type must be a non-empty file type when provided"));
+    }
+    if arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .is_some_and(|offset| offset > 0)
+    {
+        return Err(crate::search::TgrepFailure::UnsupportedRequest {
+            reason: "offset is not supported by tgrep".into(),
+        });
+    }
+    if arguments.get("sort").is_some() || arguments.get("sort_ascending").is_some() {
+        return Err(crate::search::TgrepFailure::UnsupportedRequest {
+            reason: "sort options are not supported by tgrep".into(),
+        });
+    }
+    for key in ["-A", "-B", "-C", "head_limit", "offset"] {
+        if let Some(value) = arguments.get(key) {
+            if value.as_u64().is_none() {
+                return Err(invalid(&format!("{key} must be a non-negative integer")));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Compatibility wrapper for callers that still consume string output.
 pub async fn execute_tgrep(
     arguments: &Value,
     configured_path: Option<&str>,
 ) -> std::result::Result<String, String> {
+    match execute_tgrep_outcome(arguments, configured_path, false).await {
+        crate::search::TgrepOutcome::Match(output) => Ok(output),
+        crate::search::TgrepOutcome::NoMatch => {
+            let pattern = arguments.get("pattern").and_then(Value::as_str).unwrap_or_default();
+            let path = arguments.get("path").and_then(Value::as_str).unwrap_or(".");
+            Ok(format!("No matches found for pattern `{pattern}` in {path}"))
+        }
+        crate::search::TgrepOutcome::Failure(failure) => Err(failure.to_string()),
+    }
+}
+
+impl std::fmt::Display for crate::search::TgrepFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => write!(formatter, "tgrep binary not found on system PATH or configured path"),
+            Self::UnsupportedRequest { reason }
+            | Self::Infrastructure { reason }
+            | Self::InvalidRequest { reason } => formatter.write_str(reason),
+        }
+    }
+}
+
+/* legacy implementation removed: execute_tgrep_outcome is the single command adapter. */
+/*
+
     let binary = resolve_tgrep_binary(configured_path)
         .ok_or_else(|| "tgrep binary not found on system PATH or configured path".to_string())?;
 
@@ -306,6 +438,8 @@ pub async fn execute_tgrep(
     }
 }
 
+*/
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +460,58 @@ mod tests {
             root.join("Cargo.toml").exists() || root.join(".tgrep").exists(),
             "Resolved root should contain Cargo.toml or .tgrep"
         );
+    }
+
+    #[tokio::test]
+    async fn tgrep_rejects_empty_type_without_spawning() {
+        let args = json!({
+            "pattern": "test",
+            "type": ""
+        });
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(
+                crate::search::TgrepFailure::InvalidRequest { .. }
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn tgrep_rejects_offset_before_binary_lookup() {
+        let args = json!({
+            "pattern": "test",
+            "offset": 1
+        });
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(
+                crate::search::TgrepFailure::UnsupportedRequest { .. }
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn tgrep_reports_unavailable_as_typed_failure() {
+        let args = json!({"pattern": "test"});
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn tgrep_rejects_empty_pattern() {
+        let args = json!({"pattern": ""});
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(
+                crate::search::TgrepFailure::InvalidRequest { .. }
+            )
+        ));
     }
 
     #[tokio::test]

@@ -122,8 +122,8 @@ pub struct CommitSettings {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepEngine {
-    #[default]
     Ripgrep,
+    #[default]
     Tgrep,
     Auto,
 }
@@ -586,23 +586,23 @@ mod tests {
 
         // Check defaults
         let initial = store.search_settings().await.unwrap();
-        assert_eq!(initial.grep_engine, GrepEngine::Ripgrep);
+        assert_eq!(initial.grep_engine, GrepEngine::Tgrep);
         assert_eq!(initial.tgrep_path, None);
 
-        // Update to Tgrep with custom path
+        // Update to Ripgrep with custom path
         let updated = store
             .set_search_settings(SearchSettings {
-                grep_engine: GrepEngine::Tgrep,
+                grep_engine: GrepEngine::Ripgrep,
                 tgrep_path: Some("C:\\bin\\tgrep.exe".into()),
             })
             .await
             .unwrap();
-        assert_eq!(updated.grep_engine, GrepEngine::Tgrep);
+        assert_eq!(updated.grep_engine, GrepEngine::Ripgrep);
         assert_eq!(updated.tgrep_path, Some("C:\\bin\\tgrep.exe".into()));
 
         // Verify read back from store
         let fetched = store.search_settings().await.unwrap();
-        assert_eq!(fetched.grep_engine, GrepEngine::Tgrep);
+        assert_eq!(fetched.grep_engine, GrepEngine::Ripgrep);
         assert_eq!(fetched.tgrep_path, Some("C:\\bin\\tgrep.exe".into()));
 
         // Empty string path becomes None

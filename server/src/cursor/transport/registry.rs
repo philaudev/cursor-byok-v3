@@ -37,6 +37,7 @@ struct RegistryInner {
     store: Store,
     traces: CursorTraceService,
     web_cache: WebCache,
+    tgrep_registry: crate::search::TgrepRegistry,
     plugins: Option<PluginRegistry>,
     conversations: ConversationRegistry,
 }
@@ -64,7 +65,15 @@ impl TransportRegistry {
         compiler: PromptCompiler,
         web_cache: WebCache,
     ) -> Self {
-        Self::build(store, provider, compiler, web_cache, None, None)
+        Self::build(
+            store,
+            provider,
+            compiler,
+            web_cache,
+            None,
+            None,
+            crate::search::TgrepRegistry::default(),
+        )
     }
 
     /// 附带本地 rules 目录的构造;编译请求上下文时会合并该目录下的 md 规则。
@@ -81,6 +90,7 @@ impl TransportRegistry {
             WebCache::default(),
             None,
             Some(local_rules_dir),
+            crate::search::TgrepRegistry::default(),
         )
     }
 
@@ -91,6 +101,7 @@ impl TransportRegistry {
         web_cache: WebCache,
         plugins: PluginRegistry,
         local_rules_dir: std::path::PathBuf,
+        tgrep_registry: crate::search::TgrepRegistry,
     ) -> Self {
         Self::build(
             store,
@@ -99,6 +110,7 @@ impl TransportRegistry {
             web_cache,
             Some(plugins),
             Some(local_rules_dir),
+            tgrep_registry,
         )
     }
 
@@ -109,6 +121,7 @@ impl TransportRegistry {
         web_cache: WebCache,
         plugins: Option<PluginRegistry>,
         local_rules_dir: Option<std::path::PathBuf>,
+        tgrep_registry: crate::search::TgrepRegistry,
     ) -> Self {
         Self {
             inner: Arc::new(RegistryInner {
@@ -122,10 +135,12 @@ impl TransportRegistry {
                     provider,
                     compiler,
                     web_cache.clone(),
+                    tgrep_registry.clone(),
                     local_rules_dir,
                 ),
                 store,
                 web_cache,
+                tgrep_registry,
                 plugins,
             }),
         }
@@ -144,6 +159,10 @@ impl TransportRegistry {
 
     pub fn web_cache(&self) -> &WebCache {
         &self.inner.web_cache
+    }
+
+    pub fn tgrep_registry(&self) -> &crate::search::TgrepRegistry {
+        &self.inner.tgrep_registry
     }
 
     pub fn plugins(&self) -> Option<&PluginRegistry> {
@@ -258,6 +277,7 @@ impl TransportRegistry {
 
     pub async fn shutdown(&self) {
         self.inner.conversations.shutdown().await;
+        self.inner.tgrep_registry.shutdown().await;
         let handles = std::mem::take(&mut *self.inner.local.lock().await);
         self.inner.upstream.lock().await.clear();
         for transport in handles.into_values() {

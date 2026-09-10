@@ -490,7 +490,7 @@
       "type": "function",
       "function": {
         "name": "Grep",
-        "description": "A search tool built on ripgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
+        "description": "A search tool built on ripgrep/tgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -546,7 +546,7 @@
               "type": "string"
             },
             "type": {
-              "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types.",
+              "description": "File type to search (rg --type). Supply only a valid, non-empty ripgrep file type such as js, py, rust, go, or java; omit this field entirely when no language filter is needed. More efficient than `glob` for standard file types.",
               "type": "string"
             }
           },
