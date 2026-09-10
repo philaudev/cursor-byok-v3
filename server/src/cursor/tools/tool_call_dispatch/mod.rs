@@ -56,8 +56,30 @@ pub(super) async fn start(
 
     let normalized_call = normalize_block_until_ms(call)?;
     let call = normalized_call.as_ref().unwrap_or(call);
+    let tool_name = normalized(&call.name);
 
-    match normalized(&call.name).as_str() {
+    if tool_name == "grep" {
+        if let Some(store) = store {
+            if let Ok(settings) = store.search_settings().await {
+                let use_tgrep = match settings.grep_engine {
+                    crate::store::GrepEngine::Tgrep => true,
+                    crate::store::GrepEngine::Auto => {
+                        crate::search::tgrep::is_tgrep_available(settings.tgrep_path.as_deref())
+                    }
+                    crate::store::GrepEngine::Ripgrep => false,
+                };
+                if use_tgrep {
+                    if let Some(tool_start) =
+                        search::start_tgrep(results, call, settings.tgrep_path)
+                    {
+                        return Ok(tool_start);
+                    }
+                }
+            }
+        }
+    }
+
+    match tool_name.as_str() {
         "shell" | "bash" | "read" | "delete" | "grep" | "glob" | "ls" | "readlints" | "task"
         | "callmcptool" | "fetchmcpresource" | "getmcptools" => {
             exec::start(runtime, call, context).await

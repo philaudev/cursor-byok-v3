@@ -217,6 +217,10 @@ pub fn api_router(service: ControlService) -> Router {
             get(settings::get_commit).put(settings::update_commit),
         )
         .route(
+            "/__byok-api__/api/settings/search",
+            get(settings::get_search).put(settings::update_search),
+        )
+        .route(
             "/__byok-api__/api/harness/cursor/status",
             get(harness::status),
         )

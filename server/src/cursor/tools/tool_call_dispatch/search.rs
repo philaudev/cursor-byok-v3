@@ -36,3 +36,27 @@ pub(super) fn start(
         completion: None,
     })
 }
+
+pub(super) fn start_tgrep(
+    results: &ToolResultSender,
+    call: &ToolCall,
+    configured_path: Option<String>,
+) -> Option<ToolStart> {
+    if !search::tgrep::is_tgrep_available(configured_path.as_deref()) {
+        return None;
+    }
+    let call = call.clone();
+    let results = results.clone();
+    let started_at_ms = now_ms();
+    tokio::spawn(async move {
+        let output = search::tgrep::execute_tgrep(&call.arguments, configured_path.as_deref()).await;
+        match result::grep_completion(&call, started_at_ms, output) {
+            Ok(completion) => results.send(completion),
+            Err(error) => results.send_error(error),
+        }
+    });
+    Some(ToolStart {
+        messages: Vec::new(),
+        completion: None,
+    })
+}

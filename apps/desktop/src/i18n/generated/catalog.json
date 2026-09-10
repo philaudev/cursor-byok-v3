@@ -125,8 +125,13 @@
           "column": 8
         },
         {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 44,
+          "column": 8
+        },
+        {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 186,
+          "line": 215,
           "column": 82
         },
         {
@@ -367,7 +372,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 95,
+          "line": 102,
           "column": 38
         }
       ]
@@ -396,7 +401,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 279,
+          "line": 309,
           "column": 26
         }
       ]
@@ -747,7 +752,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 283,
+          "line": 313,
           "column": 60
         }
       ]
@@ -773,17 +778,17 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 65,
+          "line": 72,
           "column": 42
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 191,
+          "line": 220,
           "column": 22
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 218,
+          "line": 247,
           "column": 58
         }
       ]
@@ -821,6 +826,18 @@
           "file": "features/models/LegacyModelImport.tsx",
           "line": 65,
           "column": 20
+        }
+      ]
+    },
+    "1e74a4a61fa7a5f8": {
+      "source": "留空则自动从 PATH 或项目根目录查找。",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 83,
+          "column": 25
         }
       ]
     },
@@ -882,7 +899,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 257,
+          "line": 287,
           "column": 43
         }
       ]
@@ -906,7 +923,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 120,
+          "line": 127,
           "column": 15
         }
       ]
@@ -930,7 +947,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 306,
+          "line": 336,
           "column": 24
         }
       ]
@@ -1112,13 +1129,18 @@
           "column": 66
         },
         {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 36,
+          "column": 10
+        },
+        {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 182,
+          "line": 211,
           "column": 81
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 298,
+          "line": 328,
           "column": 22
         },
         {
@@ -1224,7 +1246,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 144,
+          "line": 151,
           "column": 15
         }
       ]
@@ -1292,6 +1314,18 @@
         }
       ]
     },
+    "2fcec680393f3d2b": {
+      "source": "自定义 tgrep.exe 路径 (可选)",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 82,
+          "column": 26
+        }
+      ]
+    },
     "2fe0e3339ac4d1bb": {
       "source": "已过期",
       "kind": "text",
@@ -1330,6 +1364,18 @@
           "file": "features/plugins/PluginResourcePanels.tsx",
           "line": 355,
           "column": 56
+        }
+      ]
+    },
+    "3134592a94c8eaf9": {
+      "source": "二进制文件路径",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 103,
+          "column": 24
         }
       ]
     },
@@ -1374,7 +1420,7 @@
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 242,
+          "line": 272,
           "column": 27
         }
       ]
@@ -1447,7 +1493,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 308,
+          "line": 338,
           "column": 42
         }
       ]
@@ -1512,7 +1558,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 290,
+          "line": 320,
           "column": 14
         }
       ]
@@ -1541,7 +1587,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 242,
+          "line": 272,
           "column": 39
         }
       ]
@@ -1591,12 +1637,12 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 249,
+          "line": 279,
           "column": 22
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 255,
+          "line": 285,
           "column": 26
         }
       ]
@@ -1610,6 +1656,18 @@
           "file": "shell/ads/AdMenu.tsx",
           "line": 62,
           "column": 56
+        }
+      ]
+    },
+    "3f4ebedbdbd462ca": {
+      "source": "自动识别 (PATH / 项目目录)",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 105,
+          "column": 63
         }
       ]
     },
@@ -1678,7 +1736,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 159,
+          "line": 188,
           "column": 66
         }
       ]
@@ -1690,7 +1748,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 274,
+          "line": 304,
           "column": 52
         }
       ]
@@ -1767,6 +1825,18 @@
         }
       ]
     },
+    "46cbcb7c5a65bff9": {
+      "source": "当前引擎",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 99,
+          "column": 24
+        }
+      ]
+    },
     "470049252e54de6a": {
       "source": "成功占比：{rate}",
       "kind": "template",
@@ -1828,6 +1898,23 @@
           "file": "shared/ui/Pagination.tsx",
           "line": 20,
           "column": 12
+        }
+      ]
+    },
+    "491835ae5d9cf156": {
+      "source": "搜索引擎选择",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 62,
+          "column": 26
+        },
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 68,
+          "column": 30
         }
       ]
     },
@@ -2128,7 +2215,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 180,
+          "line": 209,
           "column": 26
         }
       ]
@@ -2222,7 +2309,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 235,
+          "line": 265,
           "column": 78
         }
       ]
@@ -2268,7 +2355,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 239,
+          "line": 269,
           "column": 21
         }
       ]
@@ -2557,7 +2644,7 @@
       "refs": [
         {
           "file": "shared/api.ts",
-          "line": 526,
+          "line": 533,
           "column": 43
         }
       ]
@@ -2672,7 +2759,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 95,
+          "line": 102,
           "column": 55
         }
       ]
@@ -2860,7 +2947,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 170,
+          "line": 199,
           "column": 16
         }
       ]
@@ -2884,7 +2971,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 266,
+          "line": 296,
           "column": 26
         }
       ]
@@ -2908,7 +2995,7 @@
       "refs": [
         {
           "file": "shared/api.ts",
-          "line": 521,
+          "line": 528,
           "column": 43
         }
       ]
@@ -2932,7 +3019,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 299,
+          "line": 329,
           "column": 23
         }
       ]
@@ -2987,7 +3074,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 138,
+          "line": 145,
           "column": 83
         }
       ]
@@ -3062,7 +3149,7 @@
       "refs": [
         {
           "file": "shared/api.ts",
-          "line": 450,
+          "line": 457,
           "column": 21
         }
       ]
@@ -3307,7 +3394,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 238,
+          "line": 268,
           "column": 22
         }
       ]
@@ -3434,7 +3521,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 162,
+          "line": 191,
           "column": 7
         }
       ]
@@ -3758,7 +3845,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 246,
+          "line": 276,
           "column": 26
         }
       ]
@@ -3794,7 +3881,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 58,
+          "line": 65,
           "column": 34
         }
       ]
@@ -3885,8 +3972,13 @@
           "column": 103
         },
         {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 39,
+          "column": 31
+        },
+        {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 183,
+          "line": 212,
           "column": 133
         },
         {
@@ -4104,6 +4196,18 @@
           "file": "features/models/CursorModelEditor.tsx",
           "line": 160,
           "column": 25
+        }
+      ]
+    },
+    "aa18900613e4958c": {
+      "source": "代码搜索引擎设置 (Grep / TGrep)",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 52,
+          "column": 20
         }
       ]
     },
@@ -4398,7 +4502,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 159,
+          "line": 188,
           "column": 45
         }
       ]
@@ -4424,7 +4528,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 282,
+          "line": 312,
           "column": 22
         }
       ]
@@ -4574,7 +4678,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 274,
+          "line": 304,
           "column": 40
         }
       ]
@@ -4853,6 +4957,18 @@
         }
       ]
     },
+    "ceda64e8ce4a67d7": {
+      "source": "搜索引擎设置已保存",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SettingsPage.tsx",
+          "line": 173,
+          "column": 15
+        }
+      ]
+    },
     "cfae1a14d2120c57": {
       "source": "详细模式",
       "kind": "text",
@@ -4860,12 +4976,12 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 168,
+          "line": 197,
           "column": 22
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 174,
+          "line": 203,
           "column": 20
         }
       ]
@@ -4877,7 +4993,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 205,
+          "line": 234,
           "column": 21
         }
       ]
@@ -4913,7 +5029,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 161,
+          "line": 190,
           "column": 7
         }
       ]
@@ -5002,6 +5118,18 @@
           "file": "shared/ui/FormControls.tsx",
           "line": 15,
           "column": 95
+        }
+      ]
+    },
+    "d583d60d364cd2dc": {
+      "source": "选择 AI Agent 调用 Grep 工具时使用的后端引擎。",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 63,
+          "column": 25
         }
       ]
     },
@@ -5216,7 +5344,7 @@
       "refs": [
         {
           "file": "shared/api.ts",
-          "line": 502,
+          "line": 509,
           "column": 43
         }
       ]
@@ -5293,7 +5421,7 @@
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 318,
+          "line": 348,
           "column": 30
         },
         {
@@ -5509,6 +5637,23 @@
         }
       ]
     },
+    "e46a4c408ab5d9c1": {
+      "source": "自动 (优先使用 TGrep，异常时自动回退)",
+      "kind": "text",
+      "placeholders": [],
+      "refs": [
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 29,
+          "column": 35
+        },
+        {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 70,
+          "column": 45
+        }
+      ]
+    },
     "e4760c6a1df24f17": {
       "source": "完整请求 URL",
       "kind": "text",
@@ -5557,7 +5702,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 71,
+          "line": 78,
           "column": 17
         }
       ]
@@ -5651,7 +5796,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 165,
+          "line": 194,
           "column": 26
         }
       ]
@@ -5764,7 +5909,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 224,
+          "line": 253,
           "column": 16
         }
       ]
@@ -5908,7 +6053,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 250,
+          "line": 280,
           "column": 21
         }
       ]
@@ -5994,7 +6139,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 192,
+          "line": 221,
           "column": 21
         }
       ]
@@ -6180,7 +6325,7 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 309,
+          "line": 339,
           "column": 38
         }
       ]
@@ -6201,8 +6346,13 @@
           "column": 91
         },
         {
+          "file": "features/settings/SearchSettingsCard.tsx",
+          "line": 39,
+          "column": 19
+        },
+        {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 183,
+          "line": 212,
           "column": 121
         },
         {
@@ -6231,17 +6381,17 @@
       "refs": [
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 66,
+          "line": 73,
           "column": 46
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 204,
+          "line": 233,
           "column": 22
         },
         {
           "file": "features/settings/SettingsPage.tsx",
-          "line": 219,
+          "line": 248,
           "column": 58
         }
       ]
