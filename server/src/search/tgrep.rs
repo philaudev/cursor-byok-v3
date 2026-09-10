@@ -122,6 +122,13 @@ pub fn is_tgrep_available(configured_path: Option<&str>) -> bool {
     resolve_tgrep_binary(configured_path).is_some()
 }
 
+fn tgrep_command(binary: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(binary);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd
+}
+
 /// Automatically builds the index in the background for a repository if missing.
 pub async fn auto_ensure_index(root: &Path, configured_path: Option<&str>) {
     let index_dir = root.join(".tgrep");
@@ -145,7 +152,7 @@ pub async fn auto_ensure_index(root: &Path, configured_path: Option<&str>) {
     let set_clone = set.clone();
     tokio::spawn(async move {
         tracing::info!(repo = ?root_buf, "tgrep: building trigram index in background");
-        let _ = tokio::process::Command::new(binary)
+        let _ = tgrep_command(&binary)
             .args(["index", root_buf.to_string_lossy().as_ref()])
             .output()
             .await;
@@ -264,7 +271,7 @@ pub async fn execute_tgrep(
     // Search target path
     args.push(target_path_str.to_string());
 
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = tgrep_command(&binary);
     command.args(&args);
 
     let output = command
