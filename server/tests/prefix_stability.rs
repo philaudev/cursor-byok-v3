@@ -139,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 26);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 25);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -165,7 +165,6 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Ls",
             "AskQuestion",
             "Task",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",
@@ -200,7 +199,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
+        "c9a5796e2f8a65dae6c88fc96ddc9d21ecd7334f0525de407f73c2d639f0aaab",
     );
     assert_mode(
         &assets,
@@ -228,7 +227,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "edb505745a12e0892c22990135312940ba0f64b7af40f7220492b16bbf947aac",
+        "047532bdffd92a26c5d1eaef3d82a138461457c91a63e88b58c6d4bcd67e730e",
     );
     assert_mode(
         &assets,
@@ -254,7 +253,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
+        "c9a5796e2f8a65dae6c88fc96ddc9d21ecd7334f0525de407f73c2d639f0aaab",
     );
     assert_mode(
         &assets,
@@ -282,7 +281,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "5c39beb609b3298f81338907a3e0ce92148979c10b7bf757295e0863d6bec993",
+        "595aefa7b65c81741aae64afa0a1360f73da6c78726b34d63d0958a86d7a45e3",
     );
     assert_mode(
         &assets,
@@ -303,7 +302,6 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Read",
             "Glob",
             "Ls",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",
@@ -312,7 +310,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "8e9f4a013b9ecc90643b8ef2ab6aaca082412722fdf54017af592be1b37a2fb5",
+        "f2a36b598e0cc597de77802da555e77482ff9c6bcdda4929dc78a164846ab2e7",
     );
     assert_mode(
         &assets,
@@ -322,7 +320,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "2958862c44387b3cba98cbc3fb2e9e7dbd9b6ae55389424c5168b365640e0fd4"
+        "4143ed587cee832c7a3e55c066c43dad7aa8ea865993953d1af5fdd08952c641"
     );
     let task = assets
         .mode(Mode::Agent)
@@ -556,7 +554,6 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             "Read",
             "Glob",
             "Ls",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",

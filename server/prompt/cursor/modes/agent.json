@@ -17,7 +17,6 @@
     "Ls",
     "AskQuestion",
     "Task",
-    "AwaitShell",
     "GetMcpTools",
     "FetchMcpResource",
     "SwitchMode",

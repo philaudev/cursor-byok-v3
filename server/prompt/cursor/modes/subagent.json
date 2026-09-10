@@ -15,7 +15,6 @@
     "Read",
     "Glob",
     "Ls",
-    "AwaitShell",
     "GetMcpTools",
     "FetchMcpResource",
     "SwitchMode",
