@@ -58,6 +58,7 @@ impl App {
             config.provider_request_timeout,
             config.provider_stream_idle_timeout,
         ));
+        let tgrep_registry = crate::search::TgrepRegistry::new();
         let registry = TransportRegistry::with_plugins(
             store.clone(),
             provider.clone(),
@@ -65,6 +66,7 @@ impl App {
             WebCache::managed()?,
             plugins.clone(),
             crate::config::managed_data_dir()?.join("rules"),
+            tgrep_registry,
         );
         let control = control::ControlService::new(
             store.clone(),
@@ -141,6 +143,24 @@ impl App {
         tracing::info!(%address, "cursor server listening");
         let registry = self.registry;
         let harness = self.harness;
+
+        let reaper_registry = registry.tgrep_registry().clone();
+        let reaper_shutdown = shutdown.clone();
+        let reaper_task_shutdown = reaper_shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        reaper_registry.reap_idle(Duration::from_secs(1200)).await;
+                    }
+                    () = reaper_task_shutdown.cancelled() => {
+                        break;
+                    }
+                }
+            }
+        });
+
         let graceful = shutdown.clone();
         let server = axum::serve(listener, self.router)
             .with_graceful_shutdown(async move {
@@ -151,12 +171,15 @@ impl App {
 
         tokio::select! {
             result = &mut server => {
+                reaper_shutdown.cancel();
+                registry.shutdown().await;
                 if let Err(error) = harness.disable().await {
                     tracing::warn!(%error, "failed to disable Cursor harness after server stop");
                 }
                 result?
             },
             () = shutdown.cancelled() => {
+                reaper_shutdown.cancel();
                 if let Err(error) = harness.disable().await {
                     tracing::warn!(%error, "failed to disable Cursor harness during shutdown");
                 }

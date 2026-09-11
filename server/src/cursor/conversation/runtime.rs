@@ -544,6 +544,7 @@ async fn start_generation(
         results.clone(),
         dependencies.store.clone(),
         dependencies.web_cache.clone(),
+        dependencies.tgrep_registry.clone(),
     );
     let generation = RunGeneration {
         id: *next_generation,

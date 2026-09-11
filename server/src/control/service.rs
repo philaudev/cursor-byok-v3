@@ -29,7 +29,7 @@ use crate::{
     provider::{is_valid_response_event, ModelEvent, Provider},
     store::{
         CommitSettings, DesktopSettings, PortSettings, ProxySettings, ProxySettingsInput,
-        StatisticsStorage, Store, TabSettings,
+        SearchSettings, StatisticsStorage, Store, TabSettings,
     },
     Error, Result,
 };
@@ -750,6 +750,14 @@ impl ControlService {
 
     pub async fn set_commit_settings(&self, settings: CommitSettings) -> Result<CommitSettings> {
         self.store.set_commit_settings(settings).await
+    }
+
+    pub async fn search_settings(&self) -> Result<SearchSettings> {
+        self.store.search_settings().await
+    }
+
+    pub async fn set_search_settings(&self, settings: SearchSettings) -> Result<SearchSettings> {
+        self.store.set_search_settings(settings).await
     }
 }
 

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, type ProxySettings, type ProxySettingsInput, type StatisticsStorage, type StatisticsStorageScope, type TabSettings } from "../../shared/api";
+import { api, type ProxySettings, type ProxySettingsInput, type SearchSettings, type StatisticsStorage, type StatisticsStorageScope, type TabSettings } from "../../shared/api";
 import { PageContent } from "../../shell/layout/PageContent";
 import { LegacyModelImport } from "../models/LegacyModelImport";
 import { AppLifecycleSettingsCard } from "./AppLifecycleSettingsCard";
 import { CommitSettingsCard } from "./CommitSettingsCard";
 import { ProxySettingsCard } from "./ProxySettingsCard";
+import { SearchSettingsCard } from "./SearchSettingsCard";
 import { TabSettingsCard } from "./TabSettingsCard";
 import { Button } from "../../shared/ui/Button";
 import { Checkbox } from "../../shared/ui/Checkbox";
@@ -38,13 +39,19 @@ export function SettingsPage() {
   const [tabDraft, setTabDraft] = useState<TabSettings>({ mode: "public", address: "" });
   const [editingTab, setEditingTab] = useState(false);
   const [savingTab, setSavingTab] = useState(false);
+  const [searchSettings, setSearchSettings] = useState<SearchSettings | null>(null);
+  const [searchDraft, setSearchDraft] = useState<SearchSettings>({ grep_engine: "auto", tgrep_path: null });
+  const [editingSearch, setEditingSearch] = useState(false);
+  const [savingSearch, setSavingSearch] = useState(false);
   useEffect(() => {
-    void Promise.all([api.statisticsStorage(), api.proxySettings(), api.tabSettings()]).then(([nextStorage, nextProxy, nextTab]) => {
+    void Promise.all([api.statisticsStorage(), api.proxySettings(), api.tabSettings(), api.searchSettings()]).then(([nextStorage, nextProxy, nextTab, nextSearch]) => {
       setStorage(nextStorage);
       setOutboundProxy(nextProxy);
       setProxyDraft({ mode: nextProxy.mode, address: nextProxy.address, auth_enabled: nextProxy.auth_enabled, username: nextProxy.username, password: "" });
       setTabSettings(nextTab);
       setTabDraft(nextTab);
+      setSearchSettings(nextSearch);
+      setSearchDraft(nextSearch);
     }).catch((cause) => message(cause instanceof Error ? cause.message : String(cause)));
   }, [message]);
   useEffect(() => {
@@ -148,6 +155,28 @@ export function SettingsPage() {
       setSavingTab(false);
     }
   };
+  const editSearch = () => {
+    if (searchSettings) setSearchDraft(searchSettings);
+    setEditingSearch(true);
+  };
+  const cancelSearchEdit = () => {
+    if (searchSettings) setSearchDraft(searchSettings);
+    setEditingSearch(false);
+  };
+  const saveSearch = async () => {
+    try {
+      setSavingSearch(true);
+      const saved = await api.setSearchSettings(searchDraft);
+      setSearchSettings(saved);
+      setSearchDraft(saved);
+      setEditingSearch(false);
+      message(t("搜索引擎设置已保存"));
+    } catch (cause) {
+      message(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSavingSearch(false);
+    }
+  };
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     const units = ["KB", "MB", "GB", "TB"];
@@ -230,6 +259,7 @@ export function SettingsPage() {
       </TitledCard>
       <ProxySettingsCard settings={outboundProxy} draft={proxyDraft} editing={editingProxy} saving={savingProxy} onDraftChange={setProxyDraft} onEdit={editProxy} onCancel={cancelProxyEdit} onSave={() => void saveProxy()} />
       <TabSettingsCard settings={tabSettings} draft={tabDraft} editing={editingTab} saving={savingTab} onDraftChange={setTabDraft} onEdit={editTab} onCancel={cancelTabEdit} onSave={() => void saveTab()} />
+      <SearchSettingsCard settings={searchSettings} draft={searchDraft} editing={editingSearch} saving={savingSearch} onDraftChange={setSearchDraft} onEdit={editSearch} onCancel={cancelSearchEdit} onSave={() => void saveSearch()} />
       <CommitSettingsCard />
       <AppLifecycleSettingsCard />
       <LegacyModelImport>{({ busy, previewing, open }) => <TitledCard title={t("导入")}>

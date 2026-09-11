@@ -11,6 +11,7 @@ const TAB_SETTINGS_KEY: &str = "cursor_tab";
 const INSTALLATION_ID_KEY: &str = "installation_id";
 const DESKTOP_SETTINGS_KEY: &str = "desktop_lifecycle";
 const COMMIT_SETTINGS_KEY: &str = "commit_settings";
+const SEARCH_SETTINGS_KEY: &str = "search_settings";
 const CURSOR_TAKEOVER_ENABLED_KEY: &str = "cursor_takeover_enabled";
 
 /// Embedded default system prompts for commit message generation.
@@ -116,6 +117,23 @@ pub struct CommitSettings {
     pub prompt: String,
     #[serde(default)]
     pub prompt_locale: CommitPromptLocale,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrepEngine {
+    Ripgrep,
+    #[default]
+    Tgrep,
+    Auto,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SearchSettings {
+    #[serde(default)]
+    pub grep_engine: GrepEngine,
+    #[serde(default)]
+    pub tgrep_path: Option<String>,
 }
 
 impl CommitSettings {
@@ -426,6 +444,39 @@ impl Store {
         .await?;
         Ok(settings)
     }
+
+    pub async fn search_settings(&self) -> Result<SearchSettings> {
+        let value = sqlx::query_scalar::<_, String>(
+            "SELECT value_json FROM service_settings WHERE setting_key = ?",
+        )
+        .bind(SEARCH_SETTINGS_KEY)
+        .fetch_optional(&self.pool)
+        .await?;
+        value
+            .map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .unwrap_or_else(|| Ok(SearchSettings::default()))
+    }
+
+    pub async fn set_search_settings(&self, settings: SearchSettings) -> Result<SearchSettings> {
+        let settings = SearchSettings {
+            grep_engine: settings.grep_engine,
+            tgrep_path: settings
+                .tgrep_path
+                .map(|p| p.trim().to_owned())
+                .filter(|p| !p.is_empty()),
+        };
+        let value_json = serde_json::to_string(&settings)?;
+        let _write = self.writes.lock().await;
+        sqlx::query(
+            "INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(SEARCH_SETTINGS_KEY)
+        .bind(value_json)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(settings)
+    }
 }
 
 #[cfg(test)]
@@ -524,5 +575,45 @@ mod tests {
             .unwrap();
         assert_eq!(saved.mode, ProxyMode::Custom);
         assert_eq!(saved.address, "http://127.0.0.1:7890");
+    }
+
+    #[tokio::test]
+    async fn search_settings_defaults_and_roundtrips() {
+        use super::{GrepEngine, SearchSettings};
+        let directory = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", directory.path().join("test_search.db").display());
+        let store = Store::connect(&url).await.unwrap();
+
+        // Check defaults
+        let initial = store.search_settings().await.unwrap();
+        assert_eq!(initial.grep_engine, GrepEngine::Tgrep);
+        assert_eq!(initial.tgrep_path, None);
+
+        // Update to Ripgrep with custom path
+        let updated = store
+            .set_search_settings(SearchSettings {
+                grep_engine: GrepEngine::Ripgrep,
+                tgrep_path: Some("C:\\bin\\tgrep.exe".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated.grep_engine, GrepEngine::Ripgrep);
+        assert_eq!(updated.tgrep_path, Some("C:\\bin\\tgrep.exe".into()));
+
+        // Verify read back from store
+        let fetched = store.search_settings().await.unwrap();
+        assert_eq!(fetched.grep_engine, GrepEngine::Ripgrep);
+        assert_eq!(fetched.tgrep_path, Some("C:\\bin\\tgrep.exe".into()));
+
+        // Empty string path becomes None
+        let cleaned = store
+            .set_search_settings(SearchSettings {
+                grep_engine: GrepEngine::Auto,
+                tgrep_path: Some("   ".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(cleaned.grep_engine, GrepEngine::Auto);
+        assert_eq!(cleaned.tgrep_path, None);
     }
 }

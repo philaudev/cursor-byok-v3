@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::{
     CommitPromptLocale, CommitSettings, DesktopSettings, PortSettings, ProxySettings,
-    ProxySettingsInput, StatisticsStorage, StatisticsStorageScope, TabSettings,
+    ProxySettingsInput, SearchSettings, StatisticsStorage, StatisticsStorageScope, TabSettings,
 };
 
 use super::{ControlService, ObservabilitySettings};
@@ -90,6 +90,19 @@ pub async fn update_desktop(
 ) -> Result<Json<DesktopSettings>> {
     service.set_desktop_settings(settings).await?;
     get_desktop(State(service)).await
+}
+
+pub async fn get_search(
+    State(service): State<ControlService>,
+) -> Result<Json<SearchSettings>> {
+    Ok(Json(service.search_settings().await?))
+}
+
+pub async fn update_search(
+    State(service): State<ControlService>,
+    Json(settings): Json<SearchSettings>,
+) -> Result<Json<SearchSettings>> {
+    Ok(Json(service.set_search_settings(settings).await?))
 }
 
 /// Settings view for commit message generation. Empty `model_id` means 直连

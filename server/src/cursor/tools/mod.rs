@@ -35,6 +35,7 @@ pub struct ToolDispatcher {
     search: WebSearch,
     fetch: WebFetch,
     store: Option<Store>,
+    tgrep_registry: crate::search::TgrepRegistry,
     edit_schedule: Arc<Mutex<EditSchedule>>,
 }
 
@@ -64,6 +65,7 @@ impl ToolDispatcher {
             search: WebSearch::built_in(),
             fetch: WebFetch::built_in(),
             store: None,
+            tgrep_registry: crate::search::TgrepRegistry::default(),
             edit_schedule: Arc::new(Mutex::new(EditSchedule::default())),
         }
     }
@@ -73,6 +75,7 @@ impl ToolDispatcher {
         results: ToolResultSender,
         store: Store,
         web_cache: WebCache,
+        tgrep_registry: crate::search::TgrepRegistry,
     ) -> Self {
         Self {
             runtime,
@@ -80,8 +83,13 @@ impl ToolDispatcher {
             search: WebSearch::managed(store.clone()),
             fetch: WebFetch::managed(store.clone(), web_cache),
             store: Some(store),
+            tgrep_registry,
             edit_schedule: Arc::new(Mutex::new(EditSchedule::default())),
         }
+    }
+
+    pub fn tgrep_registry(&self) -> &crate::search::TgrepRegistry {
+        &self.tgrep_registry
     }
 
     pub async fn start_batch(
@@ -204,6 +212,7 @@ impl ToolDispatcher {
             dynamic_mcp,
             context,
             self.store.as_ref(),
+            &self.tgrep_registry,
         )
         .await?;
         messages.extend(started.messages);

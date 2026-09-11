@@ -161,6 +161,13 @@ export interface CommitSettingsView extends CommitSettings {
   default_prompt: string;
 }
 
+export type GrepEngine = "ripgrep" | "tgrep" | "auto";
+
+export interface SearchSettings {
+  grep_engine: GrepEngine;
+  tgrep_path: string | null;
+}
+
 export type PluginRuntimeState = "uninitialized" | "initializing" | "ready" | "failed" | "unsupported";
 export type PluginRuntimePhase = "checking" | "downloading" | "verifying" | "installing" | "validating";
 
@@ -550,4 +557,6 @@ export const api = {
   setDesktopSettings: (settings: DesktopSettings) => request<DesktopSettings>("/settings/desktop", { method: "PUT", body: JSON.stringify(settings) }),
   commitSettings: (locale: Locale) => request<CommitSettingsView>("/settings/commit", { headers: { "accept-language": locale } }),
   setCommitSettings: (settings: CommitSettings) => request<CommitSettingsView>("/settings/commit", { method: "PUT", body: JSON.stringify(settings) }),
+  searchSettings: () => request<SearchSettings>("/settings/search"),
+  setSearchSettings: (settings: SearchSettings) => request<SearchSettings>("/settings/search", { method: "PUT", body: JSON.stringify(settings) }),
 };

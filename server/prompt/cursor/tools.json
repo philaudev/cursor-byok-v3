@@ -71,35 +71,6 @@
     {
       "type": "function",
       "function": {
-        "name": "AwaitShell",
-        "description": "Check or poll a backgrounded shell job. For work that does not have a shell id, you can omit the shell_id arg to sleep for the full `block_until_ms` duration (prefer this over sleeping in the shell, because it renders nicely to the user). At the end of your turn, you will be notified about any unawaited jobs that completed. If you think a job completed (e.g. because you killed it), observe it with AwaitShell to skip the notification, because stale notifications can confuse the user.\n\nPrefer NOT to poll reflexively with AwaitShell. Multitask on independent work while backgrounded jobs run, or finish your turn and rely on the end-of-turn completion notification. Poll with AwaitShell only when one of the following is true:\n- Your very next step is blocked on this specific job's result and you have no other productive work to do, OR\n- The task requires close monitoring (see shell guidance below).\n- Never poll a task whose tool result says it was \"manually backgrounded by the user\".\n- NEVER USE THIS TO POLL OR WAIT VACUOUSLY FOR A SUBAGENT LAUNCHED WITH THE Task TOOL — rely on the end-of-turn completion notification instead (it is delivered as soon as the subagent finishes; guessing a wait time is inefficient).\n- Shell: only poll with AwaitShell when the command requires close monitoring. Close monitoring means a long-running job that can silently hang, degrade, or need a course correction before it completes — e.g. training runs, eval runs, deployments, long builds, datagen pipelines, DB migrations, large data transfers. For fire-and-forget commands (tests, installs, dev servers/watchers, short scripts, etc.) the completion notification is enough — start them, keep working, and only poll with AwaitShell later if you end up blocked on the result.\n- Shell sanity check (regardless of close monitoring): when you spawn a command directly into the background (`block_until_ms: 0`), do a single status check by reading the output file to confirm the command didn't fail to start. This is a one-shot smoke check, not a polling loop.\n- Shell close-monitoring guidance (only applies in the close-monitoring case above):\n  - HARD STOPPING CONSTRAINT: once you've decided to actively poll, don't stop until (a) the job terminates, (b) the command reaches a healthy steady state (only for non-terminating commands, e.g. dev server/watcher), or (c) the command is hung — follow the hang guidance below.\n  - Waiting until a regex matches the output can be useful for e.g. known startup/status/error logs.\n  - Keep every `block_until_ms` wait at or below 60000ms. Use the 30000ms default for ordinary checks; for a longer operation, use `block_until_ms: 0` and rely on a later status check or end-of-turn completion notification.\n  - Output file header has `pid` and `running_for_ms` (updated every 5000ms).\n  - When finished, footer with `exit_code` and `elapsed_ms` appears (regex only matches the body, not header/footer).\n  - If the command is taking longer than expected and appears hung (use judgment based on command type), kill the process if safe to do so using the pid in the header. If possible, fix the hang and proceed.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "block_until_ms": {
-              "description": "Max sleep time to block before returning (in milliseconds). Defaults to 30000ms. Set to 0 for non-blocking status check. Must not exceed 60000 (60 seconds).",
-              "maximum": 60000,
-              "type": "number"
-            },
-            "pattern": {
-              "description": "Block until the regex matches stdout/stderr stream (or task completes). Matches anywhere in the shell output, not just new output. Will not match terminal file headers or footers, e.g. exit_code. Accepts JavaScript regex patterns (compiled with the multiline `m` flag).",
-              "type": "string"
-            },
-            "shell_id": {
-              "description": "Optional shell id to poll. If omitted, this tool sleeps for the full block_until_ms duration and then returns. Required when block_until_ms is 0.",
-              "type": "string"
-            },
-            "waiting_for_subagent": {
-              "description": "Set this to true if you are waiting for subagent(s) to complete. Remember you should NOT be doing this and instead end your turn or do parallel work.",
-              "type": "boolean"
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
         "name": "CallMcpTool",
         "description": "Call an MCP tool by server identifier and tool name with arbitrary JSON arguments. Use the matching descriptor in <mcp_meta_tools>: follow its inline input_schema, or read its definition_path when the schema is stored in a file. Call listed tools directly; do not call GetMcpTools first. If Cursor returns an MCP error, inspect it, correct the arguments or authentication, and retry only when appropriate.\n\nExample:\n{\n  \"server\": \"my-mcp-server\",\n  \"toolName\": \"search\",\n  \"description\": \"Search the public docs for the example API\",\n  \"arguments\": { \"query\": \"example\", \"limit\": 10 }\n}",
         "parameters": {
@@ -490,7 +461,7 @@
       "type": "function",
       "function": {
         "name": "Grep",
-        "description": "A search tool built on ripgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
+        "description": "A search tool built on ripgrep/tgrep for exact string, keyword, or regex matches. For exploring unfamiliar code, finding feature implementations, or semantic concept search, prefer SembleSearch first. Results are capped to several thousand output lines for responsiveness; when truncation occurs, the results report \"at least\" counts, but are otherwise accurate.",
         "parameters": {
           "type": "object",
           "properties": {
@@ -546,7 +517,7 @@
               "type": "string"
             },
             "type": {
-              "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types.",
+              "description": "File type to search (rg --type). Supply only a valid, non-empty ripgrep file type such as js, py, rust, go, or java; omit this field entirely when no language filter is needed. More efficient than `glob` for standard file types.",
               "type": "string"
             }
           },
@@ -572,6 +543,56 @@
           "required": [
             "path"
           ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "GitArchaeology",
+        "description": "Investigates Git repository history to understand why code exists, when a behavior changed, and find originating commits.\n\nUse this tool instead of running `git log`, `git blame`, or `git show` via Shell:\n- `lineage`: Trace the source commits of specific lines in a file (tracks moves across files and ignores whitespace changes).\n- `pickaxe`: Find commits that added or removed a specific symbol, keyword, or regex pattern across the codebase.\n- `file_biography`: Inspect a file's creation commit, rename history, and major change timeline.\n- `commit_context`: Inspect detailed commit metadata, author, full message, and diffstat for a specific revision.\n\nUsage Guidelines:\n- Always provide absolute path for `repository`.\n- Use `lineage` when investigating why a code block exists or who introduced it.\n- Use `pickaxe` when searching for when a function, config, or bug pattern was introduced/deleted.\n- Treat commit messages as historical evidence, not proof of undocumented intent.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "description": "Absolute path to the Git repository or a path inside it.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Read-only investigation operation: `lineage`, `pickaxe`, `file_biography`, or `commit_context`.",
+              "type": "string",
+              "enum": ["lineage", "pickaxe", "file_biography", "commit_context"]
+            },
+            "path": {
+              "description": "Repository-relative path. Required for `lineage` and `file_biography`; optional filter for `pickaxe`.",
+              "type": "string"
+            },
+            "start_line": {
+              "description": "First source line for `lineage` (1-indexed).",
+              "type": "integer"
+            },
+            "end_line": {
+              "description": "Last source line for `lineage` (inclusive). Defaults to `start_line`.",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Literal or regex query for `pickaxe`.",
+              "type": "string"
+            },
+            "regex": {
+              "description": "Use Git `-G` regex diff search instead of literal `-S` occurrence-change search.",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "Maximum history records to return, 1 through 30. Defaults to 20.",
+              "type": "integer"
+            },
+            "commit": {
+              "description": "Commit hash or Git revision for `commit_context`.",
+              "type": "string"
+            }
+          },
+          "required": ["repository", "operation"]
         }
       }
     },
@@ -630,7 +651,7 @@
           "type": "object",
           "properties": {
             "block_until_ms": {
-              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms (30 seconds). Set to 0 to immediately run the command in the background. Values above 60000ms are clamped to 60000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
+              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms (30 seconds). For commands expected to take longer (e.g. test suites, builds, compilation, package installs), explicitly set `block_until_ms: 60000` to `180000` (up to 180000ms / 3 minutes) to wait in the foreground rather than backgrounding early. Set to 0 to immediately run long-lived background jobs (e.g. dev servers). Values above 180000ms are clamped to 180000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
               "type": "number"
             },
             "command": {

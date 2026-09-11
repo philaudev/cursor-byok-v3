@@ -155,6 +155,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebFetch",
             "GenerateImage",
             "InspectChanges",
+            "GitArchaeology",
             "EditNotebook",
             "TodoWrite",
             "StrReplace",
@@ -165,7 +166,6 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Ls",
             "AskQuestion",
             "Task",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",
@@ -185,6 +185,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -200,7 +201,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
+        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
     );
     assert_mode(
         &assets,
@@ -212,6 +213,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Grep",
             "Read",
             "InspectChanges",
+            "GitArchaeology",
             "Write",
             "StrReplace",
             "Delete",
@@ -228,7 +230,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "edb505745a12e0892c22990135312940ba0f64b7af40f7220492b16bbf947aac",
+        "fc3d6c04ee05004646fa566f63bb200974f7d074d604f3073bb5996d34347d0e",
     );
     assert_mode(
         &assets,
@@ -239,6 +241,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -254,7 +257,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "10fc1e912315761b00298eacafabf734cae4966b1e83d3706f8d5c07b392becf",
+        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
     );
     assert_mode(
         &assets,
@@ -265,6 +268,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -282,7 +286,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "5c39beb609b3298f81338907a3e0ce92148979c10b7bf757295e0863d6bec993",
+        "115dd0ee2522d5de3fe74b802c3e40ac6d80f3d8bd428333a70fcdf4ccff914e",
     );
     assert_mode(
         &assets,
@@ -295,6 +299,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebFetch",
             "GenerateImage",
             "InspectChanges",
+            "GitArchaeology",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
@@ -303,7 +308,6 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Read",
             "Glob",
             "Ls",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",
@@ -312,7 +316,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "8e9f4a013b9ecc90643b8ef2ab6aaca082412722fdf54017af592be1b37a2fb5",
+        "09fae4cc6fa938cbebf00b2c2d3e7f0c386f95e3c3fba40acfe3bac3263a1e52",
     );
     assert_mode(
         &assets,
@@ -322,7 +326,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "2958862c44387b3cba98cbc3fb2e9e7dbd9b6ae55389424c5168b365640e0fd4"
+        "d8cd4971526c62d27efb3b595bc24c96a74512647b33c4bc0686b3aafb02a984"
     );
     let task = assets
         .mode(Mode::Agent)
@@ -548,6 +552,7 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             "WebSearch",
             "WebFetch",
             "InspectChanges",
+            "GitArchaeology",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
@@ -556,7 +561,6 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             "Read",
             "Glob",
             "Ls",
-            "AwaitShell",
             "GetMcpTools",
             "FetchMcpResource",
             "SwitchMode",

@@ -5,6 +5,7 @@
     "Delete",
     "FetchMcpResource",
     "InspectChanges",
+    "GitArchaeology",
     "Glob",
     "Ls",
     "Grep",

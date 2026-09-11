@@ -387,9 +387,7 @@ async fn advance_await(
         let regex_match = state
             .regex
             .as_ref()
-            .map(|pattern| regex::Regex::new(pattern))
-            .transpose()
-            .map_err(|error| Error::Protocol(format!("invalid AwaitShell pattern: {error}")))?
+            .and_then(|pattern| regex::Regex::new(pattern).ok())
             .and_then(|pattern| {
                 pattern
                     .find(&combined_output)
@@ -425,9 +423,7 @@ async fn advance_await(
     let regex_match = state
         .regex
         .as_ref()
-        .map(|pattern| regex::Regex::new(pattern))
-        .transpose()
-        .map_err(|error| Error::Protocol(format!("invalid AwaitShell pattern: {error}")))?
+        .and_then(|pattern| regex::Regex::new(pattern).ok())
         .and_then(|pattern| {
             pattern
                 .find(content)
