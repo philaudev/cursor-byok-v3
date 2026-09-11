@@ -43,6 +43,8 @@ To quickly see metadata for all terminals without reading each file fully, you c
 
 If you need to read the full terminal output, you can read the terminal file directly.
 
+IMPORTANT: NEVER busy-poll or repeatedly read terminal files in a tight loop across multiple turns while waiting for a background command to finish. If a command needs time to finish (such as tests or builds), specify `block_until_ms` (up to 180000ms / 3 minutes) upfront when invoking `Shell` or configure `notify_on_output`. Only read a terminal file when inspecting a completed session or checking once after a genuine delay.
+
 <example what="output of file read tool call to 1.txt in the terminals folder">---
 pid: 68861
 cwd: /Users/me/proj

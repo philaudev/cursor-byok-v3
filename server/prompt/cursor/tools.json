@@ -651,7 +651,7 @@
           "type": "object",
           "properties": {
             "block_until_ms": {
-              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms (30 seconds). Set to 0 to immediately run the command in the background. Values above 60000ms are clamped to 60000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
+              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms (30 seconds). For commands expected to take longer (e.g. test suites, builds, compilation, package installs), explicitly set `block_until_ms: 60000` to `180000` (up to 180000ms / 3 minutes) to wait in the foreground rather than backgrounding early. Set to 0 to immediately run long-lived background jobs (e.g. dev servers). Values above 180000ms are clamped to 180000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
               "type": "number"
             },
             "command": {

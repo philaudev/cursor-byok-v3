@@ -201,7 +201,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "9e003e4f19b45736ab1ff5caac64e3bfe1090e611335a05d4174732756212674",
+        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
     );
     assert_mode(
         &assets,
@@ -230,7 +230,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "8982d23b39c7fb2a7caff55bfe8f4ad5f25b6188352ea6af8329879be37ab707",
+        "fc3d6c04ee05004646fa566f63bb200974f7d074d604f3073bb5996d34347d0e",
     );
     assert_mode(
         &assets,
@@ -257,7 +257,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "9e003e4f19b45736ab1ff5caac64e3bfe1090e611335a05d4174732756212674",
+        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
     );
     assert_mode(
         &assets,
@@ -286,7 +286,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "91b79f00559184f5867d3f4e8a6dc54cc46dde3bc17ec0a8a6e0cf62d9bf785f",
+        "115dd0ee2522d5de3fe74b802c3e40ac6d80f3d8bd428333a70fcdf4ccff914e",
     );
     assert_mode(
         &assets,
@@ -316,7 +316,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "ac35c6042d21fb1adb40d750fd5766701e3e2233929cbb076e776a89c47a1c93",
+        "09fae4cc6fa938cbebf00b2c2d3e7f0c386f95e3c3fba40acfe3bac3263a1e52",
     );
     assert_mode(
         &assets,
@@ -326,7 +326,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "444e42d318a125a82e2d3fa0a2d8cdaaed5c392af83c629dfbfafea4a3938bb5"
+        "d8cd4971526c62d27efb3b595bc24c96a74512647b33c4bc0686b3aafb02a984"
     );
     let task = assets
         .mode(Mode::Agent)

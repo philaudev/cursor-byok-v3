@@ -15,7 +15,7 @@ use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Error, Re
 use super::edit::EditWrite;
 
 pub(crate) const DEFAULT_SHELL_BLOCK_UNTIL_MS: u64 = 30_000;
-pub(crate) const MAX_SHELL_BLOCK_UNTIL_MS: u64 = 60_000;
+pub(crate) const MAX_SHELL_BLOCK_UNTIL_MS: u64 = 180_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackgroundShellStatus {
