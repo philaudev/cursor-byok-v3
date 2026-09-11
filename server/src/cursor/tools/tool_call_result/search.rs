@@ -24,6 +24,7 @@ pub(crate) fn complete(
         "semblesearch" => ("search", "Search the codebase"),
         "semblefindrelated" => ("find_related", "Find related code"),
         "inspectchanges" => ("inspect_changes", "Inspect uncommitted git changes"),
+        "gitarchaeology" => ("git_archaeology", "Investigate Git history"),
         _ => (call.name.as_str(), "Search the codebase"),
     };
     let description = call
@@ -45,7 +46,7 @@ pub(crate) fn complete(
         .unwrap_or_default();
     let (content, is_error, result) = match output {
         Ok(value) => {
-            let content = serde_json::to_string_pretty(&value)?;
+            let content = format_mcp_output(&value)?;
             let structured_content = value.as_object().map(|value| prost_types::Struct {
                 fields: crate::cursor::tools::codec::json_object_to_prost(value)
                     .into_iter()
@@ -102,6 +103,113 @@ pub(crate) fn complete(
             description: Some(description),
         }),
     ))
+}
+
+fn format_mcp_output(value: &Value) -> Result<String> {
+    let Some(operation) = value.get("operation").and_then(Value::as_str) else {
+        return Ok(serde_json::to_string_pretty(value)?);
+    };
+
+    let repository = value
+        .get("repository")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown repository");
+    let result = value.get("result").unwrap_or(value);
+    let mut lines = vec![format!("### Git Archaeology: `{operation}`"), format!("- **Repository:** `{repository}`")];
+
+    match operation {
+        "pickaxe" => {
+            let query = result.get("query").and_then(Value::as_str).unwrap_or_default();
+            let mode = result.get("query_mode").and_then(Value::as_str).unwrap_or("occurrence_change");
+            let path = result.get("path").and_then(Value::as_str);
+            let commits = result.get("commits").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            
+            lines.push(format!("- **Query:** `{query}` ({mode})"));
+            if let Some(path) = path {
+                lines.push(format!("- **Target Path:** `{path}`"));
+            }
+            lines.push(format!("- **Matching Commits ({} found, newest first):**", commits.len()));
+            for (idx, commit) in commits.iter().enumerate() {
+                let hash = commit.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
+                let date = commit.get("date").and_then(Value::as_str).unwrap_or("unknown date");
+                let author = commit.get("author").and_then(Value::as_str).unwrap_or("unknown author");
+                let subject = commit.get("subject").and_then(Value::as_str).unwrap_or("(no subject)");
+                lines.push(format!("  {}. `{short_hash}` ({date}) by **{author}**: {subject}", idx + 1));
+            }
+        }
+        "lineage" => {
+            let path = result.get("path").and_then(Value::as_str).unwrap_or_default();
+            let start = result.get("line_range").and_then(|r| r.get("start")).and_then(Value::as_u64).unwrap_or(1);
+            let end = result.get("line_range").and_then(|r| r.get("end")).and_then(Value::as_u64).unwrap_or(start);
+            lines.push(format!("- **File:** `{path}` (lines {start}-{end})"));
+            lines.push("- **Method:** `git blame -w -M -C` (detects moved/copied lines across files)".into());
+            let evidence = result.get("evidence").and_then(Value::as_str).unwrap_or("No blame evidence.").trim();
+            lines.push("- **Lineage Evidence:**".into());
+            lines.push("```text".into());
+            lines.push(evidence.into());
+            lines.push("```".into());
+        }
+        "file_biography" => {
+            let path = result.get("path").and_then(Value::as_str).unwrap_or_default();
+            let total = result.get("total_commits").and_then(Value::as_u64).unwrap_or(0);
+            lines.push(format!("- **File:** `{path}` ({total} commits total)"));
+            
+            if let Some(creation) = result.get("creation").filter(|c| !c.is_null()) {
+                let hash = creation.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
+                let date = creation.get("date").and_then(Value::as_str).unwrap_or("");
+                let author = creation.get("author").and_then(Value::as_str).unwrap_or("");
+                let subject = creation.get("subject").and_then(Value::as_str).unwrap_or("");
+                lines.push(format!("- **Creation:** `{short_hash}` ({date}) by **{author}**: {subject}"));
+            }
+
+            let renames = result.get("renames").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            if renames.is_empty() {
+                lines.push("- **Rename Chain:** None recorded".into());
+            } else {
+                lines.push("- **Rename Chain:**".into());
+                for rename in renames {
+                    let from = rename.get("from").and_then(Value::as_str).unwrap_or("");
+                    let to = rename.get("to").and_then(Value::as_str).unwrap_or("");
+                    lines.push(format!("  - `{from}` → `{to}`"));
+                }
+            }
+
+            let timeline = result.get("timeline").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            if !timeline.is_empty() {
+                lines.push(format!("- **Timeline (latest {} commits):**", timeline.len()));
+                for commit in timeline {
+                    let hash = commit.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                    let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
+                    let date = commit.get("date").and_then(Value::as_str).unwrap_or("");
+                    let author = commit.get("author").and_then(Value::as_str).unwrap_or("");
+                    let subject = commit.get("subject").and_then(Value::as_str).unwrap_or("");
+                    let stat = commit.get("stat").and_then(Value::as_str).unwrap_or("").trim();
+                    if stat.is_empty() {
+                        lines.push(format!("  - `{short_hash}` ({date}) **{author}**: {subject}"));
+                    } else {
+                        lines.push(format!("  - `{short_hash}` ({date}) **{author}**: {subject} ({stat})"));
+                    }
+                }
+            }
+        }
+        "commit_context" => {
+            let commit = result.get("commit").and_then(Value::as_str).unwrap_or_default();
+            lines.push(format!("- **Commit Target:** `{commit}`"));
+            let evidence = result.get("evidence").and_then(Value::as_str).unwrap_or("No commit details.").trim();
+            lines.push("- **Commit Details:**".into());
+            lines.push("```text".into());
+            lines.push(evidence.into());
+            lines.push("```".into());
+        }
+        _ => return Ok(serde_json::to_string_pretty(value)?),
+    }
+
+    if let Some(unknown) = value.get("still_unknown").and_then(Value::as_str) {
+        lines.push(format!("\n> **Note:** {unknown}"));
+    }
+    Ok(lines.join("\n"))
 }
 
 pub(crate) fn grep(
@@ -359,6 +467,28 @@ fn normalized(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_git_archaeology_pickaxe_for_model_readability() {
+        let value = serde_json::json!({
+            "repository": "C:/repo",
+            "operation": "pickaxe",
+            "result": {
+                "query": "tgrep",
+                "commits": [{
+                    "commit": "abc1234",
+                    "date": "2026-09-11",
+                    "author": "Ada",
+                    "subject": "feat: add tgrep"
+                }]
+            },
+            "still_unknown": "Commit messages may omit rationale."
+        });
+        let output = format_mcp_output(&value).unwrap();
+        assert!(output.contains("Git Archaeology: `pickaxe`"));
+        assert!(output.contains("`abc1234` (2026-09-11) by **Ada**: feat: add tgrep"));
+        assert!(!output.contains("\\u001f"));
+    }
 
     #[test]
     fn parses_grep_content_line_windows_and_posix() {

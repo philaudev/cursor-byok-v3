@@ -2,6 +2,7 @@
 mod await_shell;
 mod edit;
 mod exec;
+mod git_archaeology;
 mod inspect_changes;
 mod interaction;
 mod local;
@@ -105,6 +106,7 @@ pub(super) async fn start(
         "awaitshell" => await_shell::start(runtime, results, call, context).await,
         "semblesearch" | "semblefindrelated" => search::start(results, call, store.cloned()),
         "inspectchanges" => inspect_changes::start(results, call, context),
+        "gitarchaeology" => git_archaeology::start(results, call, context),
         _ => Ok(unavailable_tool(call)),
     }
 }

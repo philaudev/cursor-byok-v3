@@ -549,6 +549,56 @@
     {
       "type": "function",
       "function": {
+        "name": "GitArchaeology",
+        "description": "Investigates Git repository history to understand why code exists, when a behavior changed, and find originating commits.\n\nUse this tool instead of running `git log`, `git blame`, or `git show` via Shell:\n- `lineage`: Trace the source commits of specific lines in a file (tracks moves across files and ignores whitespace changes).\n- `pickaxe`: Find commits that added or removed a specific symbol, keyword, or regex pattern across the codebase.\n- `file_biography`: Inspect a file's creation commit, rename history, and major change timeline.\n- `commit_context`: Inspect detailed commit metadata, author, full message, and diffstat for a specific revision.\n\nUsage Guidelines:\n- Always provide absolute path for `repository`.\n- Use `lineage` when investigating why a code block exists or who introduced it.\n- Use `pickaxe` when searching for when a function, config, or bug pattern was introduced/deleted.\n- Treat commit messages as historical evidence, not proof of undocumented intent.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "description": "Absolute path to the Git repository or a path inside it.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Read-only investigation operation: `lineage`, `pickaxe`, `file_biography`, or `commit_context`.",
+              "type": "string",
+              "enum": ["lineage", "pickaxe", "file_biography", "commit_context"]
+            },
+            "path": {
+              "description": "Repository-relative path. Required for `lineage` and `file_biography`; optional filter for `pickaxe`.",
+              "type": "string"
+            },
+            "start_line": {
+              "description": "First source line for `lineage` (1-indexed).",
+              "type": "integer"
+            },
+            "end_line": {
+              "description": "Last source line for `lineage` (inclusive). Defaults to `start_line`.",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Literal or regex query for `pickaxe`.",
+              "type": "string"
+            },
+            "regex": {
+              "description": "Use Git `-G` regex diff search instead of literal `-S` occurrence-change search.",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "Maximum history records to return, 1 through 30. Defaults to 20.",
+              "type": "integer"
+            },
+            "commit": {
+              "description": "Commit hash or Git revision for `commit_context`.",
+              "type": "string"
+            }
+          },
+          "required": ["repository", "operation"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Read",
         "description": "Reads a file from the local filesystem. This tool can also read image files when called with the appropriate path. Formats supported: jpeg/jpg, png, gif, webp.",
         "parameters": {

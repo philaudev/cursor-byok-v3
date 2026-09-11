@@ -6,6 +6,7 @@
     "Grep",
     "Read",
     "InspectChanges",
+    "GitArchaeology",
     "Write",
     "StrReplace",
     "Delete",

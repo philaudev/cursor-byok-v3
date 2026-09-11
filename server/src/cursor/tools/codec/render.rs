@@ -219,7 +219,7 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "todowrite" => Tool::UpdateTodosToolCall(pb::UpdateTodosToolCall::default()),
         "strreplace" | "editnotebook" | "write" => Tool::EditToolCall(pb::EditToolCall::default()),
         "readlints" => Tool::ReadLintsToolCall(pb::ReadLintsToolCall::default()),
-        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges" => {
+        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges" | "gitarchaeology" => {
             Tool::McpToolCall(pb::McpToolCall::default())
         }
         "createplan" => Tool::CreatePlanToolCall(pb::CreatePlanToolCall::default()),

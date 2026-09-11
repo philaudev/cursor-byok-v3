@@ -139,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 25);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 26);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -155,6 +155,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebFetch",
             "GenerateImage",
             "InspectChanges",
+            "GitArchaeology",
             "EditNotebook",
             "TodoWrite",
             "StrReplace",
@@ -184,6 +185,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -199,7 +201,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "c9a5796e2f8a65dae6c88fc96ddc9d21ecd7334f0525de407f73c2d639f0aaab",
+        "9e003e4f19b45736ab1ff5caac64e3bfe1090e611335a05d4174732756212674",
     );
     assert_mode(
         &assets,
@@ -211,6 +213,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Grep",
             "Read",
             "InspectChanges",
+            "GitArchaeology",
             "Write",
             "StrReplace",
             "Delete",
@@ -227,7 +230,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "047532bdffd92a26c5d1eaef3d82a138461457c91a63e88b58c6d4bcd67e730e",
+        "8982d23b39c7fb2a7caff55bfe8f4ad5f25b6188352ea6af8329879be37ab707",
     );
     assert_mode(
         &assets,
@@ -238,6 +241,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -253,7 +257,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "c9a5796e2f8a65dae6c88fc96ddc9d21ecd7334f0525de407f73c2d639f0aaab",
+        "9e003e4f19b45736ab1ff5caac64e3bfe1090e611335a05d4174732756212674",
     );
     assert_mode(
         &assets,
@@ -264,6 +268,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "Delete",
             "FetchMcpResource",
             "InspectChanges",
+            "GitArchaeology",
             "Glob",
             "Ls",
             "Grep",
@@ -281,7 +286,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "595aefa7b65c81741aae64afa0a1360f73da6c78726b34d63d0958a86d7a45e3",
+        "91b79f00559184f5867d3f4e8a6dc54cc46dde3bc17ec0a8a6e0cf62d9bf785f",
     );
     assert_mode(
         &assets,
@@ -294,6 +299,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "WebFetch",
             "GenerateImage",
             "InspectChanges",
+            "GitArchaeology",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
@@ -310,7 +316,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "f2a36b598e0cc597de77802da555e77482ff9c6bcdda4929dc78a164846ab2e7",
+        "ac35c6042d21fb1adb40d750fd5766701e3e2233929cbb076e776a89c47a1c93",
     );
     assert_mode(
         &assets,
@@ -320,7 +326,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "4143ed587cee832c7a3e55c066c43dad7aa8ea865993953d1af5fdd08952c641"
+        "444e42d318a125a82e2d3fa0a2d8cdaaed5c392af83c629dfbfafea4a3938bb5"
     );
     let task = assets
         .mode(Mode::Agent)
@@ -546,6 +552,7 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             "WebSearch",
             "WebFetch",
             "InspectChanges",
+            "GitArchaeology",
             "ReadLints",
             "EditNotebook",
             "TodoWrite",
