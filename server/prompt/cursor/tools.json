@@ -627,16 +627,13 @@
       "type": "function",
       "function": {
         "name": "ReadLints",
-        "description": "Read and display linter errors from the current workspace. You can provide paths to specific files or directories, or omit the argument to get diagnostics for all files.",
+        "description": "Read and display linter errors from the current workspace. Provide one file or directory path to scope diagnostics, or omit path to check the whole workspace. To check multiple specific files or directories, issue multiple ReadLints calls in the same response so they can be handled independently.",
         "parameters": {
           "type": "object",
           "properties": {
-            "paths": {
-              "description": "Optional. An array of paths to files or directories to read linter errors for. You can use either relative paths in the workspace or absolute paths. If provided, returns diagnostics for the specified files/directories only. If not provided, returns diagnostics for all files in the workspace.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
+            "path": {
+              "description": "Optional path to one file or directory. Omit it to get diagnostics for the whole workspace.",
+              "type": "string"
             }
           }
         }

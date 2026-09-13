@@ -384,15 +384,7 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
         }
         Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) => {
             tool.args = Some(pb::ReadLintsToolArgs {
-                paths: call
-                    .arguments
-                    .get("paths")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect(),
+                paths: optional("path").into_iter().collect(),
             })
         }
         Some(pb::tool_call::Tool::McpToolCall(tool)) => {
@@ -593,8 +585,46 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::tool_placeholder;
+    use super::{render_tool_call, tool_placeholder};
     use crate::cursor::protocol::proto::agent::v1 as pb;
+    use crate::model::ToolCall;
+    use serde_json::json;
+
+    #[test]
+    fn read_lints_renders_single_path_as_client_paths() {
+        let call = ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: "ReadLints".into(),
+            arguments_text: String::new(),
+            arguments: json!({ "path": "src/main.rs" }),
+            argument_error: None,
+        };
+        let rendered = render_tool_call(&call, false).unwrap();
+        let Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) = rendered.tool else {
+            panic!("expected ReadLintsToolCall");
+        };
+        assert_eq!(tool.args.unwrap().paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn read_lints_without_path_renders_empty_paths() {
+        let call = ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: "ReadLints".into(),
+            arguments_text: String::new(),
+            arguments: json!({}),
+            argument_error: None,
+        };
+        let rendered = render_tool_call(&call, false).unwrap();
+        let Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) = rendered.tool else {
+            panic!("expected ReadLintsToolCall");
+        };
+        assert!(tool.args.unwrap().paths.is_empty());
+    }
 
     #[test]
     fn bash_renders_as_a_shell_placeholder() {

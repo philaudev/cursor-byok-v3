@@ -125,14 +125,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             timeout_ms: None,
         }),
         "readlints" => Message::DiagnosticsArgs(pb::DiagnosticsArgs {
-            path: call
-                .arguments
-                .get("paths")
-                .and_then(Value::as_array)
-                .and_then(|paths| paths.first())
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
+            path: optional_string("path").unwrap_or_default(),
             tool_call_id: call.call_id.clone(),
         }),
         "task" => Message::SubagentArgs(pb::SubagentArgs {
@@ -578,20 +571,54 @@ mod tests {
     use crate::cursor::tools::runtime::ExecContext;
     use crate::model::ToolCall;
 
+    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: name.into(),
+            arguments_text: String::new(),
+            arguments,
+            argument_error: None,
+        }
+    }
+
+    fn diagnostics_path(arguments: serde_json::Value) -> String {
+        let message = request(
+            1,
+            &tool_call("ReadLints", arguments),
+            &ExecContext::default(),
+        )
+        .unwrap();
+        let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = message.message
+        else {
+            panic!("expected an ExecServerMessage");
+        };
+        let Some(pb::exec_server_message::Message::DiagnosticsArgs(args)) = exec.message else {
+            panic!("expected DiagnosticsArgs");
+        };
+        args.path
+    }
+
+    #[test]
+    fn read_lints_encodes_one_path() {
+        assert_eq!(
+            diagnostics_path(json!({ "path": "src/main.rs" })),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn read_lints_without_path_checks_workspace() {
+        assert_eq!(diagnostics_path(json!({})), "");
+    }
+
     #[test]
     fn bash_is_encoded_as_a_shell_exec_request() {
         // The dispatcher routes `bash`/`Bash` to the shell executor, so the
         // request codec must encode it as a Shell stream instead of erroring
         // with `tool bash is not executed through ExecServerMessage`.
-        let call = ToolCall {
-            index: 0,
-            call_id: "call-1".into(),
-            model_call_id: "model-1".into(),
-            name: "Bash".into(),
-            arguments_text: String::new(),
-            arguments: json!({ "command": "ls -la" }),
-            argument_error: None,
-        };
+        let call = tool_call("Bash", json!({ "command": "ls -la" }));
         let message = request(1, &call, &ExecContext::default()).unwrap();
         let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = message.message
         else {
