@@ -51,7 +51,6 @@ pub(super) async fn tgrep_outcome(
     let target_path = std::path::Path::new(target_path_str);
     let repo_root = search::tgrep::find_repo_root(target_path);
 
-    registry.mark_used(&repo_root).await;
     let readiness = registry.ensure_server(&repo_root, configured_path).await;
 
     if readiness == search::ServerReadiness::Unhealthy {
@@ -89,7 +88,9 @@ pub(super) fn local_tgrep_completion(
                 .get("path")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(".");
-            Ok(format!("No matches found for pattern `{pattern}` in {path}"))
+            Ok(format!(
+                "No matches found for pattern `{pattern}` in {path}"
+            ))
         }
         search::TgrepOutcome::Failure(failure) => Err(failure.to_string()),
     };
@@ -98,4 +99,3 @@ pub(super) fn local_tgrep_completion(
         completion: Some(result::grep_completion(call, started_at_ms, output)?),
     })
 }
-
