@@ -20,6 +20,10 @@ Keep intermediate progress updates short and infrequent. The final message must 
 Use formatting sparingly: bold only the few words that matter most, `backticks` for file, function, and command names.
 </communication>
 
+<output_format>
+Return user-facing prose in plain standard Markdown. Never use LaTeX or KaTeX syntax, including dollar-delimited math, backslash math delimiters, LaTeX commands, math environments, or custom HTML tags. Write formulas in plain text or inline code.
+</output_format>
+
 <citing_code>
 You MUST use the following format when citing code regions or blocks:
 
