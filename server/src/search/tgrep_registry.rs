@@ -9,10 +9,76 @@ use std::{
 
 use tokio::{process::Child, sync::Mutex};
 
+#[cfg(windows)]
+use std::{
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    ptr,
+};
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::INVALID_HANDLE_VALUE,
+    System::{
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+        Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+    },
+};
+
 #[derive(Default)]
 struct RegistryState {
     handles: HashMap<PathBuf, TgrepServerHandle>,
     shutting_down: bool,
+}
+
+#[cfg(windows)]
+struct TgrepJob {
+    handle: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl TgrepJob {
+    fn new() -> std::io::Result<Self> {
+        let raw = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+        if raw == INVALID_HANDLE_VALUE || raw.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let result = unsafe {
+            SetInformationJobObject(
+                handle.as_raw_handle() as _,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if result == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { handle })
+    }
+
+    fn assign(&self, pid: u32) -> std::io::Result<()> {
+        let raw = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+        if raw.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let process = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        if unsafe {
+            AssignProcessToJobObject(
+                self.handle.as_raw_handle() as _,
+                process.as_raw_handle() as _,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 /// Readiness state of a `tgrep serve` process for a repository.
@@ -60,16 +126,26 @@ impl TgrepServerHandle {
 }
 
 /// Thread-safe registry owning per-repository `tgrep serve` processes.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct TgrepRegistry {
     inner: Arc<Mutex<RegistryState>>,
+    #[cfg(windows)]
+    job: Arc<TgrepJob>,
+}
+
+impl Default for TgrepRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TgrepRegistry {
-    /// Creates a new empty `TgrepRegistry`.
+    /// Creates a new registry that owns all `tgrep serve` child processes.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(RegistryState::default())),
+            #[cfg(windows)]
+            job: Arc::new(TgrepJob::new().expect("failed to create tgrep process job object")),
         }
     }
 
@@ -118,6 +194,7 @@ impl TgrepRegistry {
                 cmd.arg("serve");
                 cmd.arg(&canonical);
                 cmd.arg("--watch-mode").arg("auto");
+                cmd.current_dir(&canonical);
                 cmd.stdin(std::process::Stdio::null());
                 cmd.stdout(std::process::Stdio::null());
                 cmd.stderr(std::process::Stdio::null());
@@ -131,6 +208,16 @@ impl TgrepRegistry {
                     }
                 };
                 let pid = child.id();
+                #[cfg(windows)]
+                if let Some(pid) = pid {
+                    if let Err(error) = self.job.assign(pid) {
+                        tracing::warn!(%error, %pid, path = %canonical.display(), "failed to assign tgrep serve to job object");
+                        let mut child = child;
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                        return ServerReadiness::Unhealthy;
+                    }
+                }
                 inner.handles.insert(
                     canonical.clone(),
                     TgrepServerHandle {

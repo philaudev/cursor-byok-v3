@@ -229,7 +229,33 @@ pub(crate) async fn execute_tgrep_outcome(
     }
 }
 
-fn validate_tgrep_arguments(arguments: &Value) -> std::result::Result<(), crate::search::TgrepFailure> {
+/// Returns the absolute workspace path required to start a `tgrep serve` process.
+pub(crate) fn tgrep_workspace_path(
+    arguments: &Value,
+) -> std::result::Result<&str, crate::search::TgrepFailure> {
+    let Some(path) = arguments
+        .get("path")
+        .or_else(|| arguments.get("target_directory"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return Err(crate::search::TgrepFailure::InvalidRequest {
+            reason: "tgrep requires an absolute workspace path".into(),
+        });
+    };
+
+    if !Path::new(path).is_absolute() {
+        return Err(crate::search::TgrepFailure::InvalidRequest {
+            reason: "tgrep requires an absolute workspace path".into(),
+        });
+    }
+
+    Ok(path)
+}
+
+fn validate_tgrep_arguments(
+    arguments: &Value,
+) -> std::result::Result<(), crate::search::TgrepFailure> {
     let invalid = |reason: &str| crate::search::TgrepFailure::InvalidRequest {
         reason: reason.into(),
     };
@@ -459,6 +485,27 @@ mod tests {
         assert!(
             root.join("Cargo.toml").exists() || root.join(".tgrep").exists(),
             "Resolved root should contain Cargo.toml or .tgrep"
+        );
+    }
+
+    #[test]
+    fn tgrep_workspace_path_rejects_missing_or_relative_paths() {
+        for arguments in [json!({"pattern": "test"}), json!({"path": "."})] {
+            assert!(matches!(
+                tgrep_workspace_path(&arguments),
+                Err(crate::search::TgrepFailure::InvalidRequest { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn tgrep_workspace_path_accepts_an_absolute_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let arguments = json!({"path": directory.path()});
+
+        assert_eq!(
+            tgrep_workspace_path(&arguments).unwrap(),
+            directory.path().to_str().unwrap()
         );
     }
 

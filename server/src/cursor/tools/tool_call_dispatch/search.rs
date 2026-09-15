@@ -42,12 +42,10 @@ pub(super) async fn tgrep_outcome(
     configured_path: Option<&str>,
     registry: &search::TgrepRegistry,
 ) -> search::TgrepOutcome {
-    let target_path_str = call
-        .arguments
-        .get("path")
-        .or_else(|| call.arguments.get("target_directory"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(".");
+    let target_path_str = match search::tgrep::tgrep_workspace_path(&call.arguments) {
+        Ok(path) => path,
+        Err(failure) => return search::TgrepOutcome::Failure(failure),
+    };
     let target_path = std::path::Path::new(target_path_str);
     let repo_root = search::tgrep::find_repo_root(target_path);
 
