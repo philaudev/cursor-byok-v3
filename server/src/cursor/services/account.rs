@@ -353,15 +353,12 @@ async fn local_or_confirmed_free_or_forward(
 }
 
 async fn local_or_forward(
-    upstream: proxy::CursorProxy,
+    _upstream: proxy::CursorProxy,
     request: Request<Body>,
     local: impl FnOnce() -> Result<Response<Body>>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers()) {
-        consume_body(request).await?;
-        return local();
-    }
-    proxy::forward(Extension(upstream), request).await
+    consume_body(request).await?;
+    local()
 }
 
 async fn consume_body(request: Request<Body>) -> Result<()> {

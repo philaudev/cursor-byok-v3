@@ -7,9 +7,9 @@ use axum::{
 use prost::Message;
 
 use crate::{
-    api::cursor::proxy::{self, CursorProxy},
+    api::cursor::proxy::CursorProxy,
     cursor::protocol::proto::agent::v1 as agent,
-    local_app, Result,
+    Result,
 };
 
 #[derive(Clone, Copy, PartialEq, Message)]
@@ -56,16 +56,12 @@ pub async fn update_conversation_metadata(
 }
 
 async fn route<M: Message>(
-    proxy: &CursorProxy,
+    _proxy: &CursorProxy,
     request: Request<Body>,
     mock: M,
 ) -> Result<Response<Body>> {
-    let local = local_app::request_uses_local_cursor_token(request.headers());
-    if local {
-        consume_body(request).await?;
-        return Ok(proto(mock));
-    }
-    proxy::forward(Extension(proxy.clone()), request).await
+    consume_body(request).await?;
+    Ok(proto(mock))
 }
 
 async fn consume_body(request: Request<Body>) -> Result<()> {
