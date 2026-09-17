@@ -55,6 +55,8 @@ impl NetworkClients {
         }
         let client = client_builder(&self.store)
             .await?
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         cache.cursor = Some(client.clone());

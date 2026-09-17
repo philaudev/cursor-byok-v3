@@ -113,6 +113,54 @@ fn router_with_proxy(
             post(compatibility::empty),
         )
         .route(
+            "/aiserver.v1.AiService/GetComposerAutocomplete",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetChatSuggestions",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/SuggestQuickActions",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetAtSymbolSuggestions",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/AutoContext",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/CalculateAutoSelection",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetSuggestedBugBotIterations",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/GetEditorBugbotAutoRunStatus",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/EvaluatePromptHook",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/IntentPrediction",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/WarmComposerCache",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.AiService/KeepComposerCacheWarm",
+            post(compatibility::empty),
+        )
+        .route(
             "/agent.v1.AgentService/UpdateConversationMetadata",
             post(compatibility::update_conversation_metadata),
         )
