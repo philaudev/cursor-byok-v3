@@ -61,6 +61,58 @@ fn router_with_proxy(
             post(compatibility::user_privacy_mode),
         )
         .route(
+            "/aiserver.v1.DashboardService/GetRepoSlashCommands",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetBackgroundComposerSlashCommands",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetGlobalCommands",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetTeamCommands",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetTeamHooks",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetTeamRules",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetManagedSkills",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetCloudAgentPluginsSnapshot",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetPluginMcpConfig",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetTeamPinnedMarketplacePlugins",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetBugbotTeamRules",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetBugbotLearnedRules",
+            post(compatibility::empty),
+        )
+        .route(
+            "/aiserver.v1.DashboardService/GetBugbotManualRepositoryRules",
+            post(compatibility::empty),
+        )
+        .route(
             "/agent.v1.AgentService/UpdateConversationMetadata",
             post(compatibility::update_conversation_metadata),
         )

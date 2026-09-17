@@ -61,6 +61,16 @@ async fn inject_if_missing_at(path: &Path) -> Result<()> {
         row.try_get::<String, _>("value")
             .is_ok_and(|value| !value.trim().is_empty() && value != token)
     }) {
+        sqlx::query("INSERT OR REPLACE INTO ItemTable(key, value) VALUES(?, ?)")
+            .bind("cursorAuth/stripeMembershipType")
+            .bind(MEMBERSHIP_TYPE)
+            .execute(&mut connection)
+            .await?;
+        sqlx::query("INSERT OR REPLACE INTO ItemTable(key, value) VALUES(?, ?)")
+            .bind("cursorAuth/stripeSubscriptionStatus")
+            .bind(SUBSCRIPTION_STATUS)
+            .execute(&mut connection)
+            .await?;
         return Ok(());
     }
 

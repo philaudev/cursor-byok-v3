@@ -276,47 +276,39 @@ pub async fn usage_limit_status(
 
 pub async fn stripe_profile(
     Extension(upstream): Extension<proxy::CursorProxy>,
-    Extension(free_entitlements): Extension<FreeEntitlementCache>,
+    Extension(_free_entitlements): Extension<FreeEntitlementCache>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers()) {
-        return local_stripe_profile(request.headers().get(header::ORIGIN).cloned());
-    }
-
-    let request_headers = request.headers().clone();
     let origin = request.headers().get(header::ORIGIN).cloned();
-    let upstream_response = match proxy::forward_buffered(&upstream, request).await {
-        Ok(response) => response,
-        Err(error) if free_entitlements.is_confirmed_free(&request_headers) => {
-            tracing::warn!(%error, "using cached Free entitlement after Stripe upstream failure");
-            return local_stripe_profile(origin);
-        }
-        Err(error) => return Err(error),
-    };
-    if !upstream_response.status.is_success() {
-        if should_fallback_to_cached_free(
-            upstream_response.status,
-            &free_entitlements,
-            &request_headers,
-        ) {
-            tracing::warn!(
-                status = %upstream_response.status,
-                "using cached Free entitlement after Stripe upstream failure"
-            );
-            return local_stripe_profile(origin);
-        }
-        return Ok(upstream_response.into_response());
-    }
-
-    let Some(membership_type) = membership_type(&upstream_response.body) else {
-        return Ok(upstream_response.into_response());
-    };
-    let observed = free_entitlements.observe_membership(&request_headers, &membership_type);
-    if observed && membership_type.eq_ignore_ascii_case("free") {
+    if local_app::request_uses_local_cursor_token(request.headers()) {
         return local_stripe_profile(origin);
     }
 
+    let upstream_response = match proxy::forward_buffered(&upstream, request).await {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "using local Ultra profile after Stripe upstream failure");
+            return local_stripe_profile(origin);
+        }
+    };
+    if !upstream_response.status.is_success() {
+        return local_stripe_profile(origin);
+    }
+
+    if let Some(patched_body) = patch_ultra_membership(&upstream_response.body) {
+        return Ok(upstream_response.with_body(axum::body::Bytes::from(patched_body)));
+    }
+
     Ok(upstream_response.into_response())
+}
+
+fn patch_ultra_membership(body: &[u8]) -> Option<Vec<u8>> {
+    let mut profile: Value = serde_json::from_slice(body).ok()?;
+    let obj = profile.as_object_mut()?;
+    obj.insert("membershipType".into(), serde_json::json!("ultra"));
+    obj.insert("individualMembershipType".into(), serde_json::json!("ultra"));
+    obj.insert("subscriptionStatus".into(), serde_json::json!("active"));
+    serde_json::to_vec(&profile).ok()
 }
 
 fn should_fallback_to_cached_free(
@@ -351,18 +343,13 @@ fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
 }
 
 async fn local_or_confirmed_free_or_forward(
-    upstream: proxy::CursorProxy,
-    free_entitlements: &FreeEntitlementCache,
+    _upstream: proxy::CursorProxy,
+    _free_entitlements: &FreeEntitlementCache,
     request: Request<Body>,
     local: impl FnOnce() -> Result<Response<Body>>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers())
-        || free_entitlements.is_confirmed_free(request.headers())
-    {
-        consume_body(request).await?;
-        return local();
-    }
-    proxy::forward(Extension(upstream), request).await
+    consume_body(request).await?;
+    local()
 }
 
 async fn local_or_forward(
