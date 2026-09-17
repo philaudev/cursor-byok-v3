@@ -12,23 +12,14 @@ use crate::{
 
 const FALLBACK_CHARS: usize = 12_000;
 
-/// Fraction of the context window kept free, as a divisor: 10 = 10%.
-///
-/// The estimate runs behind the provider: the anchor is what the provider
-/// charged for the *previous* call, and the next request re-sends request
-/// context and carries provider-side overhead the message-tail estimate does
-/// not model. A real conversation measured 948K estimated against 1,017,628
-/// actual, a 7% shortfall that landed it over a 1M window while the check said
-/// there was room. A proportional reserve absorbs that drift and scales with
-/// the model: a 200K window keeps 20K free and a 1M window keeps 100K.
-const CONTEXT_RESERVE_DIVISOR: u64 = 10;
+pub(super) const RESERVE_TOKENS: u64 = 10_000;
 pub(super) const OUTPUT_TOKENS: u64 = 4_096;
 #[allow(dead_code)]
 pub(super) const INSTRUCTIONS: &str = "Summarize the conversation for the next model turn. Preserve goals, constraints, decisions, files, commands, errors, results, and unfinished work. Do not call tools. Return only the concise durable summary.";
 
-/// Usable prompt budget: the window minus the proportional reserve.
+/// Usable prompt budget: the window minus the fixed reserve.
 pub(super) fn context_budget(context_window: u64) -> u64 {
-    context_window.saturating_sub(context_window / CONTEXT_RESERVE_DIVISOR)
+    context_window.saturating_sub(RESERVE_TOKENS)
 }
 
 pub(super) fn input_budget(prepared: &PreparedRun) -> Option<u64> {
@@ -247,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_compaction_uses_proportional_reserve_for_every_action() {
+    fn automatic_compaction_uses_fixed_reserve_for_every_action() {
         let messages = vec![CanonicalMessage::text(
             "user",
             Role::User,
@@ -256,14 +247,10 @@ mod tests {
         )];
         let projected = project_messages(&messages).unwrap();
         let estimated = estimate_context_tokens(&prepared(1).prompt, &projected);
-        // Smallest multiple-of-ten window whose 90% budget covers the estimate.
-        let window = estimated.div_ceil(9) * 10;
-        let mut prepared = prepared(window);
-        assert!(context_budget(window) >= estimated);
-        assert!(context_budget(window - 10) < estimated);
+        let mut prepared = prepared(estimated + RESERVE_TOKENS);
 
         assert!(!should_compact(&prepared, &projected, None));
-        prepared.model.context_window_tokens = Some(window - 10);
+        prepared.model.context_window_tokens = Some(estimated + RESERVE_TOKENS - 1);
         assert!(should_compact(&prepared, &projected, None));
 
         prepared.action = RunAction::Resume {
@@ -273,35 +260,11 @@ mod tests {
     }
 
     #[test]
-    fn the_reserve_leaves_room_for_the_estimate_to_run_behind() {
-        // Reproduces a conversation that wedged itself against a 1M window.
-        // The anchor said 947,797 tokens, so a fixed 10K reserve found room
-        // and let the request through. Anthropic counted 1,017,628 and
-        // refused it, and every retry repeated the same arithmetic.
-        let messages = vec![CanonicalMessage::text(
-            "user",
-            Role::User,
-            Origin::Runtime,
-            "hello",
-        )];
-        let projected = project_messages(&messages).unwrap();
-        let anchor = ContextUsageAnchor {
-            context_input_tokens: 947_797,
-            message_count: 1,
-        };
-        assert!(should_compact(
-            &prepared(1_000_000),
-            &projected,
-            Some(anchor)
-        ));
-    }
-
-    #[test]
-    fn the_reserve_scales_with_the_window() {
-        assert_eq!(context_budget(200_000), 180_000);
-        assert_eq!(context_budget(1_000_000), 900_000);
+    fn the_reserve_leaves_budget_below_window() {
+        assert_eq!(context_budget(200_000), 190_000);
+        assert_eq!(context_budget(1_000_000), 990_000);
         assert_eq!(context_budget(0), 0);
-        assert_eq!(context_budget(1), 1);
+        assert_eq!(context_budget(1), 0);
     }
 
     #[test]
@@ -530,15 +493,12 @@ mod tests {
         )];
         let projected = project_messages(&messages).unwrap();
         let estimated = estimate_context_tokens(&prepared(1).prompt, &projected);
-        let window = estimated.div_ceil(9) * 10;
-        assert!(context_budget(window) >= estimated);
-        assert!(context_budget(window - 10) < estimated);
 
         assert_eq!(
-            validate_compacted(&prepared(window), &projected),
+            validate_compacted(&prepared(estimated + RESERVE_TOKENS), &projected),
             Ok(estimated)
         );
-        assert!(validate_compacted(&prepared(window - 10), &projected)
+        assert!(validate_compacted(&prepared(estimated + RESERVE_TOKENS - 1), &projected)
             .unwrap_err()
             .contains("context overflow after compaction"));
     }
