@@ -146,13 +146,12 @@ pub(crate) async fn execute_tgrep_outcome(
         .get("pattern")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let target_path_str = arguments
-        .get("path")
-        .or_else(|| arguments.get("target_directory"))
-        .and_then(Value::as_str)
-        .unwrap_or(".");
-    let target_path = Path::new(target_path_str);
-    let repo_root = find_repo_root(target_path);
+    let target_path = match tgrep_workspace_path(arguments) {
+        Ok(path) => path,
+        Err(failure) => return crate::search::TgrepOutcome::Failure(failure),
+    };
+    let target_path_str = target_path.to_string_lossy().to_string();
+    let repo_root = find_repo_root(&target_path);
     let mut args: Vec<String> = vec!["--color".into(), "never".into(), "--no-heading".into()];
     if force_no_index {
         args.push("--no-index".into());
@@ -190,7 +189,12 @@ pub(crate) async fn execute_tgrep_outcome(
     if arguments.get("multiline").and_then(Value::as_bool).unwrap_or(false) {
         args.push("-U".into());
     }
-    if let Some(file_type) = arguments.get("type").and_then(Value::as_str) {
+    if let Some(file_type) = arguments
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         args.extend(["-t".into(), file_type.into()]);
     }
     if let Some(limit) = arguments.get("head_limit").and_then(Value::as_u64) {
@@ -201,7 +205,7 @@ pub(crate) async fn execute_tgrep_outcome(
     } else if output_mode == "files_with_matches" {
         args.push(".*".into());
     }
-    args.push(target_path_str.into());
+    args.push(target_path_str);
 
     let output = match tgrep_command(&binary).args(&args).output().await {
         Ok(output) => output,
@@ -229,28 +233,28 @@ pub(crate) async fn execute_tgrep_outcome(
     }
 }
 
-/// Returns the absolute workspace path required to start a `tgrep serve` process.
+/// Returns the workspace path to search, resolving relative paths to absolute paths.
 pub(crate) fn tgrep_workspace_path(
     arguments: &Value,
-) -> std::result::Result<&str, crate::search::TgrepFailure> {
-    let Some(path) = arguments
+) -> std::result::Result<PathBuf, crate::search::TgrepFailure> {
+    let path_str = arguments
         .get("path")
         .or_else(|| arguments.get("target_directory"))
         .and_then(Value::as_str)
-        .filter(|path| !path.trim().is_empty())
-    else {
-        return Err(crate::search::TgrepFailure::InvalidRequest {
-            reason: "tgrep requires an absolute workspace path".into(),
-        });
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .unwrap_or(".");
+
+    let path = Path::new(path_str);
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     };
 
-    if !Path::new(path).is_absolute() {
-        return Err(crate::search::TgrepFailure::InvalidRequest {
-            reason: "tgrep requires an absolute workspace path".into(),
-        });
-    }
-
-    Ok(path)
+    Ok(absolute_path)
 }
 
 fn validate_tgrep_arguments(
@@ -266,10 +270,23 @@ fn validate_tgrep_arguments(
     {
         return Err(invalid("pattern must be non-empty"));
     }
-    if arguments.get("type").is_some_and(|value| {
-        value.as_str().is_none_or(|file_type| file_type.trim().is_empty())
-    }) {
-        return Err(invalid("type must be a non-empty file type when provided"));
+    if let Some(value) = arguments.get("type") {
+        if !value.is_null() {
+            if let Some(file_type) = value.as_str() {
+                let trimmed = file_type.trim();
+                if !trimmed.is_empty()
+                    && !trimmed
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+')
+                {
+                    return Err(invalid(
+                        "type must be a valid file type identifier (e.g. js, py, rust)",
+                    ));
+                }
+            } else {
+                return Err(invalid("type must be a string if provided"));
+            }
+        }
     }
     if arguments
         .get("offset")
@@ -489,12 +506,10 @@ mod tests {
     }
 
     #[test]
-    fn tgrep_workspace_path_rejects_missing_or_relative_paths() {
+    fn tgrep_workspace_path_resolves_missing_or_relative_paths() {
         for arguments in [json!({"pattern": "test"}), json!({"path": "."})] {
-            assert!(matches!(
-                tgrep_workspace_path(&arguments),
-                Err(crate::search::TgrepFailure::InvalidRequest { .. })
-            ));
+            let path = tgrep_workspace_path(&arguments).unwrap();
+            assert!(path.is_absolute());
         }
     }
 
@@ -505,15 +520,28 @@ mod tests {
 
         assert_eq!(
             tgrep_workspace_path(&arguments).unwrap(),
-            directory.path().to_str().unwrap()
+            directory.path()
         );
     }
 
     #[tokio::test]
-    async fn tgrep_rejects_empty_type_without_spawning() {
+    async fn tgrep_allows_empty_type() {
         let args = json!({
             "pattern": "test",
             "type": ""
+        });
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn tgrep_rejects_invalid_type_syntax() {
+        let args = json!({
+            "pattern": "test",
+            "type": "invalid type; name!"
         });
         let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
         assert!(matches!(

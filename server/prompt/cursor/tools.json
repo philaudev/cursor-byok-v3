@@ -517,7 +517,7 @@
               "type": "string"
             },
             "type": {
-              "description": "File type to search (rg --type). Supply only a valid, non-empty ripgrep file type such as js, py, rust, go, or java; omit this field entirely when no language filter is needed. More efficient than `glob` for standard file types.",
+              "description": "File type to search (rg --type, e.g. \"js\", \"py\", \"rust\", \"go\"). Omit or pass empty string if no language filter is needed. More efficient than `glob` for standard file types.",
               "type": "string"
             }
           },

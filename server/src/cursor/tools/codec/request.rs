@@ -100,7 +100,9 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             context_after: int("-A"),
             context: int("-C"),
             case_insensitive: call.arguments.get("-i").and_then(Value::as_bool),
-            r#type: optional_string("type"),
+            r#type: optional_string("type")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             head_limit: int("head_limit"),
             multiline: call.arguments.get("multiline").and_then(Value::as_bool),
             sort: optional_string("sort"),
