@@ -25,6 +25,7 @@ pub(crate) fn complete(
         "semblefindrelated" => ("find_related", "Find related code"),
         "inspectchanges" => ("inspect_changes", "Inspect uncommitted git changes"),
         "gitarchaeology" => ("git_archaeology", "Investigate Git history"),
+        "outline" | "filestructure" => ("outline", "Extract symbol structure and outline"),
         _ => (call.name.as_str(), "Search the codebase"),
     };
     let description = call
@@ -106,6 +107,10 @@ pub(crate) fn complete(
 }
 
 fn format_mcp_output(value: &Value) -> Result<String> {
+    if let Some(rendered) = value.get("rendered").and_then(Value::as_str) {
+        return Ok(rendered.to_string());
+    }
+
     let Some(operation) = value.get("operation").and_then(Value::as_str) else {
         return Ok(serde_json::to_string_pretty(value)?);
     };

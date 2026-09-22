@@ -169,7 +169,7 @@ fn tool_identifier(name: &str, dynamic_tools: &HashSet<String>) -> String {
         return name.into();
     }
     match name {
-        "CallMcpTool" | "SembleSearch" | "SembleFindRelated" => "MCP".into(),
+        "CallMcpTool" | "SembleSearch" | "SembleFindRelated" | "Outline" | "FileStructure" => "MCP".into(),
         "CreatePlan" => "CREATE_PLAN_V2".into(),
         "UpdateCurrentStep" => "COMMUNICATE_UPDATE".into(),
         _ => name

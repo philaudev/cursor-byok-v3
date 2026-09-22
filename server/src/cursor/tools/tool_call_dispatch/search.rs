@@ -37,6 +37,27 @@ pub(super) fn start(
     })
 }
 
+pub(super) fn start_outline(
+    results: &ToolResultSender,
+    call: &ToolCall,
+) -> Result<ToolStart> {
+    let arguments = call.arguments.clone();
+    let call = call.clone();
+    let results = results.clone();
+    let started_at_ms = now_ms();
+    tokio::spawn(async move {
+        let output = search::execute_outline(arguments).await;
+        match result::semble(&call, started_at_ms, output) {
+            Ok(completion) => results.send(completion),
+            Err(error) => results.send_error(error),
+        }
+    });
+    Ok(ToolStart {
+        messages: Vec::new(),
+        completion: None,
+    })
+}
+
 pub(super) async fn tgrep_outcome(
     call: &ToolCall,
     configured_path: Option<&str>,

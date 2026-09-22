@@ -1,5 +1,6 @@
 {
   "tools": [
+    "Outline",
     "Shell",
     "Glob",
     "Ls",

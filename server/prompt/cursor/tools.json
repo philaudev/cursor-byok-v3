@@ -599,6 +599,29 @@
     {
       "type": "function",
       "function": {
+        "name": "Outline",
+        "description": "Extracts the high-level outline and symbol structure of a source file (classes, interfaces, structs, enums, methods, functions, fields, signatures, visibility, line ranges) using in-process Tree-sitter AST parsing.\n\nSupported Languages:\nJava, TypeScript, JavaScript, Python, Rust, Go, C, C++, C#.\n\nWhen to use Outline:\n- Inspecting large or unfamiliar files (>200 lines) to get a complete architectural map and API contract without reading the entire body.\n- Locating exact method or class line ranges before making surgical edits with `Read` (using `offset`/`limit`) or `StrReplace`.\n- Checking class hierarchy, implemented interfaces, fields, and method signatures.\n- Conserving token budget and avoiding context window bloat.\n\nWhen NOT to use Outline:\n- Reading the implementation logic/body of a specific function (use `Read` with targeted `offset` and `limit` after locating it via `Outline`).\n- Finding symbols across the entire repository (use `SembleSearch` or `Grep` first).\n\nUsage Guidelines:\n- Always pass absolute file path (`path`).\n- Language is automatically detected from file extension; `language` parameter is optional.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "language": {
+              "description": "Optional explicit language identifier (e.g. 'java', 'rust', 'typescript', 'python', 'go', 'cpp'). If omitted, language is detected from file extension.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The absolute path of the source file to inspect.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Read",
         "description": "Reads a file from the local filesystem. This tool can also read image files when called with the appropriate path. Formats supported: jpeg/jpg, png, gif, webp.",
         "parameters": {

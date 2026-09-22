@@ -1,5 +1,6 @@
 {
   "tools": [
+    "Outline",
     "AskQuestion",
     "CallMcpTool",
     "Delete",

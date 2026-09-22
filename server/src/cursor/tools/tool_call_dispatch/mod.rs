@@ -104,6 +104,7 @@ pub(super) async fn start(
         | "generateimage" => interaction::start(runtime, call).await,
         "todowrite" | "updatecurrentstep" => local::start(call, message_index),
         "awaitshell" => await_shell::start(runtime, results, call, context).await,
+        "outline" | "filestructure" => search::start_outline(results, call),
         "semblesearch" | "semblefindrelated" => search::start(results, call, store.cloned()),
         "inspectchanges" => inspect_changes::start(results, call, context),
         "gitarchaeology" => git_archaeology::start(results, call, context),
