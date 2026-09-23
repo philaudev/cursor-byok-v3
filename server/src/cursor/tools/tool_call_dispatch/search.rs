@@ -69,6 +69,10 @@ pub(super) async fn tgrep_outcome(
     };
     let repo_root = search::tgrep::find_repo_root(&target_path);
 
+    if !search::tgrep::is_indexable_repo_root(&repo_root) {
+        return search::tgrep::execute_tgrep_outcome(&call.arguments, configured_path, true).await;
+    }
+
     let readiness = registry.ensure_server(&repo_root, configured_path).await;
 
     if readiness == search::ServerReadiness::Unhealthy {

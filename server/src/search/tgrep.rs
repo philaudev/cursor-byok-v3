@@ -74,6 +74,109 @@ pub fn resolve_tgrep_binary(configured_path: Option<&str>) -> Option<PathBuf> {
     None
 }
 
+/// Returns true if `path` is a user home directory, root drive, or system root directory.
+pub fn is_user_home_or_system_root(path: &Path) -> bool {
+    if path.parent().is_none() {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_home)) = (path.canonicalize(), home.canonicalize()) {
+            if canonical_path == canonical_home {
+                return true;
+            }
+        }
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        let profile_path = Path::new(&userprofile);
+        if path == profile_path {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_profile)) = (path.canonicalize(), profile_path.canonicalize()) {
+            if canonical_path == canonical_profile {
+                return true;
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = Path::new(&home);
+        if path == home_path {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_home)) = (path.canonicalize(), home_path.canonicalize()) {
+            if canonical_path == canonical_home {
+                return true;
+            }
+        }
+    }
+
+    let path_str = path.to_string_lossy();
+    if path_str.eq_ignore_ascii_case("C:\\Windows")
+        || path_str.eq_ignore_ascii_case("C:\\Program Files")
+        || path_str.eq_ignore_ascii_case("C:\\Program Files (x86)")
+        || path_str.eq_ignore_ascii_case("C:\\ProgramData")
+        || path_str.eq_ignore_ascii_case("C:\\Users")
+        || path_str.eq_ignore_ascii_case("/home")
+        || path_str.eq_ignore_ascii_case("/Users")
+        || path_str.eq_ignore_ascii_case("/etc")
+        || path_str.eq_ignore_ascii_case("/var")
+        || path_str.eq_ignore_ascii_case("/usr")
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Returns true if `path` is a user home root or a direct system/config boundary folder under user home.
+pub fn is_home_or_config_boundary(path: &Path) -> bool {
+    if is_user_home_or_system_root(path) {
+        return true;
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        for config_name in [
+            "AppData",
+            "Local Settings",
+            ".cursor",
+            ".cursor-byok-v3",
+            ".agents",
+            ".cache",
+            ".npm",
+            ".cargo",
+            ".rustup",
+            ".vscode",
+            ".config",
+        ] {
+            let config_path = home.join(config_name);
+            if path == config_path {
+                return true;
+            }
+            if let (Ok(p), Ok(c)) = (path.canonicalize(), config_path.canonicalize()) {
+                if p == c {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Checks if a directory qualifies as a project repository root that is safe to index with `tgrep serve`.
+pub fn is_indexable_repo_root(path: &Path) -> bool {
+    if is_home_or_config_boundary(path) {
+        return false;
+    }
+    path.join(".git").exists()
+        || path.join("Cargo.toml").exists()
+        || path.join("package.json").exists()
+        || path.join("go.mod").exists()
+        || path.join("pyproject.toml").exists()
+}
+
 /// Finds the root directory of the repository/project for a given path.
 pub fn find_repo_root(path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
@@ -94,10 +197,14 @@ pub fn find_repo_root(path: &Path) -> PathBuf {
     let mut current = candidate_path.as_path();
 
     while let Some(parent) = current.parent() {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
         if current.join(".git").exists()
-            || current.join(".tgrep").exists()
             || current.join("Cargo.toml").exists()
             || current.join("package.json").exists()
+            || current.join("go.mod").exists()
+            || current.join("pyproject.toml").exists()
         {
             return current.to_path_buf();
         }
@@ -153,7 +260,7 @@ pub(crate) async fn execute_tgrep_outcome(
     let target_path_str = target_path.to_string_lossy().to_string();
     let repo_root = find_repo_root(&target_path);
     let mut args: Vec<String> = vec!["--color".into(), "never".into(), "--no-heading".into()];
-    if force_no_index {
+    if force_no_index || !is_indexable_repo_root(&repo_root) {
         args.push("--no-index".into());
     } else {
         let index_dir = repo_root.join(".tgrep");
@@ -500,9 +607,47 @@ mod tests {
         let root = find_repo_root(current_file);
         assert!(root.exists(), "Resolved root must exist");
         assert!(
-            root.join("Cargo.toml").exists() || root.join(".tgrep").exists(),
-            "Resolved root should contain Cargo.toml or .tgrep"
+            root.join("Cargo.toml").exists(),
+            "Resolved root should contain Cargo.toml"
         );
+    }
+
+    #[test]
+    fn user_home_is_never_an_indexable_repo_root() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_user_home_or_system_root(&home));
+            assert!(!is_indexable_repo_root(&home));
+            let root = find_repo_root(&home);
+            assert!(!is_indexable_repo_root(&root), "find_repo_root must not return an indexable root for home directory");
+
+            let subpath = home.join(".cursor").join("projects");
+            let sub_root = find_repo_root(&subpath);
+            assert!(!is_indexable_repo_root(&sub_root), "subdirectories in home must not be treated as indexable repo roots");
+        }
+    }
+
+    #[test]
+    fn blacklisted_locations_are_never_indexable() {
+        if let Some(home) = dirs::home_dir() {
+            for config_name in ["AppData", ".cursor", ".agents", ".vscode", ".cache", ".npm", ".cargo"] {
+                let path = home.join(config_name);
+                assert!(
+                    is_home_or_config_boundary(&path),
+                    "boundary {config_name} must be recognized"
+                );
+                assert!(
+                    !is_indexable_repo_root(&path),
+                    "boundary {config_name} must not be indexable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn root_drive_is_never_an_indexable_repo_root() {
+        let drive = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
+        assert!(is_user_home_or_system_root(drive));
+        assert!(!is_indexable_repo_root(drive));
     }
 
     #[test]

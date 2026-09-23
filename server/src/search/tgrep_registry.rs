@@ -159,6 +159,11 @@ impl TgrepRegistry {
             .canonicalize()
             .unwrap_or_else(|_| repo_root.to_path_buf());
 
+        if !crate::search::tgrep::is_indexable_repo_root(&canonical) {
+            tracing::warn!(path = %canonical.display(), "refusing to spawn tgrep serve on non-indexable directory or user home");
+            return ServerReadiness::Unhealthy;
+        }
+
         // Keep check -> spawn -> register atomic. Without this, concurrent cold
         // starts can both spawn a server and one owned child gets overwritten.
         let (port, pid, readiness) = {
