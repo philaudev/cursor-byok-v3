@@ -178,6 +178,11 @@ pub fn is_indexable_repo_root(path: &Path) -> bool {
 }
 
 /// Finds the root directory of the repository/project for a given path.
+///
+/// Priority:
+/// 1. Enclosing Git repository root (`.git` directory or file for submodules/worktrees).
+/// 2. Enclosing Cargo/pnpm/npm workspace root (`Cargo.toml` with `[workspace]`, `pnpm-workspace.yaml`, etc.).
+/// 3. Outermost ancestor containing project markers (`Cargo.toml`, `package.json`, `go.mod`, etc.) before reaching system/home boundary.
 pub fn find_repo_root(path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -194,21 +199,57 @@ pub fn find_repo_root(path: &Path) -> PathBuf {
             .unwrap_or_else(|| path.clone())
     };
 
+    // 1. Highest priority: Git repository boundary (.git).
     let mut current = candidate_path.as_path();
-
     while let Some(parent) = current.parent() {
         if is_home_or_config_boundary(current) {
             break;
         }
-        if current.join(".git").exists()
-            || current.join("Cargo.toml").exists()
+        if current.join(".git").exists() {
+            return current.to_path_buf();
+        }
+        current = parent;
+    }
+
+    // 2. Second priority: Workspace root markers (Cargo.toml [workspace], pnpm-workspace.yaml).
+    let mut current = candidate_path.as_path();
+    while let Some(parent) = current.parent() {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
+        if current.join("pnpm-workspace.yaml").exists() {
+            return current.to_path_buf();
+        }
+        let cargo_toml = current.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                if content.contains("[workspace]") {
+                    return current.to_path_buf();
+                }
+            }
+        }
+        current = parent;
+    }
+
+    // 3. Third priority: Outermost project boundary before hitting home/system boundary.
+    let mut outermost = None;
+    let mut current = candidate_path.as_path();
+    while let Some(parent) = current.parent() {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
+        if current.join("Cargo.toml").exists()
             || current.join("package.json").exists()
             || current.join("go.mod").exists()
             || current.join("pyproject.toml").exists()
         {
-            return current.to_path_buf();
+            outermost = Some(current.to_path_buf());
         }
         current = parent;
+    }
+
+    if let Some(root) = outermost {
+        return root;
     }
 
     if path.is_dir() {
@@ -315,7 +356,7 @@ pub(crate) async fn execute_tgrep_outcome(
     }
     args.push(target_path_str);
 
-    let output = match tgrep_command(&binary).args(&args).output().await {
+    let mut output = match tgrep_command(&binary).args(&args).output().await {
         Ok(output) => output,
         Err(error) => {
             return crate::search::TgrepOutcome::Failure(
@@ -325,8 +366,40 @@ pub(crate) async fn execute_tgrep_outcome(
             )
         }
     };
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    // Self-healing fallback if indexed search fails due to a corrupted index file on disk
+    if output.status.code() != Some(0) && output.status.code() != Some(1) {
+        if stderr.contains("corrupted index") || (stderr.contains("index") && stderr.contains("error")) {
+            let index_dir = repo_root.join(".tgrep");
+            if index_dir.exists() {
+                let _ = std::fs::remove_dir_all(&index_dir);
+            }
+            let mut fallback_args: Vec<String> = Vec::new();
+            let mut skip_next = false;
+            for arg in &args {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if arg == "--index-path" {
+                    skip_next = true;
+                    continue;
+                }
+                fallback_args.push(arg.clone());
+            }
+            if !fallback_args.contains(&"--no-index".to_string()) {
+                fallback_args.insert(0, "--no-index".to_string());
+            }
+            if let Ok(retry_output) = tgrep_command(&binary).args(&fallback_args).output().await {
+                output = retry_output;
+                stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            }
+        }
+    }
+
     match output.status.code() {
         Some(0) if stdout.is_empty() => crate::search::TgrepOutcome::NoMatch,
         Some(0) => crate::search::TgrepOutcome::Match(stdout),
@@ -620,6 +693,28 @@ mod tests {
             root.join("Cargo.toml").exists(),
             "Resolved root should contain Cargo.toml"
         );
+        assert!(
+            root.join(".git").exists(),
+            "find_repo_root must resolve up to the enclosing .git repository root"
+        );
+    }
+
+    #[test]
+    fn tgrep_find_repo_root_resolves_outer_workspace_root_in_monorepo() {
+        // From deep subfolder server/src/search, it should resolve to the monorepo root containing .git and workspace Cargo.toml
+        let server_dir = std::env::current_dir().unwrap();
+        let root = find_repo_root(&server_dir);
+        assert!(
+            root.join(".git").exists(),
+            "Monorepo root must contain .git repository"
+        );
+        let cargo_toml = root.join("Cargo.toml");
+        assert!(cargo_toml.exists(), "Monorepo root must contain Cargo.toml");
+        let content = std::fs::read_to_string(cargo_toml).unwrap();
+        assert!(
+            content.contains("[workspace]"),
+            "Monorepo root must contain workspace definition"
+        );
     }
 
     #[test]
@@ -833,7 +928,7 @@ mod tests {
             "glob": "*.rs"
         });
         let result = execute_tgrep(&args, None).await;
-        assert!(result.is_ok(), "tgrep glob filter should succeed");
+        assert!(result.is_ok(), "tgrep glob filter should succeed: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("tgrep.rs"));
     }
