@@ -235,6 +235,7 @@ pub(crate) async fn execute_tgrep_outcome(
     arguments: &Value,
     configured_path: Option<&str>,
     force_no_index: bool,
+    workspace_hint: Option<&str>,
 ) -> crate::search::TgrepOutcome {
     if let Err(failure) = validate_tgrep_arguments(arguments) {
         return crate::search::TgrepOutcome::Failure(failure);
@@ -253,7 +254,7 @@ pub(crate) async fn execute_tgrep_outcome(
         .get("pattern")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let target_path = match tgrep_workspace_path(arguments) {
+    let target_path = match tgrep_workspace_path(arguments, workspace_hint) {
         Ok(path) => path,
         Err(failure) => return crate::search::TgrepOutcome::Failure(failure),
     };
@@ -341,8 +342,10 @@ pub(crate) async fn execute_tgrep_outcome(
 }
 
 /// Returns the workspace path to search, resolving relative paths to absolute paths.
+/// If `workspace_hint` is provided, relative paths are resolved against it instead of `current_dir`.
 pub(crate) fn tgrep_workspace_path(
     arguments: &Value,
+    workspace_hint: Option<&str>,
 ) -> std::result::Result<PathBuf, crate::search::TgrepFailure> {
     let path_str = arguments
         .get("path")
@@ -355,6 +358,13 @@ pub(crate) fn tgrep_workspace_path(
     let path = Path::new(path_str);
     let absolute_path = if path.is_absolute() {
         path.to_path_buf()
+    } else if let Some(hint) = workspace_hint.map(str::trim).filter(|s| !s.is_empty()) {
+        let base = Path::new(hint);
+        if path_str == "." {
+            base.to_path_buf()
+        } else {
+            base.join(path)
+        }
     } else {
         std::env::current_dir()
             .map(|dir| dir.join(path))
@@ -424,7 +434,7 @@ pub async fn execute_tgrep(
     arguments: &Value,
     configured_path: Option<&str>,
 ) -> std::result::Result<String, String> {
-    match execute_tgrep_outcome(arguments, configured_path, false).await {
+    match execute_tgrep_outcome(arguments, configured_path, false, None).await {
         crate::search::TgrepOutcome::Match(output) => Ok(output),
         crate::search::TgrepOutcome::NoMatch => {
             let pattern = arguments.get("pattern").and_then(Value::as_str).unwrap_or_default();
@@ -653,9 +663,34 @@ mod tests {
     #[test]
     fn tgrep_workspace_path_resolves_missing_or_relative_paths() {
         for arguments in [json!({"pattern": "test"}), json!({"path": "."})] {
-            let path = tgrep_workspace_path(&arguments).unwrap();
+            let path = tgrep_workspace_path(&arguments, None).unwrap();
             assert!(path.is_absolute());
         }
+    }
+
+    #[test]
+    fn tgrep_workspace_path_uses_workspace_hint_for_relative_paths() {
+        let workspace = if cfg!(windows) {
+            "D:\\Admin\\Documents\\PROJECTS\\conruabien"
+        } else {
+            "/home/user/projects/conruabien"
+        };
+        let empty_args = json!({"pattern": "test"});
+        let dot_args = json!({"pattern": "test", "path": "."});
+        let sub_args = json!({"pattern": "test", "path": "src/main.rs"});
+
+        assert_eq!(
+            tgrep_workspace_path(&empty_args, Some(workspace)).unwrap(),
+            Path::new(workspace)
+        );
+        assert_eq!(
+            tgrep_workspace_path(&dot_args, Some(workspace)).unwrap(),
+            Path::new(workspace)
+        );
+        assert_eq!(
+            tgrep_workspace_path(&sub_args, Some(workspace)).unwrap(),
+            Path::new(workspace).join("src/main.rs")
+        );
     }
 
     #[test]
@@ -664,7 +699,7 @@ mod tests {
         let arguments = json!({"path": directory.path()});
 
         assert_eq!(
-            tgrep_workspace_path(&arguments).unwrap(),
+            tgrep_workspace_path(&arguments, None).unwrap(),
             directory.path()
         );
     }
@@ -675,7 +710,7 @@ mod tests {
             "pattern": "test",
             "type": ""
         });
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
@@ -688,7 +723,7 @@ mod tests {
             "pattern": "test",
             "type": "invalid type; name!"
         });
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(
@@ -703,7 +738,7 @@ mod tests {
             "pattern": "test",
             "offset": 1
         });
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(
@@ -715,7 +750,7 @@ mod tests {
     #[tokio::test]
     async fn tgrep_reports_unavailable_as_typed_failure() {
         let args = json!({"pattern": "test"});
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
@@ -725,7 +760,7 @@ mod tests {
     #[tokio::test]
     async fn tgrep_rejects_empty_pattern() {
         let args = json!({"pattern": ""});
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(

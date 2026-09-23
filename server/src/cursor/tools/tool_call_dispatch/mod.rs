@@ -63,6 +63,7 @@ pub(super) async fn start(
     if tool_name == "grep" {
         if let Some(store) = store {
             if let Ok(settings) = store.search_settings().await {
+                let workspace_hint = context.workspace_paths.first().map(|s| s.as_str());
                 match settings.grep_engine {
                     crate::store::GrepEngine::Ripgrep => {}
                     crate::store::GrepEngine::Tgrep => {
@@ -70,6 +71,7 @@ pub(super) async fn start(
                             call,
                             settings.tgrep_path.as_deref(),
                             tgrep_registry,
+                            workspace_hint,
                         )
                         .await;
                         return search::local_tgrep_completion(call, crate::cursor::tools::runtime::now_ms(), outcome);
@@ -79,6 +81,7 @@ pub(super) async fn start(
                             call,
                             settings.tgrep_path.as_deref(),
                             tgrep_registry,
+                            workspace_hint,
                         )
                         .await;
                         if !outcome.should_auto_fallback() {
