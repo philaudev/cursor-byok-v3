@@ -253,8 +253,14 @@ fn router_with_proxy(
             analytics::BOOTSTRAP_STATSIG_PATH,
             post(analytics::bootstrap_statsig),
         )
-        .route("/auth/full_stripe_profile", get(account::stripe_profile))
-        .route("/auth/stripe_profile", get(account::stripe_profile))
+        .route(
+            "/auth/full_stripe_profile",
+            get(account::stripe_profile).options(account::stripe_profile),
+        )
+        .route(
+            "/auth/stripe_profile",
+            get(account::stripe_profile).options(account::stripe_profile),
+        )
         .merge(tab::router())
         .route_layer(DefaultBodyLimit::disable())
         .route_layer(RequestDecompressionLayer::new())

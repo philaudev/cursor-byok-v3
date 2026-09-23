@@ -2,12 +2,12 @@
 use axum::{
     body::{to_bytes, Body},
     extract::Extension,
-    http::{header, HeaderValue, Request, Response},
+    http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use prost::Message;
 use serde_json::Value;
 
-use crate::{api::cursor::proxy, local_app, Result};
+use crate::{api::cursor::proxy, Result};
 
 use super::entitlement::FreeEntitlementCache;
 
@@ -275,33 +275,18 @@ pub async fn usage_limit_status(
 }
 
 pub async fn stripe_profile(
-    Extension(upstream): Extension<proxy::CursorProxy>,
-    Extension(_free_entitlements): Extension<FreeEntitlementCache>,
+    _upstream: Extension<proxy::CursorProxy>,
+    _free_entitlements: Extension<FreeEntitlementCache>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
     let origin = request.headers().get(header::ORIGIN).cloned();
-    if local_app::request_uses_local_cursor_token(request.headers()) {
-        return local_stripe_profile(origin);
+    if request.method() == axum::http::Method::OPTIONS {
+        return local_stripe_profile_options(origin);
     }
-
-    let upstream_response = match proxy::forward_buffered(&upstream, request).await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::warn!(%error, "using local Ultra profile after Stripe upstream failure");
-            return local_stripe_profile(origin);
-        }
-    };
-    if !upstream_response.status.is_success() {
-        return local_stripe_profile(origin);
-    }
-
-    if let Some(patched_body) = patch_ultra_membership(&upstream_response.body) {
-        return Ok(upstream_response.with_body(axum::body::Bytes::from(patched_body)));
-    }
-
-    Ok(upstream_response.into_response())
+    local_stripe_profile(origin)
 }
 
+#[allow(dead_code)]
 fn patch_ultra_membership(body: &[u8]) -> Option<Vec<u8>> {
     let mut profile: Value = serde_json::from_slice(body).ok()?;
     let obj = profile.as_object_mut()?;
@@ -325,6 +310,32 @@ fn membership_type(body: &[u8]) -> Option<String> {
     (!membership_type.is_empty()).then(|| membership_type.to_owned())
 }
 
+fn local_stripe_profile_options(origin: Option<HeaderValue>) -> Result<Response<Body>> {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    if let Some(origin) = origin {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, OPTIONS"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("*"),
+        );
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    Ok(response)
+}
+
 fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
     let mut response = json(ultra_profile())?;
     if let Some(origin) = origin {
@@ -334,6 +345,14 @@ fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
         response.headers_mut().insert(
             header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
             HeaderValue::from_static("true"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, OPTIONS"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("*"),
         );
         response
             .headers_mut()
@@ -486,6 +505,21 @@ mod tests {
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE),
             Some(&HeaderValue::from_static("application/json"))
+        );
+    }
+
+    #[test]
+    fn local_stripe_profile_options_returns_cors_preflight() {
+        let origin = HeaderValue::from_static("vscode-file://vscode-app");
+        let response = local_stripe_profile_options(Some(origin.clone())).unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&origin)
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            Some(&HeaderValue::from_static("GET, OPTIONS"))
         );
     }
 }

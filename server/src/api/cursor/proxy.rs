@@ -138,6 +138,14 @@ pub async fn forward_buffered(
     proxy: &CursorProxy,
     request: Request<Body>,
 ) -> Result<BufferedResponse> {
+    forward_buffered_with_timeout(proxy, request, std::time::Duration::from_secs(10)).await
+}
+
+pub async fn forward_buffered_with_timeout(
+    proxy: &CursorProxy,
+    request: Request<Body>,
+    timeout: std::time::Duration,
+) -> Result<BufferedResponse> {
     let (parts, body) = request.into_parts();
     let path = parts
         .uri
@@ -147,15 +155,11 @@ pub async fn forward_buffered(
     let mut headers = parts.headers;
     headers.remove(UPSTREAM_URL_HEADER);
     headers.remove(header::HOST);
+    headers.remove(header::CONTENT_LENGTH);
     remove_hop_by_hop_headers(&mut headers);
-    headers.insert(
-        "connect-accept-encoding",
-        axum::http::HeaderValue::from_static("identity"),
-    );
-    headers.insert(
-        header::ACCEPT_ENCODING,
-        axum::http::HeaderValue::from_static("identity"),
-    );
+    headers.remove(header::ACCEPT_ENCODING);
+    headers.remove("connect-accept-encoding");
+
     let body = to_bytes(body, usize::MAX)
         .await
         .map_err(|error| crate::Error::Protocol(format!("cannot read request body: {error}")))?;
@@ -165,6 +169,7 @@ pub async fn forward_buffered(
         .request(parts.method, url)
         .headers(headers)
         .body(body)
+        .timeout(timeout)
         .send()
         .await?;
     let status = upstream.status();

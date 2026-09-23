@@ -3,6 +3,7 @@
 //! 每个请求先回放离线日志再尝试上游;上游成功时把结果写穿到本地镜像,
 //! 上游不可达时降级为本地 md 存储并记录日志等待回放。
 mod store;
+#[allow(dead_code)]
 mod sync;
 
 use std::sync::Arc;
@@ -124,42 +125,14 @@ impl KnowledgeService {
 }
 
 pub async fn add(
-    Extension(upstream): Extension<proxy::CursorProxy>,
+    _upstream: Extension<proxy::CursorProxy>,
     Extension(service): Extension<KnowledgeService>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let (parts, body) = buffered(request).await?;
+    let (_parts, body) = buffered(request).await?;
     let message: KnowledgeBaseAddRequest = connect::decode_unary(&body)?;
     let _guard = service.inner.lock.lock().await;
     let store = &service.inner.store;
-
-    if sync::replay(&upstream, &parts.headers, store).await? {
-        match proxy::forward_buffered(&upstream, Request::from_parts(parts, Body::from(body))).await
-        {
-            Ok(response) if response.status.is_success() => {
-                if let Ok(reply) = connect::decode_unary::<KnowledgeBaseAddResponse>(&response.body)
-                {
-                    if reply.success && !reply.id.is_empty() {
-                        store.upsert(&RuleRecord {
-                            id: reply.id,
-                            knowledge: message.knowledge,
-                            title: message.title,
-                            created_at: now(),
-                            is_generated: false,
-                            git_origin: message.git_origin,
-                        })?;
-                    }
-                }
-                return Ok(response.into_response());
-            }
-            Ok(response) => {
-                tracing::warn!(status = %response.status, "rules upstream rejected add; storing locally");
-            }
-            Err(error) => {
-                tracing::warn!(%error, "rules upstream unavailable for add; storing locally");
-            }
-        }
-    }
 
     let id = format!("{}{}", store::LOCAL_ID_PREFIX, uuid::Uuid::new_v4());
     store.upsert(&RuleRecord {
@@ -175,38 +148,15 @@ pub async fn add(
 }
 
 pub async fn list(
-    Extension(upstream): Extension<proxy::CursorProxy>,
+    _upstream: Extension<proxy::CursorProxy>,
     Extension(service): Extension<KnowledgeService>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let (parts, body) = buffered(request).await?;
+    let (_parts, body) = buffered(request).await?;
     let message: KnowledgeBaseListRequest = connect::decode_unary(&body)?;
     let _guard = service.inner.lock.lock().await;
     let store = &service.inner.store;
     let git_origin = message.git_origin.unwrap_or_default();
-
-    if sync::replay(&upstream, &parts.headers, store).await? {
-        match proxy::forward_buffered(&upstream, Request::from_parts(parts, Body::from(body))).await
-        {
-            Ok(response) if response.status.is_success() => {
-                if let Ok(reply) =
-                    connect::decode_unary::<KnowledgeBaseListResponse>(&response.body)
-                {
-                    // 带 git_origin 过滤的列表只是子集,整体覆盖会误删其他规则。
-                    if reply.success && git_origin.is_empty() {
-                        sync::mirror(store, reply.all_results)?;
-                    }
-                }
-                return Ok(response.into_response());
-            }
-            Ok(response) => {
-                tracing::warn!(status = %response.status, "rules upstream rejected list; serving local cache");
-            }
-            Err(error) => {
-                tracing::warn!(%error, "rules upstream unavailable for list; serving local cache");
-            }
-        }
-    }
 
     let mut records = store.list()?;
     if !git_origin.is_empty() {
@@ -233,50 +183,14 @@ pub async fn list(
 }
 
 pub async fn update(
-    Extension(upstream): Extension<proxy::CursorProxy>,
+    _upstream: Extension<proxy::CursorProxy>,
     Extension(service): Extension<KnowledgeService>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let (parts, body) = buffered(request).await?;
+    let (_parts, body) = buffered(request).await?;
     let message: KnowledgeBaseUpdateRequest = connect::decode_unary(&body)?;
     let _guard = service.inner.lock.lock().await;
     let store = &service.inner.store;
-
-    if sync::replay(&upstream, &parts.headers, store).await? {
-        match proxy::forward_buffered(&upstream, Request::from_parts(parts, Body::from(body))).await
-        {
-            Ok(response) if response.status.is_success() => {
-                if let Ok(reply) =
-                    connect::decode_unary::<KnowledgeBaseUpdateResponse>(&response.body)
-                {
-                    if reply.success {
-                        let existing = store.get(&message.id)?;
-                        store.upsert(&RuleRecord {
-                            id: message.id,
-                            knowledge: message.knowledge,
-                            title: message.title,
-                            created_at: existing
-                                .as_ref()
-                                .map_or_else(now, |record| record.created_at.clone()),
-                            is_generated: existing
-                                .as_ref()
-                                .is_some_and(|record| record.is_generated),
-                            git_origin: existing
-                                .map(|record| record.git_origin)
-                                .unwrap_or_default(),
-                        })?;
-                    }
-                }
-                return Ok(response.into_response());
-            }
-            Ok(response) => {
-                tracing::warn!(status = %response.status, "rules upstream rejected update; storing locally");
-            }
-            Err(error) => {
-                tracing::warn!(%error, "rules upstream unavailable for update; storing locally");
-            }
-        }
-    }
 
     let Some(mut record) = store.get(&message.id)? else {
         return proto(KnowledgeBaseUpdateResponse { success: false });
@@ -289,36 +203,14 @@ pub async fn update(
 }
 
 pub async fn remove(
-    Extension(upstream): Extension<proxy::CursorProxy>,
+    _upstream: Extension<proxy::CursorProxy>,
     Extension(service): Extension<KnowledgeService>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let (parts, body) = buffered(request).await?;
+    let (_parts, body) = buffered(request).await?;
     let message: KnowledgeBaseRemoveRequest = connect::decode_unary(&body)?;
     let _guard = service.inner.lock.lock().await;
     let store = &service.inner.store;
-
-    if sync::replay(&upstream, &parts.headers, store).await? {
-        match proxy::forward_buffered(&upstream, Request::from_parts(parts, Body::from(body))).await
-        {
-            Ok(response) if response.status.is_success() => {
-                if let Ok(reply) =
-                    connect::decode_unary::<KnowledgeBaseRemoveResponse>(&response.body)
-                {
-                    if reply.success {
-                        store.remove(&message.id)?;
-                    }
-                }
-                return Ok(response.into_response());
-            }
-            Ok(response) => {
-                tracing::warn!(status = %response.status, "rules upstream rejected remove; removing locally");
-            }
-            Err(error) => {
-                tracing::warn!(%error, "rules upstream unavailable for remove; removing locally");
-            }
-        }
-    }
 
     store.remove(&message.id)?;
     store.record_remove(&message.id)?;

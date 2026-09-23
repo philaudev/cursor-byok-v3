@@ -1,6 +1,6 @@
 //! Implements Cursor analytics endpoints and event handling.
 use axum::{
-    body::{Body, Bytes},
+    body::{to_bytes, Body, Bytes},
     extract::Extension,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
@@ -25,28 +25,14 @@ struct BootstrapStatsigResponse {
 }
 
 pub async fn bootstrap_statsig(
-    Extension(upstream): Extension<proxy::CursorProxy>,
+    _upstream: Extension<proxy::CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    match proxy::forward_buffered(&upstream, request).await {
-        Ok(response) if response.status.is_success() => match patch_upstream(response) {
-            Ok(response) => Ok(response),
-            Err(error) => {
-                tracing::warn!(%error, "Cursor Statsig bootstrap was invalid; using local bootstrap");
-                local_response()
-            }
-        },
-        Ok(response) => {
-            tracing::warn!(status = %response.status, "Cursor Statsig bootstrap was rejected; using local bootstrap");
-            local_response()
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Cursor Statsig bootstrap was unavailable; using local bootstrap");
-            local_response()
-        }
-    }
+    let _ = to_bytes(request.into_body(), usize::MAX).await;
+    local_response()
 }
 
+#[allow(dead_code)]
 fn patch_upstream(response: proxy::BufferedResponse) -> Result<Response<Body>> {
     let (framed, payload) = unary_payload(&response.body)?;
     let mut message = BootstrapStatsigResponse::decode(payload)?;
