@@ -2,7 +2,7 @@
 
 mod action;
 mod break_messages;
-mod context;
+pub(crate) mod context;
 mod images;
 mod insert_messages;
 mod model;

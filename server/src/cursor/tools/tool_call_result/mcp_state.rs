@@ -51,6 +51,20 @@ pub(super) fn complete(
                     .is_none_or(|pattern| pattern.is_match(&server.server_identifier));
                 let mut matched_tool = false;
                 for tool in &server.tools {
+                    if !tool.description.trim().is_empty() {
+                        crate::cursor::compile::context::cache_mcp_tool_description(
+                            &server.server_identifier,
+                            &tool.tool_name,
+                            &tool.description,
+                        );
+                        if !server.server_name.is_empty() {
+                            crate::cursor::compile::context::cache_mcp_tool_description(
+                                &server.server_name,
+                                &tool.tool_name,
+                                &tool.description,
+                            );
+                        }
+                    }
                     if tool_filter.is_some_and(|value| value != tool.tool_name)
                         || (!server_matches_pattern
                             && pattern
