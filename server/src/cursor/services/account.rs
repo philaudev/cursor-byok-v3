@@ -296,6 +296,7 @@ fn patch_ultra_membership(body: &[u8]) -> Option<Vec<u8>> {
     serde_json::to_vec(&profile).ok()
 }
 
+#[allow(dead_code)]
 fn should_fallback_to_cached_free(
     status: axum::http::StatusCode,
     free_entitlements: &FreeEntitlementCache,
@@ -304,6 +305,7 @@ fn should_fallback_to_cached_free(
     status.is_server_error() && free_entitlements.is_confirmed_free(headers)
 }
 
+#[allow(dead_code)]
 fn membership_type(body: &[u8]) -> Option<String> {
     let profile: Value = serde_json::from_slice(body).ok()?;
     let membership_type = profile.get("membershipType")?.as_str()?.trim();

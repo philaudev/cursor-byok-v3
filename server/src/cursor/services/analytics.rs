@@ -1,6 +1,6 @@
 //! Implements Cursor analytics endpoints and event handling.
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{Body, Bytes},
     extract::Extension,
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
@@ -25,11 +25,29 @@ struct BootstrapStatsigResponse {
 }
 
 pub async fn bootstrap_statsig(
-    _upstream: Extension<proxy::CursorProxy>,
+    Extension(upstream): Extension<proxy::CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    let _ = to_bytes(request.into_body(), usize::MAX).await;
-    local_response()
+    match proxy::forward_buffered(&upstream, request).await {
+        Ok(response) if response.status.is_success() => match patch_upstream(response) {
+            Ok(response) => {
+                tracing::info!("Cursor Statsig bootstrap patched from upstream");
+                Ok(response)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Cursor Statsig bootstrap was invalid; using local bootstrap");
+                local_response()
+            }
+        },
+        Ok(response) => {
+            tracing::warn!(status = %response.status, "Cursor Statsig bootstrap was rejected; using local bootstrap");
+            local_response()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Cursor Statsig bootstrap was unavailable; using local bootstrap");
+            local_response()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -159,4 +177,28 @@ fn encode_unary(message: &impl Message, framed: bool) -> Bytes {
     output.put_u32(payload.len() as u32);
     output.extend_from_slice(&payload);
     output.freeze()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_bootstrap_statsig_upstream_succeeds() {
+        let store = crate::store::Store::connect("sqlite::memory:").await.unwrap();
+        let clients = crate::network::NetworkClients::new(store);
+        let proxy = proxy::CursorProxy::cursor(clients);
+        let request = Request::builder()
+            .method("POST")
+            .uri(BOOTSTRAP_STATSIG_PATH)
+            .header(header::CONTENT_TYPE, "application/proto")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy::forward_buffered_with_timeout(&proxy, request, std::time::Duration::from_secs(30)).await.unwrap();
+        assert_eq!(response.status, StatusCode::OK);
+        println!("Response body len: {}", response.body.len());
+        let patched = patch_upstream(response).unwrap();
+        assert_eq!(patched.status(), StatusCode::OK);
+    }
 }

@@ -157,8 +157,14 @@ pub async fn forward_buffered_with_timeout(
     headers.remove(header::HOST);
     headers.remove(header::CONTENT_LENGTH);
     remove_hop_by_hop_headers(&mut headers);
-    headers.remove(header::ACCEPT_ENCODING);
-    headers.remove("connect-accept-encoding");
+    headers.insert(
+        "connect-accept-encoding",
+        axum::http::HeaderValue::from_static("identity"),
+    );
+    headers.insert(
+        header::ACCEPT_ENCODING,
+        axum::http::HeaderValue::from_static("identity"),
+    );
 
     let body = to_bytes(body, usize::MAX)
         .await

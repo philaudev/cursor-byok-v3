@@ -60,7 +60,9 @@ async fn route<M: Message>(
     request: Request<Body>,
     mock: M,
 ) -> Result<Response<Body>> {
+    let path = request.uri().path().to_string();
     consume_body(request).await?;
+    tracing::info!(path = %path, "handled compatibility request");
     Ok(proto(mock))
 }
 
