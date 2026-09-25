@@ -44,7 +44,13 @@ impl WebSearch {
         E: Into<SearchEngine>,
     {
         Self {
-            client: SearchClient::Direct(reqwest::Client::new()),
+            client: SearchClient::Direct(
+                reqwest::Client::builder()
+                    .use_native_tls()
+                    .dns_resolver(crate::network::dns_resolver())
+                    .build()
+                    .unwrap_or_default(),
+            ),
             engines: engines.into_iter().map(Into::into).collect(),
         }
     }

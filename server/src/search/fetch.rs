@@ -127,7 +127,9 @@ impl WebFetch {
             FetchClient::Managed(store) => crate::network::client_builder(store)
                 .await
                 .map_err(|error| failure(format!("HTTP client failed: {error}")))?,
-            FetchClient::Direct => reqwest::Client::builder().use_native_tls(),
+            FetchClient::Direct => reqwest::Client::builder()
+                .use_native_tls()
+                .dns_resolver(crate::network::dns_resolver()),
         };
         let mut builder = builder
             .redirect(Policy::none())

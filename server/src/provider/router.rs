@@ -351,6 +351,8 @@ fn build_inner(
     let client = match client {
         Some(client) => client,
         None => reqwest::Client::builder()
+            .use_native_tls()
+            .dns_resolver(crate::network::dns_resolver())
             .timeout(config.request_timeout)
             .build()?,
     };
