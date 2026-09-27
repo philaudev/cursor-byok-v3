@@ -2,6 +2,7 @@
 //! Cursor tool orchestration for application-owned Semble search.
 
 use crate::{
+    Result,
     cursor::tools::{
         runtime::now_ms,
         tool_call_result::{self as result, ToolResultSender},
@@ -9,7 +10,6 @@ use crate::{
     model::ToolCall,
     search,
     store::Store,
-    Result,
 };
 
 use super::ToolStart;
@@ -37,10 +37,7 @@ pub(super) fn start(
     })
 }
 
-pub(super) fn start_outline(
-    results: &ToolResultSender,
-    call: &ToolCall,
-) -> Result<ToolStart> {
+pub(super) fn start_outline(results: &ToolResultSender, call: &ToolCall) -> Result<ToolStart> {
     let arguments = call.arguments.clone();
     let call = call.clone();
     let results = results.clone();
@@ -71,7 +68,13 @@ pub(super) async fn tgrep_outcome(
     let repo_root = search::tgrep::find_repo_root(&target_path);
 
     if !search::tgrep::is_indexable_repo_root(&repo_root) {
-        return search::tgrep::execute_tgrep_outcome(&call.arguments, configured_path, true, workspace_hint).await;
+        return search::tgrep::execute_tgrep_outcome(
+            &call.arguments,
+            configured_path,
+            true,
+            workspace_hint,
+        )
+        .await;
     }
 
     let readiness = registry.ensure_server(&repo_root, configured_path).await;
@@ -90,7 +93,13 @@ pub(super) async fn tgrep_outcome(
         search::ServerReadiness::Starting | search::ServerReadiness::Indexing
     );
 
-    search::tgrep::execute_tgrep_outcome(&call.arguments, configured_path, force_no_index, workspace_hint).await
+    search::tgrep::execute_tgrep_outcome(
+        &call.arguments,
+        configured_path,
+        force_no_index,
+        workspace_hint,
+    )
+    .await
 }
 
 pub(super) fn local_tgrep_completion(

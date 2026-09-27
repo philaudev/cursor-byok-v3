@@ -531,13 +531,50 @@
       "type": "function",
       "function": {
         "name": "InspectChanges",
-        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or a specific file with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff of a single file instead of running `git diff <file>` via Shell: pass the absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to get its focused unified diff.\n- Checking working tree status, modified/added/deleted files, or staged/unstaged changes before and after code modifications.\n- Reviewing repository-wide diffs without flooding context with raw terminal output.\n\nUsage Guidelines:\n- Pass the absolute project/repo directory path (e.g. `path: \"C:/path/to/repo\"`) to get an overview of all modified and untracked files with summarized diffs.\n- Pass an absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to inspect its complete unified diff.\n- Always use absolute paths.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
+        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or specific files with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff across the workspace or for a batch of files in one call (`files: [\"src/main.rs\", \"Cargo.toml\"]`).\n- Checking change manifest only without diff overhead (`mode: \"summary\"`).\n- Isolating staged index changes (`scope: \"staged\"`) or unstaged changes (`scope: \"unstaged\"`).\n- Reviewing repository-wide diffs without flooding context with raw terminal output (`mode: \"review\"` or `mode: \"diff\"`).\n\nUsage Guidelines:\n- Pass the absolute project/repo directory path (e.g. `path: \"C:/path/to/repo\"`).\n- Use `mode: \"summary\"` when only an inventory of changed files is needed before selecting specific diffs.\n- Use `files` with repository-relative paths to retrieve diffs for multiple specific files in a single tool call.\n- Use `scope: \"staged\"` or `scope: \"unstaged\"` to filter index vs working tree changes.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
               "description": "The absolute path to the Git repository directory or a specific file to inspect.",
               "type": "string"
+            },
+            "mode": {
+              "description": "Output mode: summary returns manifest only; diff returns selected diffs; review returns manifest and bounded diff.",
+              "enum": [
+                "summary",
+                "diff",
+                "review"
+              ],
+              "type": "string"
+            },
+            "scope": {
+              "description": "Git change scope: all, staged index changes, or unstaged working-tree changes.",
+              "enum": [
+                "all",
+                "staged",
+                "unstaged"
+              ],
+              "type": "string"
+            },
+            "files": {
+              "description": "Optional repository-relative exact paths to inspect in one call.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_files": {
+              "description": "Maximum manifest files returned. Values above the server limit are clamped.",
+              "minimum": 1,
+              "maximum": 100,
+              "type": "integer"
+            },
+            "max_diff_chars": {
+              "description": "Maximum combined diff characters returned. Values above the server limit are clamped.",
+              "minimum": 0,
+              "maximum": 8000,
+              "type": "integer"
             }
           },
           "required": [

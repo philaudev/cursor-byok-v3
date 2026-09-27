@@ -2,7 +2,7 @@
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
 
-use crate::{model::ToolCall, Error, Result};
+use crate::{Error, Result, model::ToolCall};
 
 use crate::cursor::protocol::proto::agent::v1 as pb;
 
@@ -196,7 +196,7 @@ fn edit_notebook(call: &ToolCall, before: &str) -> std::result::Result<String, S
             count => {
                 return Err(format!(
                     "old_string is not unique in the notebook cell; found {count} occurrences"
-                ))
+                ));
             }
         };
         cell["source"] = Value::Array(source_lines(&edited));

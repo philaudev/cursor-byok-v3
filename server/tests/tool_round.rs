@@ -11,18 +11,17 @@ use std::{
 
 use cursor_server::{
     cursor::prompting::{PromptAssets, PromptCompiler},
+    cursor::{TransportCommand, TransportRegistry},
     cursor::{
         protocol::{connect, proto::agent::v1 as pb},
         tools::{
-            codec,
+            ClientToolEvent, ToolBatchState, ToolDispatcher, codec,
             runtime::{CursorToolRuntime, ExecContext},
-            ClientToolEvent, ToolBatchState, ToolDispatcher,
         },
     },
-    cursor::{TransportCommand, TransportRegistry},
     model::{
-        MessageContent, ModelConfigInput, ModelType, ProjectedContent, ToolCall,
-        OPENAI_CHAT_ENDPOINT,
+        MessageContent, ModelConfigInput, ModelType, OPENAI_CHAT_ENDPOINT, ProjectedContent,
+        ToolCall,
     },
     provider::{FinishReason, ModelEvent},
     run::consume_model_cycle,
@@ -99,10 +98,12 @@ async fn malformed_provider_tool_json_is_kept_as_a_tool_validation_error() {
         .expect("malformed tool JSON must not fail the model cycle");
 
     assert_eq!(result.calls.len(), 1);
-    assert!(result.calls[0]
-        .argument_error
-        .as_deref()
-        .is_some_and(|message| message.contains("not valid JSON")));
+    assert!(
+        result.calls[0]
+            .argument_error
+            .as_deref()
+            .is_some_and(|message| message.contains("not valid JSON"))
+    );
     assert_eq!(result.calls[0].arguments, json!({}));
 }
 
@@ -579,9 +580,7 @@ async fn shell_uses_background_timeout_and_preserves_stream_identity() {
     };
     assert_eq!(
         completion.result().content,
-        (
-            "shell running in background shell_id=42 pid=1234 terminals_folder=/tmp/terminals\nServing HTTP on port 8000\n"
-        )
+        ("shell running in background shell_id=42 pid=1234 terminals_folder=/tmp/terminals\nServing HTTP on port 8000\n")
     );
     let Some(pb::tool_call::Tool::ShellToolCall(tool)) = &completion.tool_call().tool else {
         panic!("expected ShellToolCall")
@@ -883,10 +882,12 @@ async fn an_exec_result_must_match_the_reserved_tool() {
         panic!("mismatched result must complete as a tool error")
     };
     assert!(completion.result().is_error);
-    assert!(completion
-        .result()
-        .content
-        .contains("unexpected Exec result for tool Read"));
+    assert!(
+        completion
+            .result()
+            .content
+            .contains("unexpected Exec result for tool Read")
+    );
     assert!(pending.exec_call(id).await.is_none());
     assert_eq!(pending.completed_call(id).await.as_deref(), Some("call-1"));
     let duplicate = codec::client_event(
@@ -941,7 +942,7 @@ async fn one_run_can_auto_compact_again_after_more_tool_output() {
             custom_headers: json!({}),
             anthropic_extra_params_enabled: false,
             anthropic_extra_params: json!({}),
-            context_window_tokens: Some(25_000),
+            context_window_tokens: Some(40_000),
             max_completion_tokens: None,
             anthropic_max_tokens: None,
             anthropic_thinking_effort: None,
@@ -1327,7 +1328,9 @@ async fn ls_tool_routes_request_and_renders_tree_result() {
     let Some(pb::tool_call::Tool::LsToolCall(tool)) = completion.tool_call().tool.as_ref() else {
         panic!("expected LsToolCall");
     };
-    let Some(pb::ls_result::Result::Success(success)) = tool.result.as_ref().and_then(|r| r.result.as_ref()) else {
+    let Some(pb::ls_result::Result::Success(success)) =
+        tool.result.as_ref().and_then(|r| r.result.as_ref())
+    else {
         panic!("expected typed LsSuccess");
     };
     assert_eq!(
@@ -1343,7 +1346,10 @@ async fn ls_tool_truncates_large_directory_and_adds_text_notice() {
     ls_call.arguments = json!({
         "path": "/workspace/overflow"
     });
-    let id = pending.reserve_exec(&ls_call, &exec_context()).await.unwrap();
+    let id = pending
+        .reserve_exec(&ls_call, &exec_context())
+        .await
+        .unwrap();
 
     let mut children_files = Vec::new();
     for i in 0..150 {
@@ -1379,7 +1385,12 @@ async fn ls_tool_truncates_large_directory_and_adds_text_notice() {
         panic!("expected completed Ls event");
     };
 
-    assert!(completion.result().content.contains("[truncated: directory listing was limited]"));
+    assert!(
+        completion
+            .result()
+            .content
+            .contains("[truncated: directory listing was limited]")
+    );
     assert!(completion.result().content.contains("file_99.txt"));
     assert!(!completion.result().content.contains("file_100.txt"));
 }
@@ -2201,7 +2212,14 @@ async fn await_shell_completes_on_pid_termination_probe() {
 
     // PID 99999999 is nonexistent so is_pid_alive returns false
     runtime
-        .background_shell_backgrounded(42, Some(99999999), 900, "shell-exec", String::new(), String::new())
+        .background_shell_backgrounded(
+            42,
+            Some(99999999),
+            900,
+            "shell-exec",
+            String::new(),
+            String::new(),
+        )
         .await;
     let event = codec::client_event(
         &pb::ExecClientMessage {
@@ -2483,4 +2501,409 @@ fn kv_ack(id: u32) -> pb::AgentClientMessage {
             },
         )),
     }
+}
+
+struct GitFixture {
+    dir: tempfile::TempDir,
+}
+
+impl GitFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let path_str = dir.path().to_str().unwrap();
+
+        let run_cmd = |args: &[&str]| {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(args);
+            let out = cmd.output().expect("git command failed");
+            assert!(
+                out.status.success(),
+                "git command {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        run_cmd(&["-C", path_str, "init"]);
+        run_cmd(&["-C", path_str, "config", "user.name", "Test User"]);
+        run_cmd(&["-C", path_str, "config", "user.email", "test@example.com"]);
+        run_cmd(&["-C", path_str, "config", "commit.gpgsign", "false"]);
+        run_cmd(&["-C", path_str, "config", "core.autocrlf", "false"]);
+
+        Self { dir }
+    }
+
+    fn path_str(&self) -> String {
+        self.dir.path().to_string_lossy().replace('\\', "/")
+    }
+
+    fn write_file(&self, rel_path: &str, content: &str) {
+        let full = self.dir.path().join(rel_path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&full, content).unwrap();
+    }
+
+    fn commit_all(&self, msg: &str) {
+        let path_str = self.dir.path().to_str().unwrap();
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-C", path_str, "add", "-A"]);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-C", path_str, "commit", "-m", msg]);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+    }
+
+    fn stage_file(&self, rel_path: &str) {
+        let path_str = self.dir.path().to_str().unwrap();
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-C", path_str, "add", rel_path]);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+    }
+}
+
+async fn dispatch_inspect_changes(args: serde_json::Value) -> serde_json::Value {
+    let (sender, mut receiver) = cursor_server::cursor::tools::tool_result_channel();
+    let runtime = CursorToolRuntime::default();
+    let dispatcher = ToolDispatcher::with_sender(runtime, sender);
+
+    let mut invocation = call("inspect-call", "InspectChanges");
+    invocation.arguments = args.clone();
+    invocation.arguments_text = args.to_string();
+
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let state = ToolBatchState {
+        completed: &completed,
+        started: &started,
+        response_text: "",
+        response_thinking: "",
+    };
+
+    let dispatched = dispatcher
+        .start_batch(&[invocation], state, &[], &BTreeMap::new(), &exec_context())
+        .await
+        .unwrap();
+
+    if let Some(completion) = &dispatched[0].completion {
+        if completion.result().is_error {
+            return json!({
+                "is_error": true,
+                "content": completion.result().content
+            });
+        }
+        return serde_json::from_str(&completion.result().content)
+            .unwrap_or_else(|_| json!({ "content": completion.result().content }));
+    }
+
+    let completion_result =
+        tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("timed out waiting for inspect_changes result")
+            .expect("channel closed without inspect_changes result");
+
+    let completion = match completion_result {
+        Ok(c) => c,
+        Err(e) => {
+            return json!({
+                "is_error": true,
+                "content": e.to_string()
+            });
+        }
+    };
+
+    if completion.result().is_error {
+        return json!({
+            "is_error": true,
+            "content": completion.result().content
+        });
+    }
+
+    serde_json::from_str(&completion.result().content)
+        .unwrap_or_else(|_| json!({ "content": completion.result().content }))
+}
+
+#[tokio::test]
+async fn inspect_changes_clean_repo() {
+    let repo = GitFixture::new();
+    repo.write_file("main.rs", "fn main() {}\n");
+    repo.commit_all("initial commit");
+
+    let result = dispatch_inspect_changes(json!({ "path": repo.path_str() })).await;
+    assert_eq!(result["is_git_repo"], true);
+    assert_eq!(result["has_changes"], false);
+    assert_eq!(result["changed_files_count"], 0);
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["diff"], "");
+    assert_eq!(result["truncated"], false);
+}
+
+#[tokio::test]
+async fn inspect_changes_legacy_path_only_returns_structured_summary() {
+    let repo = GitFixture::new();
+    repo.write_file("main.rs", "fn main() {}\n");
+    repo.commit_all("initial commit");
+    repo.write_file("main.rs", "fn main() { println!(\"hello\"); }\n");
+
+    let result = dispatch_inspect_changes(json!({ "path": repo.path_str() })).await;
+    assert_eq!(result["is_git_repo"], true);
+    assert_eq!(result["has_changes"], true);
+    assert_eq!(result["counts"]["changed_files"], 1);
+    assert_eq!(result["counts"]["unstaged_files"], 1);
+    assert_eq!(result["counts"]["staged_files"], 0);
+    assert_eq!(result["files"][0]["path"], "main.rs");
+    assert_eq!(result["files"][0]["status"], "Modified");
+    assert!(result["diff"].as_str().unwrap().contains("println"));
+}
+
+#[tokio::test]
+async fn inspect_changes_summary_mode_skips_full_diff() {
+    let repo = GitFixture::new();
+    repo.write_file("a.rs", "fn a() {}\n");
+    repo.commit_all("initial commit");
+    repo.write_file("a.rs", "fn a() { 1; }\n");
+    repo.write_file("b.rs", "fn b() {}\n");
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "summary"
+    }))
+    .await;
+
+    assert_eq!(result["is_git_repo"], true);
+    assert_eq!(result["has_changes"], true);
+    assert_eq!(result["diff"], "");
+    assert_eq!(result["diff_truncated"], false);
+    assert_eq!(result["counts"]["changed_files"], 2);
+    assert_eq!(result["files"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn inspect_changes_staged_unstaged_scope_isolation() {
+    let repo = GitFixture::new();
+    repo.write_file("tracked1.rs", "fn t1() {}\n");
+    repo.write_file("tracked2.rs", "fn t2() {}\n");
+    repo.commit_all("initial commit");
+
+    repo.write_file("tracked1.rs", "fn t1() { // STAGED_MARKER\n}\n");
+    repo.stage_file("tracked1.rs");
+
+    repo.write_file("tracked2.rs", "fn t2() { // WORKTREE_MARKER\n}\n");
+
+    // Staged request
+    let staged_res = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "diff",
+        "scope": "staged"
+    }))
+    .await;
+
+    assert_eq!(staged_res["counts"]["changed_files"], 1);
+    assert_eq!(staged_res["counts"]["staged_files"], 1);
+    assert_eq!(staged_res["counts"]["unstaged_files"], 0);
+    assert_eq!(staged_res["files"].as_array().unwrap().len(), 1);
+    assert_eq!(staged_res["files"][0]["path"], "tracked1.rs");
+    assert!(
+        !staged_res["diff"]
+            .as_str()
+            .unwrap()
+            .contains("WORKTREE_MARKER")
+    );
+
+    // Unstaged request
+    let unstaged_res = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "diff",
+        "scope": "unstaged"
+    }))
+    .await;
+
+    assert_eq!(unstaged_res["counts"]["changed_files"], 1);
+    assert_eq!(unstaged_res["counts"]["staged_files"], 0);
+    assert_eq!(unstaged_res["counts"]["unstaged_files"], 1);
+    assert_eq!(unstaged_res["files"].as_array().unwrap().len(), 1);
+    assert_eq!(unstaged_res["files"][0]["path"], "tracked2.rs");
+    assert!(
+        unstaged_res["diff"]
+            .as_str()
+            .unwrap()
+            .contains("WORKTREE_MARKER")
+    );
+    assert!(
+        !unstaged_res["diff"]
+            .as_str()
+            .unwrap()
+            .contains("STAGED_MARKER")
+    );
+}
+
+#[tokio::test]
+async fn inspect_changes_mixed_status_preserves_both_columns() {
+    let repo = GitFixture::new();
+    repo.write_file("file.rs", "line 1\nline 2\n");
+    repo.commit_all("initial commit");
+
+    repo.write_file("file.rs", "line 1\nline 2 staged\n");
+    repo.stage_file("file.rs");
+    repo.write_file("file.rs", "line 1\nline 2 staged\nline 3 unstaged\n");
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "review",
+        "scope": "all"
+    }))
+    .await;
+
+    let f = &result["files"][0];
+    assert_eq!(f["path"], "file.rs");
+    assert_eq!(f["index_status"], "M");
+    assert_eq!(f["worktree_status"], "M");
+    assert_eq!(f["staged"], true);
+    assert_eq!(f["unstaged"], true);
+}
+
+#[tokio::test]
+async fn inspect_changes_rename_metadata_preserves_previous_path() {
+    let repo = GitFixture::new();
+    repo.write_file("old_path.rs", "fn old() { 123; }\n");
+    repo.commit_all("initial commit");
+
+    let path_str = repo.path_str();
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", &path_str, "mv", "old_path.rs", "new_path.rs"]);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success());
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "review"
+    }))
+    .await;
+
+    let f = &result["files"][0];
+    assert_eq!(f["path"], "new_path.rs");
+    assert_eq!(f["previous_path"], "old_path.rs");
+    assert_eq!(f["status"], "Renamed");
+    assert_eq!(f["staged"], true);
+    assert!(f["staged_added"].is_number());
+    assert!(f["staged_deleted"].is_number());
+}
+
+#[tokio::test]
+async fn inspect_changes_batch_file_selection() {
+    let repo = GitFixture::new();
+    repo.write_file("a.rs", "fn a() {}\n");
+    repo.write_file("b.rs", "fn b() {}\n");
+    repo.write_file("c.rs", "fn c() {}\n");
+    repo.commit_all("initial commit");
+
+    repo.write_file("a.rs", "fn a() { // change a\n}\n");
+    repo.write_file("b.rs", "fn b() { // change b\n}\n");
+    repo.write_file("c.rs", "fn c() { // change c\n}\n");
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "diff",
+        "files": ["a.rs", "b.rs"]
+    }))
+    .await;
+
+    assert_eq!(result["selected_files"], json!(["a.rs", "b.rs"]));
+    let files = result["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    let diff = result["diff"].as_str().unwrap();
+    assert!(diff.contains("change a"));
+    assert!(diff.contains("change b"));
+    assert!(!diff.contains("change c"));
+}
+
+#[tokio::test]
+async fn inspect_changes_untracked_files_preview() {
+    let repo = GitFixture::new();
+    repo.write_file("main.rs", "fn main() {}\n");
+    repo.commit_all("initial commit");
+
+    repo.write_file("new_file.txt", "untracked line 1\nuntracked line 2\n");
+    repo.write_file("image.png", "fake png data");
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "review",
+        "scope": "all"
+    }))
+    .await;
+
+    assert_eq!(result["counts"]["untracked_files"], 2);
+    let diff = result["diff"].as_str().unwrap();
+    assert!(diff.contains("+++ b/new_file.txt"));
+    assert!(diff.contains("untracked line 1"));
+    assert!(!diff.contains("fake png data"));
+}
+
+#[tokio::test]
+async fn inspect_changes_large_diff_truncation() {
+    let repo = GitFixture::new();
+    repo.write_file("large.txt", "initial\n");
+    repo.commit_all("initial commit");
+
+    let big_content = "large text line for truncation testing\n".repeat(500);
+    repo.write_file("large.txt", &big_content);
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "diff",
+        "max_diff_chars": 200
+    }))
+    .await;
+
+    assert_eq!(result["diff_truncated"], true);
+    assert_eq!(result["truncated"], true);
+    assert!(result["diff"].as_str().unwrap().chars().count() <= 200);
+    assert_eq!(result["diff"], "");
+}
+
+#[tokio::test]
+async fn inspect_changes_many_files_truncation() {
+    let repo = GitFixture::new();
+    repo.write_file("base.txt", "base\n");
+    repo.commit_all("initial commit");
+
+    for i in 0..15 {
+        repo.write_file(&format!("file_{i}.txt"), "content\n");
+    }
+
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "mode": "summary",
+        "max_files": 5
+    }))
+    .await;
+
+    assert_eq!(result["files_truncated"], true);
+    assert_eq!(result["omitted_files_count"], 10);
+    assert_eq!(result["files"].as_array().unwrap().len(), 5);
+    assert_eq!(result["next_cursor"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn inspect_changes_unsafe_path_rejected() {
+    let repo = GitFixture::new();
+    let result = dispatch_inspect_changes(json!({
+        "path": repo.path_str(),
+        "files": ["../outside.txt"]
+    }))
+    .await;
+
+    assert_eq!(result["is_error"], true);
+    assert!(
+        result["content"]
+            .as_str()
+            .unwrap()
+            .contains("parent path traversal")
+    );
 }

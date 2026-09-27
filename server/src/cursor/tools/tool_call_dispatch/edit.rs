@@ -1,7 +1,7 @@
 //! Dispatches edit Tool calls.
 //! Hidden read phase for file editing tools.
 
-use crate::{model::ToolCall, Result};
+use crate::{Result, model::ToolCall};
 
 use super::ToolStart;
 use crate::cursor::tools::{

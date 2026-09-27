@@ -1,5 +1,6 @@
 //! Decodes Tool execution responses received from Cursor.
 use crate::{
+    Error, Result,
     cursor::{
         protocol::{events, proto::agent::v1 as pb},
         tools::{
@@ -9,13 +10,11 @@ use crate::{
         },
     },
     model::ToolCall,
-    Error, Result,
 };
 
 use super::request::{await_read_request, edit_write_request};
 
-pub const NON_STREAMING_CLOSE_GRACE: std::time::Duration =
-    std::time::Duration::from_millis(1500);
+pub const NON_STREAMING_CLOSE_GRACE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 pub enum ClientExecEvent {
     Delta(Box<pb::AgentServerMessage>),
@@ -459,10 +458,7 @@ async fn advance_await(
     // PID probing fallback: if file still says running or has no exit code, check if PID has terminated in OS
     let mut pid_terminated = false;
     if exit_code.is_none() {
-        let target_pid = shell_state
-            .as_ref()
-            .and_then(|s| s.pid)
-            .or(file_pid);
+        let target_pid = shell_state.as_ref().and_then(|s| s.pid).or(file_pid);
 
         if let Some(pid) = target_pid {
             if !crate::cursor::tools::runtime::is_pid_alive(pid) {
@@ -491,7 +487,7 @@ async fn advance_await(
         _ => {
             return Err(Error::Protocol(
                 "AwaitShell result changed execution stage".into(),
-            ))
+            ));
         }
     };
     let wait = state
@@ -545,7 +541,7 @@ async fn advance_edit(
         Err(error) => {
             return Ok(ClientExecEvent::Completed(Box::new(result::edit_failure(
                 entry, error,
-            )?)))
+            )?)));
         }
     };
     let id = registry

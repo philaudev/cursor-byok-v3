@@ -1,9 +1,9 @@
 //! Tracks MCP state required to build Tool results.
 use serde_json::Value;
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolResult, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolResult};
 
-use super::{prost_json, ToolCompletion};
+use super::{ToolCompletion, prost_json};
 use crate::cursor::tools::runtime::PendingExec;
 
 pub(super) fn complete(

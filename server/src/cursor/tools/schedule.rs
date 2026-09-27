@@ -1,7 +1,7 @@
 //! Schedules background Tool work.
 use std::collections::{HashMap, VecDeque};
 
-use crate::{model::ToolCall, Error, Result};
+use crate::{Error, Result, model::ToolCall};
 
 use super::runtime::ExecContext;
 

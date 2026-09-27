@@ -1,5 +1,5 @@
 //! Parses and persists command execution output.
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolCall};
 
 pub(super) fn output(
     message: &pb::exec_client_message::Message,

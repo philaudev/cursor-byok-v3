@@ -2,12 +2,12 @@
 //! Canonical failures produced before an MCP request reaches the Cursor client.
 
 use crate::{
+    Result,
     cursor::{protocol::proto::agent::v1 as pb, tools::codec},
     model::{ToolCall, ToolResult},
-    Result,
 };
 
-use super::{now_ms, ToolCompletion};
+use super::{ToolCompletion, now_ms};
 
 pub(crate) fn failure(call: &ToolCall, error: String) -> Result<ToolCompletion> {
     let server = call

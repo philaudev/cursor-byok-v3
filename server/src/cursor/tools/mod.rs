@@ -17,16 +17,18 @@ mod tool_call_dispatch;
 pub(crate) mod tool_call_result;
 
 use crate::{
+    Error, Result,
     model::{CanonicalMessage, MessageContent, Role, ToolCall},
     search::{WebCache, WebFetch, WebSearch},
     store::Store,
-    Error, Result,
 };
 
 use self::schedule::{DeferredEdit, EditSchedule};
-use self::tool_call_result::{ToolCompletion, ToolResultSender};
 use super::protocol::proto::agent::v1 as pb;
 use runtime::{CursorToolRuntime, ExecContext};
+pub use tool_call_result::{
+    ToolCompletion, ToolResultReceiver, ToolResultSender, tool_result_channel,
+};
 
 #[derive(Clone)]
 pub struct ToolDispatcher {
@@ -59,6 +61,18 @@ pub enum ClientToolEvent {
 impl ToolDispatcher {
     pub fn new(runtime: CursorToolRuntime) -> Self {
         let (results, _) = tool_call_result::tool_result_channel();
+        Self {
+            runtime,
+            results,
+            search: WebSearch::built_in(),
+            fetch: WebFetch::built_in(),
+            store: None,
+            tgrep_registry: crate::search::TgrepRegistry::default(),
+            edit_schedule: Arc::new(Mutex::new(EditSchedule::default())),
+        }
+    }
+
+    pub fn with_sender(runtime: CursorToolRuntime, results: ToolResultSender) -> Self {
         Self {
             runtime,
             results,

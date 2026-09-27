@@ -12,10 +12,10 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::{
+    Error, Result,
     cursor::protocol::proto::agent::v1 as pb,
     model::{ToolCall, ToolImageReference, ToolResult},
     store::BlobId,
-    Error, Result,
 };
 
 use super::runtime::now_ms;

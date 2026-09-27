@@ -1,5 +1,6 @@
 //! Projects streaming Tool arguments to Cursor updates.
 use crate::{
+    Result,
     cursor::{
         protocol::{
             json_stream::{JsonStringFields, StringFieldEvent},
@@ -8,7 +9,6 @@ use crate::{
         tools::codec as interaction,
     },
     model::ToolCall,
-    Result,
 };
 
 pub struct ToolCallStream {
@@ -256,10 +256,12 @@ mod tests {
     fn task_description_projects_a_visible_partial_card_before_execution() {
         let mut stream = ToolCallStream::new("Task", None);
         let first = r#"{"description":"Review K10"#;
-        assert!(stream
-            .arguments_delta(&task_call(first), first)
-            .unwrap()
-            .is_empty());
+        assert!(
+            stream
+                .arguments_delta(&task_call(first), first)
+                .unwrap()
+                .is_empty()
+        );
 
         let closing = "\",";
         let messages = stream

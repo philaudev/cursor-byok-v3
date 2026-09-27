@@ -1,7 +1,7 @@
 //! Renders command execution output for Cursor.
 use serde_json::Value;
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolCall};
 
 pub(super) fn read(result: &pb::ReadResult, call: &ToolCall) -> Result<pb::ReadToolResult> {
     use pb::{read_result::Result as Input, read_tool_result::Result as Output};
@@ -166,7 +166,7 @@ pub(super) fn mcp(result: &pb::McpResult) -> Result<pb::McpToolResult> {
             mcp_error(&format!("MCP server not found: {}", value.name))
         }
         Some(Input::Approved(_)) => {
-            return Err(Error::Protocol("MCP approval is not terminal".into()))
+            return Err(Error::Protocol("MCP approval is not terminal".into()));
         }
         None => return Err(missing("MCP")),
     };

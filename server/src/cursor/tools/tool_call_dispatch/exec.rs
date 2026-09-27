@@ -1,9 +1,9 @@
 //! Dispatches command execution Tool calls.
 //! Direct Exec and dynamic MCP dispatch.
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Result};
+use crate::{Result, cursor::protocol::proto::agent::v1 as pb, model::ToolCall};
 
-use super::{normalized, ToolStart};
+use super::{ToolStart, normalized};
 use crate::cursor::tools::{
     codec,
     runtime::{CursorToolRuntime, ExecContext},

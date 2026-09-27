@@ -2,13 +2,13 @@
 //! Interaction query dispatch and approval continuation.
 
 use crate::{
+    Error, Result,
     cursor::{protocol::proto::agent::v1 as pb, tools::codec as interaction},
     model::ToolCall,
     search::{WebFetch, WebSearch},
-    Error, Result,
 };
 
-use super::{normalized, InteractionContinuation, ToolStart};
+use super::{InteractionContinuation, ToolStart, normalized};
 use crate::cursor::tools::{
     runtime::{CursorToolRuntime, PendingInteraction},
     tool_call_result::{self as result, ToolResultSender},

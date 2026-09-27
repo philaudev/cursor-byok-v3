@@ -4,9 +4,9 @@
 use serde_json::Value;
 
 use crate::{
+    Result,
     cursor::protocol::proto::agent::v1 as pb,
     model::{ToolCall, ToolResult},
-    Result,
 };
 
 use super::ToolCompletion;
@@ -120,56 +120,123 @@ fn format_mcp_output(value: &Value) -> Result<String> {
         .and_then(Value::as_str)
         .unwrap_or("unknown repository");
     let result = value.get("result").unwrap_or(value);
-    let mut lines = vec![format!("### Git Archaeology: `{operation}`"), format!("- **Repository:** `{repository}`")];
+    let mut lines = vec![
+        format!("### Git Archaeology: `{operation}`"),
+        format!("- **Repository:** `{repository}`"),
+    ];
 
     match operation {
         "pickaxe" => {
-            let query = result.get("query").and_then(Value::as_str).unwrap_or_default();
-            let mode = result.get("query_mode").and_then(Value::as_str).unwrap_or("occurrence_change");
+            let query = result
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mode = result
+                .get("query_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("occurrence_change");
             let path = result.get("path").and_then(Value::as_str);
-            let commits = result.get("commits").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-            
+            let commits = result
+                .get("commits")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+
             lines.push(format!("- **Query:** `{query}` ({mode})"));
             if let Some(path) = path {
                 lines.push(format!("- **Target Path:** `{path}`"));
             }
-            lines.push(format!("- **Matching Commits ({} found, newest first):**", commits.len()));
+            lines.push(format!(
+                "- **Matching Commits ({} found, newest first):**",
+                commits.len()
+            ));
             for (idx, commit) in commits.iter().enumerate() {
-                let hash = commit.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                let hash = commit
+                    .get("commit")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
                 let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
-                let date = commit.get("date").and_then(Value::as_str).unwrap_or("unknown date");
-                let author = commit.get("author").and_then(Value::as_str).unwrap_or("unknown author");
-                let subject = commit.get("subject").and_then(Value::as_str).unwrap_or("(no subject)");
-                lines.push(format!("  {}. `{short_hash}` ({date}) by **{author}**: {subject}", idx + 1));
+                let date = commit
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown date");
+                let author = commit
+                    .get("author")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown author");
+                let subject = commit
+                    .get("subject")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(no subject)");
+                lines.push(format!(
+                    "  {}. `{short_hash}` ({date}) by **{author}**: {subject}",
+                    idx + 1
+                ));
             }
         }
         "lineage" => {
-            let path = result.get("path").and_then(Value::as_str).unwrap_or_default();
-            let start = result.get("line_range").and_then(|r| r.get("start")).and_then(Value::as_u64).unwrap_or(1);
-            let end = result.get("line_range").and_then(|r| r.get("end")).and_then(Value::as_u64).unwrap_or(start);
+            let path = result
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let start = result
+                .get("line_range")
+                .and_then(|r| r.get("start"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1);
+            let end = result
+                .get("line_range")
+                .and_then(|r| r.get("end"))
+                .and_then(Value::as_u64)
+                .unwrap_or(start);
             lines.push(format!("- **File:** `{path}` (lines {start}-{end})"));
-            lines.push("- **Method:** `git blame -w -M -C` (detects moved/copied lines across files)".into());
-            let evidence = result.get("evidence").and_then(Value::as_str).unwrap_or("No blame evidence.").trim();
+            lines.push(
+                "- **Method:** `git blame -w -M -C` (detects moved/copied lines across files)"
+                    .into(),
+            );
+            let evidence = result
+                .get("evidence")
+                .and_then(Value::as_str)
+                .unwrap_or("No blame evidence.")
+                .trim();
             lines.push("- **Lineage Evidence:**".into());
             lines.push("```text".into());
             lines.push(evidence.into());
             lines.push("```".into());
         }
         "file_biography" => {
-            let path = result.get("path").and_then(Value::as_str).unwrap_or_default();
-            let total = result.get("total_commits").and_then(Value::as_u64).unwrap_or(0);
+            let path = result
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let total = result
+                .get("total_commits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             lines.push(format!("- **File:** `{path}` ({total} commits total)"));
-            
+
             if let Some(creation) = result.get("creation").filter(|c| !c.is_null()) {
-                let hash = creation.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                let hash = creation
+                    .get("commit")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
                 let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
                 let date = creation.get("date").and_then(Value::as_str).unwrap_or("");
                 let author = creation.get("author").and_then(Value::as_str).unwrap_or("");
-                let subject = creation.get("subject").and_then(Value::as_str).unwrap_or("");
-                lines.push(format!("- **Creation:** `{short_hash}` ({date}) by **{author}**: {subject}"));
+                let subject = creation
+                    .get("subject")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                lines.push(format!(
+                    "- **Creation:** `{short_hash}` ({date}) by **{author}**: {subject}"
+                ));
             }
 
-            let renames = result.get("renames").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let renames = result
+                .get("renames")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             if renames.is_empty() {
                 lines.push("- **Rename Chain:** None recorded".into());
             } else {
@@ -181,28 +248,53 @@ fn format_mcp_output(value: &Value) -> Result<String> {
                 }
             }
 
-            let timeline = result.get("timeline").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            let timeline = result
+                .get("timeline")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             if !timeline.is_empty() {
-                lines.push(format!("- **Timeline (latest {} commits):**", timeline.len()));
+                lines.push(format!(
+                    "- **Timeline (latest {} commits):**",
+                    timeline.len()
+                ));
                 for commit in timeline {
-                    let hash = commit.get("commit").and_then(Value::as_str).unwrap_or("unknown");
+                    let hash = commit
+                        .get("commit")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
                     let short_hash = if hash.len() >= 7 { &hash[..7] } else { hash };
                     let date = commit.get("date").and_then(Value::as_str).unwrap_or("");
                     let author = commit.get("author").and_then(Value::as_str).unwrap_or("");
                     let subject = commit.get("subject").and_then(Value::as_str).unwrap_or("");
-                    let stat = commit.get("stat").and_then(Value::as_str).unwrap_or("").trim();
+                    let stat = commit
+                        .get("stat")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim();
                     if stat.is_empty() {
-                        lines.push(format!("  - `{short_hash}` ({date}) **{author}**: {subject}"));
+                        lines.push(format!(
+                            "  - `{short_hash}` ({date}) **{author}**: {subject}"
+                        ));
                     } else {
-                        lines.push(format!("  - `{short_hash}` ({date}) **{author}**: {subject} ({stat})"));
+                        lines.push(format!(
+                            "  - `{short_hash}` ({date}) **{author}**: {subject} ({stat})"
+                        ));
                     }
                 }
             }
         }
         "commit_context" => {
-            let commit = result.get("commit").and_then(Value::as_str).unwrap_or_default();
+            let commit = result
+                .get("commit")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             lines.push(format!("- **Commit Target:** `{commit}`"));
-            let evidence = result.get("evidence").and_then(Value::as_str).unwrap_or("No commit details.").trim();
+            let evidence = result
+                .get("evidence")
+                .and_then(Value::as_str)
+                .unwrap_or("No commit details.")
+                .trim();
             lines.push("- **Commit Details:**".into());
             lines.push("```text".into());
             lines.push(evidence.into());
@@ -223,9 +315,7 @@ pub(crate) fn grep(
     output: std::result::Result<String, String>,
 ) -> Result<ToolCompletion> {
     use pb::{
-        grep_result::Result as GrepResultEnum,
-        tool_call::Tool,
-        GrepError, GrepResult, GrepToolCall,
+        GrepError, GrepResult, GrepToolCall, grep_result::Result as GrepResultEnum, tool_call::Tool,
     };
 
     let string = |name: &str| {
@@ -254,15 +344,14 @@ pub(crate) fn grep(
 
     let (content, is_error, result) = match output {
         Ok(text) => {
-            let success = parse_grep_output_to_success(pattern.clone(), path.clone(), output_mode, &text);
+            let success =
+                parse_grep_output_to_success(pattern.clone(), path.clone(), output_mode, &text);
             (text, false, GrepResultEnum::Success(success))
         }
         Err(error) => (
             error.clone(),
             true,
-            GrepResultEnum::Error(GrepError {
-                error,
-            }),
+            GrepResultEnum::Error(GrepError { error }),
         ),
     };
 
@@ -369,7 +458,9 @@ fn parse_grep_output_to_success(
                     if line == "--" || line.trim().is_empty() {
                         continue;
                     }
-                    if let Some((file, line_number, content, is_context_line)) = parse_grep_content_line(line) {
+                    if let Some((file, line_number, content, is_context_line)) =
+                        parse_grep_content_line(line)
+                    {
                         if !is_context_line {
                             total_matched_lines += 1;
                         }
@@ -521,7 +612,8 @@ mod tests {
 
     #[test]
     fn parses_grep_output_to_success_populates_workspace_results() {
-        let text = "src/lib.rs:10:fn foo() {}\nsrc/lib.rs:11:fn bar() {}\nsrc/main.rs:5:fn main() {}";
+        let text =
+            "src/lib.rs:10:fn foo() {}\nsrc/lib.rs:11:fn bar() {}\nsrc/main.rs:5:fn main() {}";
         let success = parse_grep_output_to_success("fn".into(), ".".into(), Some("content"), text);
         assert_eq!(success.pattern, "fn");
         assert_eq!(success.workspace_results.len(), 1);

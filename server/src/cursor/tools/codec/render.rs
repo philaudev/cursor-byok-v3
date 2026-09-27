@@ -2,6 +2,7 @@
 use serde_json::Value;
 
 use crate::{
+    Error, Result,
     cursor::{
         protocol::proto::agent::v1 as pb,
         tools::{
@@ -10,7 +11,6 @@ use crate::{
         },
     },
     model::ToolCall,
-    Error, Result,
 };
 
 use super::server_interaction;
@@ -219,8 +219,8 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "todowrite" => Tool::UpdateTodosToolCall(pb::UpdateTodosToolCall::default()),
         "strreplace" | "editnotebook" | "write" => Tool::EditToolCall(pb::EditToolCall::default()),
         "readlints" => Tool::ReadLintsToolCall(pb::ReadLintsToolCall::default()),
-        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges" | "gitarchaeology"
-        | "outline" | "filestructure" => {
+        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges"
+        | "gitarchaeology" | "outline" | "filestructure" => {
             Tool::McpToolCall(pb::McpToolCall::default())
         }
         "createplan" => Tool::CreatePlanToolCall(pb::CreatePlanToolCall::default()),

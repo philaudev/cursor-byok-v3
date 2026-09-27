@@ -7,15 +7,15 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    Result,
     cursor::tools::{
-        runtime::{now_ms, ExecContext},
+        runtime::{ExecContext, now_ms},
         tool_call_result::{self as result, ToolResultSender},
     },
     model::ToolCall,
-    Result,
 };
 
 use super::ToolStart;
@@ -99,7 +99,12 @@ fn execute_sync(args: GitArchaeologyArgs) -> std::result::Result<Value, String> 
         "pickaxe" => pickaxe(&repo_root, &args, limit)?,
         "file_biography" => file_biography(&repo_root, &args, limit)?,
         "commit_context" => commit_context(&repo_root, &args)?,
-        _ => return Err("`operation` must be one of: lineage, pickaxe, file_biography, commit_context.".into()),
+        _ => {
+            return Err(
+                "`operation` must be one of: lineage, pickaxe, file_biography, commit_context."
+                    .into(),
+            );
+        }
     };
 
     Ok(json!({
@@ -123,7 +128,15 @@ fn lineage(repository: &str, args: &GitArchaeologyArgs) -> std::result::Result<V
     let output = git_output(
         repository,
         [
-            "blame", "-w", "-M", "-C", "--date=short", "-L", &range, "--", &path,
+            "blame",
+            "-w",
+            "-M",
+            "-C",
+            "--date=short",
+            "-L",
+            &range,
+            "--",
+            &path,
         ],
     )?;
     let lines = output
@@ -142,23 +155,42 @@ fn lineage(repository: &str, args: &GitArchaeologyArgs) -> std::result::Result<V
     }))
 }
 
-fn pickaxe(repository: &str, args: &GitArchaeologyArgs, limit: usize) -> std::result::Result<Value, String> {
-    let query = args.query.as_deref().map(str::trim).filter(|value| !value.is_empty())
+fn pickaxe(
+    repository: &str,
+    args: &GitArchaeologyArgs,
+    limit: usize,
+) -> std::result::Result<Value, String> {
+    let query = args
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("`query` is required for the pickaxe operation.")?;
     let count = format!("-{limit}");
     let mut command = git_command();
     command.current_dir(repository).args([
-        "log", "--all", &count, "--date=short", "--format=%H%x1f%ad%x1f%an%x1f%s",
+        "log",
+        "--all",
+        &count,
+        "--date=short",
+        "--format=%H%x1f%ad%x1f%an%x1f%s",
     ]);
     if args.regex {
         command.args(["-G", query]);
     } else {
         command.args(["-S", query]);
     }
-    if let Some(path) = args.path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(path) = args
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         command.args(["--", path]);
     }
-    let output = command.output().map_err(|error| format!("failed to spawn git log: {error}"))?;
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to spawn git log: {error}"))?;
     if !output.status.success() {
         return Err(git_failure("git log pickaxe", &output));
     }
@@ -172,20 +204,45 @@ fn pickaxe(repository: &str, args: &GitArchaeologyArgs, limit: usize) -> std::re
     }))
 }
 
-fn file_biography(repository: &str, args: &GitArchaeologyArgs, limit: usize) -> std::result::Result<Value, String> {
+fn file_biography(
+    repository: &str,
+    args: &GitArchaeologyArgs,
+    limit: usize,
+) -> std::result::Result<Value, String> {
     let path = required_path(args)?;
     let count = format!("-{limit}");
 
     // 1. Creation commit (the earliest addition commit)
-    let creation_raw = git_output(repository, [
-        "log", "--follow", "--diff-filter=A", "--date=short", "--format=%H%x1f%ad%x1f%an%x1f%s", "--", &path,
-    ]).unwrap_or_default();
+    let creation_raw = git_output(
+        repository,
+        [
+            "log",
+            "--follow",
+            "--diff-filter=A",
+            "--date=short",
+            "--format=%H%x1f%ad%x1f%an%x1f%s",
+            "--",
+            &path,
+        ],
+    )
+    .unwrap_or_default();
     let creation = parse_log_records(&creation_raw).into_iter().last();
 
     // 2. Rename history
-    let renames_raw = git_output(repository, [
-        "log", "--follow", "--name-status", "--diff-filter=R", "--date=short", "--format=COMMIT%x1f%H%x1f%ad%x1f%an%x1f%s", "--", &path,
-    ]).unwrap_or_default();
+    let renames_raw = git_output(
+        repository,
+        [
+            "log",
+            "--follow",
+            "--name-status",
+            "--diff-filter=R",
+            "--date=short",
+            "--format=COMMIT%x1f%H%x1f%ad%x1f%an%x1f%s",
+            "--",
+            &path,
+        ],
+    )
+    .unwrap_or_default();
     let mut renames = Vec::new();
     let mut current_commit: Option<Value> = None;
     for line in renames_raw.lines() {
@@ -211,9 +268,19 @@ fn file_biography(repository: &str, args: &GitArchaeologyArgs, limit: usize) -> 
     }
 
     // 3. Timeline of commits with shortstat
-    let timeline_raw = git_output(repository, [
-        "log", "--follow", "--date=short", "--shortstat", &count, "--format=%H%x1f%ad%x1f%an%x1f%s", "--", &path,
-    ])?;
+    let timeline_raw = git_output(
+        repository,
+        [
+            "log",
+            "--follow",
+            "--date=short",
+            "--shortstat",
+            &count,
+            "--format=%H%x1f%ad%x1f%an%x1f%s",
+            "--",
+            &path,
+        ],
+    )?;
 
     let mut timeline = Vec::new();
     let mut pending_commit: Option<Value> = None;
@@ -258,12 +325,28 @@ fn file_biography(repository: &str, args: &GitArchaeologyArgs, limit: usize) -> 
     }))
 }
 
-fn commit_context(repository: &str, args: &GitArchaeologyArgs) -> std::result::Result<Value, String> {
-    let commit = args.commit.as_deref().map(str::trim).filter(|value| !value.is_empty())
+fn commit_context(
+    repository: &str,
+    args: &GitArchaeologyArgs,
+) -> std::result::Result<Value, String> {
+    let commit = args
+        .commit
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .ok_or("`commit` is required for the commit_context operation.")?;
-    let output = git_output(repository, [
-        "show", "--no-ext-diff", "--date=short", "--format=fuller", "--stat", "--summary", commit,
-    ])?;
+    let output = git_output(
+        repository,
+        [
+            "show",
+            "--no-ext-diff",
+            "--date=short",
+            "--format=fuller",
+            "--stat",
+            "--summary",
+            commit,
+        ],
+    )?;
     Ok(json!({
         "commit": commit,
         "evidence": bounded(&output),
@@ -272,13 +355,22 @@ fn commit_context(repository: &str, args: &GitArchaeologyArgs) -> std::result::R
 }
 
 fn required_path(args: &GitArchaeologyArgs) -> std::result::Result<String, String> {
-    args.path.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    args.path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or("`path` is required for this operation.".into())
 }
 
-fn git_output<const N: usize>(repository: &str, args: [&str; N]) -> std::result::Result<String, String> {
-    let output = git_command().current_dir(repository).args(args).output()
+fn git_output<const N: usize>(
+    repository: &str,
+    args: [&str; N],
+) -> std::result::Result<String, String> {
+    let output = git_command()
+        .current_dir(repository)
+        .args(args)
+        .output()
         .map_err(|error| format!("failed to spawn git: {error}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -304,20 +396,26 @@ fn bounded(value: &str) -> String {
         while !value.is_char_boundary(end) {
             end -= 1;
         }
-        format!("{}\n\n[output truncated to {MAX_OUTPUT_CHARS} characters]", value[..end].trim())
+        format!(
+            "{}\n\n[output truncated to {MAX_OUTPUT_CHARS} characters]",
+            value[..end].trim()
+        )
     }
 }
 
 fn parse_log_records(value: &str) -> Vec<Value> {
-    value.lines().filter_map(|line| {
-        let mut fields = line.split('\u{1f}');
-        Some(json!({
-            "commit": fields.next()?,
-            "date": fields.next()?,
-            "author": fields.next()?,
-            "subject": fields.next()?
-        }))
-    }).collect()
+    value
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\u{1f}');
+            Some(json!({
+                "commit": fields.next()?,
+                "date": fields.next()?,
+                "author": fields.next()?,
+                "subject": fields.next()?
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -353,7 +451,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(lineage["operation"], "lineage");
-        assert!(lineage["result"]["evidence"].as_str().unwrap().contains("tgrep"));
+        assert!(
+            lineage["result"]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("tgrep")
+        );
 
         let pickaxe = execute_sync(GitArchaeologyArgs {
             repository: repository.clone(),
@@ -383,8 +486,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!(biography["operation"], "file_biography");
-        assert!(!biography["result"]["timeline"].as_array().unwrap().is_empty());
-        assert!(biography["result"]["creation"]["subject"].as_str().unwrap().contains("tgrep"));
+        assert!(
+            !biography["result"]["timeline"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            biography["result"]["creation"]["subject"]
+                .as_str()
+                .unwrap()
+                .contains("tgrep")
+        );
 
         let context = execute_sync(GitArchaeologyArgs {
             repository,
@@ -399,6 +512,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(context["operation"], "commit_context");
-        assert!(context["result"]["evidence"].as_str().unwrap().contains("commit"));
+        assert!(
+            context["result"]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("commit")
+        );
     }
 }

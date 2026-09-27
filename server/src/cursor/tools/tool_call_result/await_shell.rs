@@ -1,12 +1,12 @@
 use serde_json::Value;
 
 use crate::{
+    Error, Result,
     cursor::protocol::proto::agent::v1 as pb,
     model::{ToolCall, ToolResult},
-    Error, Result,
 };
 
-use super::{now_ms, ToolCompletion};
+use super::{ToolCompletion, now_ms};
 use crate::cursor::tools::runtime::{ExecStage, PendingExec};
 
 pub(crate) fn await_result(

@@ -2,17 +2,17 @@
 use serde_json::{Map, Value};
 
 use crate::{
+    Error, Result,
     cursor::{
         protocol::proto::agent::v1 as pb,
         tools::{
             edit::{self, EditWrite},
             runtime::{
-                ExecContext, McpRoute, DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS,
+                DEFAULT_SHELL_BLOCK_UNTIL_MS, ExecContext, MAX_SHELL_BLOCK_UNTIL_MS, McpRoute,
             },
         },
     },
     model::ToolCall,
-    Error, Result,
 };
 
 pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::AgentServerMessage> {
@@ -167,7 +167,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
                 Some(value) => {
                     return Err(Error::Protocol(format!(
                         "unknown Task environment: {value}"
-                    )))
+                    )));
                 }
             },
             cloud_base_branch: optional_string("cloud_base_branch"),
@@ -187,7 +187,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
         other => {
             return Err(Error::Protocol(format!(
                 "tool {other} is not executed through ExecServerMessage"
-            )))
+            )));
         }
     };
     let accept_hook_additional_contexts =
@@ -218,7 +218,11 @@ pub(crate) fn await_read_request(
         id,
         call,
         pb::exec_server_message::Message::ReadArgs(pb::ReadArgs {
-            path: format!("{}/{}.txt", context.terminals_folder.trim_end_matches('/'), shell_id),
+            path: format!(
+                "{}/{}.txt",
+                context.terminals_folder.trim_end_matches('/'),
+                shell_id
+            ),
             tool_call_id: call.call_id.clone(),
             ..Default::default()
         }),
@@ -560,7 +564,7 @@ pub(crate) fn json_object_to_prost(
 }
 
 fn prost_value(value: &Value) -> prost_types::Value {
-    use prost_types::{value::Kind, ListValue, Struct, Value as ProstValue};
+    use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
     let kind = match value {
         Value::Null => Kind::NullValue(0),
         Value::Bool(v) => Kind::BoolValue(*v),

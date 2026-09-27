@@ -1,7 +1,7 @@
 //! Encodes Tool calls as Cursor InteractionQuery messages.
 use serde_json::Value;
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolCall};
 
 pub fn tool_query(id: u32, call: &ToolCall) -> Result<pb::AgentServerMessage> {
     use pb::interaction_query::Query;
@@ -181,7 +181,7 @@ pub fn tool_query(id: u32, call: &ToolCall) -> Result<pb::AgentServerMessage> {
         other => {
             return Err(Error::Protocol(format!(
                 "tool {other} is not an InteractionQuery"
-            )))
+            )));
         }
     };
     Ok(pb::AgentServerMessage {

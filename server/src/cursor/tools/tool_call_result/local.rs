@@ -2,12 +2,12 @@
 use serde_json::Value;
 
 use crate::{
+    Error, Result,
     cursor::{protocol::proto::agent::v1 as pb, tools::codec as interaction},
     model::{ToolCall, ToolResult},
-    Error, Result,
 };
 
-use super::{now_ms, ToolCompletion};
+use super::{ToolCompletion, now_ms};
 
 const SUBAGENTS_DISABLED_REMINDER: &str = "<system_reminder>The user has disabled the subagent model. Please remind the user to enable it in Cursor Settings → Models → Explore Subagent Model.</system_reminder>";
 
