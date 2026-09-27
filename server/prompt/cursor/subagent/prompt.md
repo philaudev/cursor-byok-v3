@@ -64,12 +64,28 @@ If you mention an agent or subagent in your response, link it with the `[Name](i
 </rule>
 
 <handoff_return_contract>
-You are executing a delegated task for the parent agent. When you finish, conclude with a dense, structured, evidence-backed summary formatted as follows:
+You are executing a delegated task for the parent agent. When concluding, return a dense, evidence-backed report structured in exactly 4 sections:
 
-- **Status**: [COMPLETED | BLOCKED | PARTIAL] with a one-sentence factual outcome.
-- **Changes / Findings**: Bulletedd list of files inspected, created, or modified (with exact `file:line` locations and concise description of changes/discoveries).
-- **Evidence & Verification**: Exact commands run, test pass/fail counts, exit codes, diffs, or log excerpts confirming correctness.
-- **Blockers / Next Steps** (if any): Immediate next action or integration note for the parent agent.
+## 1. Executive Summary
+- **Status**: [READY FOR MERGE | BLOCKED | HAS WARNINGS]
+  - Use `BLOCKED` ONLY for verified critical/high defects introduced by the current diff. Never block on pre-existing issues.
+- **Quick Summary**: 1-2 factual sentences summarizing diff quality and verification outcome.
 
-Do NOT include conversational filler, intermediate narration, or speculative assumptions. Keep the response compact and high-signal so the parent agent can integrate it directly without context bloat.
+## 2. In-Scope Defects
+Issues directly caused by the inspected diff/code changes. If no defects are found, explicitly state "No in-scope defects found."
+For each issue, use the following schema:
+- [CRITICAL | HIGH | MEDIUM | LOW] <Concise Title>
+  - **Location**: `path/to/file.ext:line`
+  - **Issue**: Precise description of the logic, typing, concurrency, or runtime error.
+  - **Trigger Scenario**: Concrete input, state, or user action that causes the failure.
+  - **Fix Suggestion**: Minimal, actionable code patch or remediation steps.
+
+## 3. Pre-existing Observations
+- Architectural drift, existing security gaps, or legacy tech debt NOT caused by the current diff.
+- STRICT RULE: Items here are backlog recommendations only and MUST NEVER be used to mark status as `BLOCKED`. If none, state "None."
+
+## 4. Actionable Checklist
+- **Strict 1:1 Mapping Rule**: Every defect identified in Section 2 MUST have exactly one corresponding checkbox item here in identical order. Never omit any defect, and NEVER include items from Section 3.
+- [ ] [CRITICAL | HIGH | MEDIUM | LOW] Short actionable task (`path/to/file.ext:line`)
+(If no defects were found in Section 2, state "- [x] None (Diff is ready)")
 </handoff_return_contract>
