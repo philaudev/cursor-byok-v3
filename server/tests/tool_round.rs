@@ -56,6 +56,7 @@ fn exec_context() -> ExecContext {
         allow_subagents: true,
         subagents_disabled: false,
         mcp_routes: std::collections::HashMap::new(),
+        search_settings: None,
     }
 }
 
@@ -2905,5 +2906,74 @@ async fn inspect_changes_unsafe_path_rejected() {
             .as_str()
             .unwrap()
             .contains("parent path traversal")
+    );
+}
+
+#[tokio::test]
+async fn grep_selection_preserves_configured_engine_and_auto_fallback() {
+    let (directory, store) = fixtures::temp_store().await;
+    let (sender, _receiver) = cursor_server::cursor::tools::tool_result_channel();
+    let runtime = CursorToolRuntime::default();
+    let web_cache = cursor_server::search::WebCache::at(directory.path().join("cache")).unwrap();
+    let dispatcher = ToolDispatcher::with_results(
+        runtime,
+        sender,
+        store.clone(),
+        web_cache,
+        cursor_server::search::TgrepRegistry::default(),
+    );
+
+    // Set search settings to Auto with a nonexistent tgrep binary
+    store
+        .set_search_settings(cursor_server::store::SearchSettings {
+            grep_engine: cursor_server::store::GrepEngine::Auto,
+            tgrep_path: Some("nonexistent_tgrep_binary_path".into()),
+        })
+        .await
+        .unwrap();
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file_path = temp_dir.path().join("sample.txt");
+    std::fs::write(&file_path, "hello world needle in haystack\n").unwrap();
+
+    let mut invocation = call("grep-call-1", "Grep");
+    let args = json!({
+        "pattern": "needle",
+        "path": temp_dir.path().to_string_lossy().to_string(),
+    });
+    invocation.arguments = args.clone();
+    invocation.arguments_text = args.to_string();
+
+    let completed = HashSet::new();
+    let started = HashSet::new();
+    let state = ToolBatchState {
+        completed: &completed,
+        started: &started,
+        response_text: "",
+        response_thinking: "",
+    };
+
+    let dispatched = dispatcher
+        .start_batch(&[invocation], state, &[], &BTreeMap::new(), &exec_context())
+        .await
+        .unwrap();
+
+    // In Auto mode with missing tgrep, it falls back to standard ripgrep and dispatches tool execution
+    assert_eq!(dispatched.len(), 1);
+    assert_eq!(dispatched[0].messages.len(), 2);
+
+    // Now update settings to Ripgrep explicitly
+    store
+        .set_search_settings(cursor_server::store::SearchSettings {
+            grep_engine: cursor_server::store::GrepEngine::Ripgrep,
+            tgrep_path: None,
+        })
+        .await
+        .unwrap();
+
+    let updated_settings = store.search_settings().await.unwrap();
+    assert_eq!(
+        updated_settings.grep_engine,
+        cursor_server::store::GrepEngine::Ripgrep
     );
 }

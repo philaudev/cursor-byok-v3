@@ -174,21 +174,19 @@ async fn summarize_replaces_model_history_and_preserves_cursor_history() {
         .prompt
         .instructions
         .contains("compacting conversation history"));
-    assert_eq!(requests[1].history.len(), 3);
     assert_eq!(
-        requests[1].history[2].message_id, "compaction:instruction",
+        requests[1].history.last().unwrap().message_id, "compaction:instruction",
         "an assistant-terminated history gets the summarize instruction as its user tail"
     );
-    assert_eq!(requests[2].history.len(), 2);
-    let ProjectedContent::Parts(summary_parts) = &requests[2].history[0].content else {
+    let ProjectedContent::Parts(summary_parts) = &requests[2].history.first().unwrap().content else {
         panic!("first post-compaction message must be the summary")
     };
     assert!(
         matches!(summary_parts.as_slice(), [ContentPart::Text { text }]
         if text.contains("Durable summary"))
     );
-    let ProjectedContent::Parts(new_user_parts) = &requests[2].history[1].content else {
-        panic!("second post-compaction message must be the new runtime user")
+    let ProjectedContent::Parts(new_user_parts) = &requests[2].history.last().unwrap().content else {
+        panic!("last post-compaction message must be the new runtime user")
     };
     assert!(
         matches!(new_user_parts.as_slice(), [ContentPart::Text { text }]

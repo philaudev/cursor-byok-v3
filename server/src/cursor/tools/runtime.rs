@@ -186,6 +186,7 @@ pub struct ExecContext {
     pub terminals_folder: String,
     pub admin_command_denylist: Vec<String>,
     pub mcp_routes: HashMap<(String, String), McpRoute>,
+    pub search_settings: Option<crate::store::SearchSettings>,
 }
 
 #[derive(Clone, Debug)]

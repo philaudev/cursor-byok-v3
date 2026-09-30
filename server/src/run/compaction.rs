@@ -84,15 +84,18 @@ fn trim_to_context(
     if estimate_projected_messages_tokens(&history) <= budget {
         return history;
     }
-    // Walk back from the newest turn, keeping whole user-delimited turns.
+    // Walk back from the newest turn, accumulating suffix tokens and keeping whole user-delimited turns.
     let mut kept = 0;
     let mut newest_turn = None;
+    let mut suffix_tokens = 0_u64;
+
     for (index, message) in history.iter().enumerate().rev() {
+        suffix_tokens = suffix_tokens.saturating_add(estimate_projected_messages_tokens(std::slice::from_ref(message)));
         if !is_turn_boundary(message) {
             continue;
         }
         newest_turn.get_or_insert(index);
-        if estimate_projected_messages_tokens(&history[index..]) > budget {
+        if suffix_tokens > budget {
             break;
         }
         kept = history.len() - index;
@@ -501,5 +504,28 @@ mod tests {
         assert!(validate_compacted(&prepared(estimated + RESERVE_TOKENS - 1), &projected)
             .unwrap_err()
             .contains("context overflow after compaction"));
+    }
+
+    #[test]
+    fn compaction_trim_to_context_keeps_newest_user_delimited_turns_accurately() {
+        let messages = vec![
+            CanonicalMessage::text("u1", Role::User, Origin::Runtime, "User message 1"),
+            CanonicalMessage::text("a1", Role::Assistant, Origin::Runtime, "Assistant reply 1"),
+            CanonicalMessage::text("u2", Role::User, Origin::Runtime, "User message 2"),
+            CanonicalMessage::text("a2", Role::Assistant, Origin::Runtime, "Assistant reply 2"),
+            CanonicalMessage::text("u3", Role::User, Origin::Runtime, "User message 3"),
+            CanonicalMessage::text("a3", Role::Assistant, Origin::Runtime, "Assistant reply 3"),
+        ];
+        let projected = project_messages(&messages).unwrap();
+
+        // With large context window, history is preserved completely
+        let history = compaction_history(projected.clone(), Some(200_000));
+        assert!(history.len() >= 6);
+
+        // With tight context window, keeps only newest user-delimited turns
+        let tight_history = compaction_history(projected.clone(), Some(14_200));
+        // Must end with user instruction
+        assert_eq!(tight_history.last().unwrap().role, Role::User);
+        assert!(tight_history.iter().any(|m| m.role == Role::User));
     }
 }

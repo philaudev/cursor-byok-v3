@@ -361,6 +361,7 @@ pub(crate) async fn prepare(
         &model.model_id,
         subagents_disabled,
         &subagent_model_overrides,
+        dependencies.store.search_settings().await?,
     );
     Ok((
         PreparedRun {
@@ -840,6 +841,7 @@ fn exec_context(
         crate::model::SubagentKind,
         crate::model::SubagentModelOverride,
     )],
+    search_settings: crate::store::SearchSettings,
 ) -> ExecContext {
     let subagent_models = overrides
         .iter()
@@ -898,5 +900,6 @@ fn exec_context(
             .unwrap_or_default(),
         admin_command_denylist: request_context.admin_command_denylist.clone(),
         mcp_routes: context::meta_mcp_routes(request_context),
+        search_settings: Some(search_settings),
     }
 }

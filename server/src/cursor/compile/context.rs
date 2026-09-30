@@ -219,30 +219,63 @@ fn extract_fallback_description(body: &str, path: &Path) -> String {
         .to_string()
 }
 
-fn parse_skill_file(path: &Path) -> Option<pb::AgentSkill> {
+struct ParsedSkill {
+    skill: pb::AgentSkill,
+    name: Option<String>,
+}
+
+fn parse_skill_file(path: &Path) -> Option<ParsedSkill> {
     let content = std::fs::read_to_string(path).ok()?;
     if content.trim().is_empty() {
         return None;
     }
     let full_path = path.to_string_lossy().to_string();
     let (frontmatter, body) = parse_frontmatter(&content);
-    let (description, disable_model_invocation) = if let Some(fm) = frontmatter {
+    let (description, disable_model_invocation, name) = if let Some(fm) = frontmatter {
         let desc = fm
             .description
             .filter(|d| !d.trim().is_empty())
             .unwrap_or_else(|| extract_fallback_description(body, path));
-        (desc, fm.disable_model_invocation)
+        let name = fm.name.and_then(|n| {
+            let trimmed = n.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_lowercase())
+            }
+        });
+        (desc, fm.disable_model_invocation, name)
     } else {
-        (extract_fallback_description(body, path), false)
+        (extract_fallback_description(body, path), false, None)
     };
 
-    Some(pb::AgentSkill {
-        full_path,
-        content,
-        description,
-        disable_model_invocation,
-        ..Default::default()
+    Some(ParsedSkill {
+        skill: pb::AgentSkill {
+            full_path,
+            content,
+            description,
+            disable_model_invocation,
+            ..Default::default()
+        },
+        name,
     })
+}
+
+fn resolve_skill_identifier(parsed_name: Option<&str>, path: &Path) -> String {
+    if let Some(name) = parsed_name {
+        return name.to_string();
+    }
+    if path.is_dir() {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_lowercase()
+    } else {
+        path.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_lowercase()
+    }
 }
 
 fn skill_identifier(skill: &pb::AgentSkill, path: &Path) -> String {
@@ -302,24 +335,24 @@ pub fn merge_skills_from_directories(context: &mut pb::RequestContext, directori
                 .find(|p| p.is_file());
 
                 if let Some(skill_file) = skill_md {
-                    if let Some(skill) = parse_skill_file(&skill_file) {
-                        let name_key = skill_identifier(&skill, &path);
-                        let path_key = skill.full_path.clone();
+                    if let Some(parsed) = parse_skill_file(&skill_file) {
+                        let name_key = resolve_skill_identifier(parsed.name.as_deref(), &path);
+                        let path_key = parsed.skill.full_path.clone();
                         if !known_paths.contains(&path_key) && !known_names.contains(&name_key) {
                             known_paths.insert(path_key);
                             known_names.insert(name_key);
-                            context.agent_skills.push(skill);
+                            context.agent_skills.push(parsed.skill);
                         }
                     }
                 }
             } else if path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
-                if let Some(skill) = parse_skill_file(&path) {
-                    let name_key = skill_identifier(&skill, &path);
-                    let path_key = skill.full_path.clone();
+                if let Some(parsed) = parse_skill_file(&path) {
+                    let name_key = resolve_skill_identifier(parsed.name.as_deref(), &path);
+                    let path_key = parsed.skill.full_path.clone();
                     if !known_paths.contains(&path_key) && !known_names.contains(&name_key) {
                         known_paths.insert(path_key);
                         known_names.insert(name_key);
-                        context.agent_skills.push(skill);
+                        context.agent_skills.push(parsed.skill);
                     }
                 }
             }

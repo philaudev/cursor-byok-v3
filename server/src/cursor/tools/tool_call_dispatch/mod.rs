@@ -61,40 +61,38 @@ pub(super) async fn start(
     let tool_name = normalized(&call.name);
 
     if tool_name == "grep" {
-        if let Some(store) = store {
-            if let Ok(settings) = store.search_settings().await {
-                let workspace_hint = context.workspace_paths.first().map(|s| s.as_str());
-                match settings.grep_engine {
-                    crate::store::GrepEngine::Ripgrep => {}
-                    crate::store::GrepEngine::Tgrep => {
-                        let outcome = search::tgrep_outcome(
-                            call,
-                            settings.tgrep_path.as_deref(),
-                            tgrep_registry,
-                            workspace_hint,
-                        )
-                        .await;
+        if let Some(settings) = context.search_settings.as_ref() {
+            let workspace_hint = context.workspace_paths.first().map(|s| s.as_str());
+            match settings.grep_engine {
+                crate::store::GrepEngine::Ripgrep => {}
+                crate::store::GrepEngine::Tgrep => {
+                    let outcome = search::tgrep_outcome(
+                        call,
+                        settings.tgrep_path.as_deref(),
+                        tgrep_registry,
+                        workspace_hint,
+                    )
+                    .await;
+                    return search::local_tgrep_completion(
+                        call,
+                        crate::cursor::tools::runtime::now_ms(),
+                        outcome,
+                    );
+                }
+                crate::store::GrepEngine::Auto => {
+                    let outcome = search::tgrep_outcome(
+                        call,
+                        settings.tgrep_path.as_deref(),
+                        tgrep_registry,
+                        workspace_hint,
+                    )
+                    .await;
+                    if !outcome.should_auto_fallback() {
                         return search::local_tgrep_completion(
                             call,
                             crate::cursor::tools::runtime::now_ms(),
                             outcome,
                         );
-                    }
-                    crate::store::GrepEngine::Auto => {
-                        let outcome = search::tgrep_outcome(
-                            call,
-                            settings.tgrep_path.as_deref(),
-                            tgrep_registry,
-                            workspace_hint,
-                        )
-                        .await;
-                        if !outcome.should_auto_fallback() {
-                            return search::local_tgrep_completion(
-                                call,
-                                crate::cursor::tools::runtime::now_ms(),
-                                outcome,
-                            );
-                        }
                     }
                 }
             }
@@ -248,7 +246,10 @@ mod tests {
             &call,
             0,
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(store.search_settings().await.unwrap()),
+                ..ExecContext::default()
+            },
             Some(&store),
             &crate::search::TgrepRegistry::default(),
         )
@@ -294,7 +295,10 @@ mod tests {
             &call,
             0,
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(store.search_settings().await.unwrap()),
+                ..ExecContext::default()
+            },
             Some(&store),
             &crate::search::TgrepRegistry::default(),
         )
@@ -318,6 +322,7 @@ mod tests {
         let call = grep_call("auto-reserve-failure", json!({"pattern": "needle"}));
         let completed = HashSet::new();
         let started = HashSet::new();
+        let search_settings = store.search_settings().await.unwrap();
         let dispatched = crate::cursor::tools::ToolDispatcher::with_results(
             runtime,
             results,
@@ -335,7 +340,10 @@ mod tests {
             },
             &[],
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(search_settings),
+                ..ExecContext::default()
+            },
         )
         .await
         .unwrap();
@@ -357,7 +365,10 @@ mod tests {
             &call,
             0,
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(store.search_settings().await.unwrap()),
+                ..ExecContext::default()
+            },
             Some(&store),
             &crate::search::TgrepRegistry::default(),
         )
@@ -388,7 +399,10 @@ mod tests {
             &call,
             0,
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(store.search_settings().await.unwrap()),
+                ..ExecContext::default()
+            },
             Some(&store),
             &crate::search::TgrepRegistry::default(),
         )
@@ -436,7 +450,10 @@ mod tests {
             &call,
             0,
             &BTreeMap::new(),
-            &ExecContext::default(),
+            &ExecContext {
+                search_settings: Some(store.search_settings().await.unwrap()),
+                ..ExecContext::default()
+            },
             Some(&store),
             &crate::search::TgrepRegistry::default(),
         )
