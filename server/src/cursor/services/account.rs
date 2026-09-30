@@ -2,12 +2,12 @@
 use axum::{
     body::{to_bytes, Body},
     extract::Extension,
-    http::{header, HeaderValue, Request, Response},
+    http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use prost::Message;
 use serde_json::Value;
 
-use crate::{api::cursor::proxy, local_app, Result};
+use crate::{api::cursor::proxy, Result};
 
 use super::entitlement::FreeEntitlementCache;
 
@@ -275,50 +275,28 @@ pub async fn usage_limit_status(
 }
 
 pub async fn stripe_profile(
-    Extension(upstream): Extension<proxy::CursorProxy>,
-    Extension(free_entitlements): Extension<FreeEntitlementCache>,
+    _upstream: Extension<proxy::CursorProxy>,
+    _free_entitlements: Extension<FreeEntitlementCache>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers()) {
-        return local_stripe_profile(request.headers().get(header::ORIGIN).cloned());
-    }
-
-    let request_headers = request.headers().clone();
     let origin = request.headers().get(header::ORIGIN).cloned();
-    let upstream_response = match proxy::forward_buffered(&upstream, request).await {
-        Ok(response) => response,
-        Err(error) if free_entitlements.is_confirmed_free(&request_headers) => {
-            tracing::warn!(%error, "using cached Free entitlement after Stripe upstream failure");
-            return local_stripe_profile(origin);
-        }
-        Err(error) => return Err(error),
-    };
-    if !upstream_response.status.is_success() {
-        if should_fallback_to_cached_free(
-            upstream_response.status,
-            &free_entitlements,
-            &request_headers,
-        ) {
-            tracing::warn!(
-                status = %upstream_response.status,
-                "using cached Free entitlement after Stripe upstream failure"
-            );
-            return local_stripe_profile(origin);
-        }
-        return Ok(upstream_response.into_response());
+    if request.method() == axum::http::Method::OPTIONS {
+        return local_stripe_profile_options(origin);
     }
-
-    let Some(membership_type) = membership_type(&upstream_response.body) else {
-        return Ok(upstream_response.into_response());
-    };
-    let observed = free_entitlements.observe_membership(&request_headers, &membership_type);
-    if observed && membership_type.eq_ignore_ascii_case("free") {
-        return local_stripe_profile(origin);
-    }
-
-    Ok(upstream_response.into_response())
+    local_stripe_profile(origin)
 }
 
+#[allow(dead_code)]
+fn patch_ultra_membership(body: &[u8]) -> Option<Vec<u8>> {
+    let mut profile: Value = serde_json::from_slice(body).ok()?;
+    let obj = profile.as_object_mut()?;
+    obj.insert("membershipType".into(), serde_json::json!("ultra"));
+    obj.insert("individualMembershipType".into(), serde_json::json!("ultra"));
+    obj.insert("subscriptionStatus".into(), serde_json::json!("active"));
+    serde_json::to_vec(&profile).ok()
+}
+
+#[allow(dead_code)]
 fn should_fallback_to_cached_free(
     status: axum::http::StatusCode,
     free_entitlements: &FreeEntitlementCache,
@@ -327,10 +305,37 @@ fn should_fallback_to_cached_free(
     status.is_server_error() && free_entitlements.is_confirmed_free(headers)
 }
 
+#[allow(dead_code)]
 fn membership_type(body: &[u8]) -> Option<String> {
     let profile: Value = serde_json::from_slice(body).ok()?;
     let membership_type = profile.get("membershipType")?.as_str()?.trim();
     (!membership_type.is_empty()).then(|| membership_type.to_owned())
+}
+
+fn local_stripe_profile_options(origin: Option<HeaderValue>) -> Result<Response<Body>> {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    if let Some(origin) = origin {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, OPTIONS"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("*"),
+        );
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    Ok(response)
 }
 
 fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
@@ -343,6 +348,14 @@ fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
             header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
             HeaderValue::from_static("true"),
         );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, OPTIONS"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("*"),
+        );
         response
             .headers_mut()
             .insert(header::VARY, HeaderValue::from_static("Origin"));
@@ -351,30 +364,22 @@ fn local_stripe_profile(origin: Option<HeaderValue>) -> Result<Response<Body>> {
 }
 
 async fn local_or_confirmed_free_or_forward(
-    upstream: proxy::CursorProxy,
-    free_entitlements: &FreeEntitlementCache,
+    _upstream: proxy::CursorProxy,
+    _free_entitlements: &FreeEntitlementCache,
     request: Request<Body>,
     local: impl FnOnce() -> Result<Response<Body>>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers())
-        || free_entitlements.is_confirmed_free(request.headers())
-    {
-        consume_body(request).await?;
-        return local();
-    }
-    proxy::forward(Extension(upstream), request).await
+    consume_body(request).await?;
+    local()
 }
 
 async fn local_or_forward(
-    upstream: proxy::CursorProxy,
+    _upstream: proxy::CursorProxy,
     request: Request<Body>,
     local: impl FnOnce() -> Result<Response<Body>>,
 ) -> Result<Response<Body>> {
-    if local_app::request_uses_local_cursor_token(request.headers()) {
-        consume_body(request).await?;
-        return local();
-    }
-    proxy::forward(Extension(upstream), request).await
+    consume_body(request).await?;
+    local()
 }
 
 async fn consume_body(request: Request<Body>) -> Result<()> {
@@ -502,6 +507,21 @@ mod tests {
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE),
             Some(&HeaderValue::from_static("application/json"))
+        );
+    }
+
+    #[test]
+    fn local_stripe_profile_options_returns_cors_preflight() {
+        let origin = HeaderValue::from_static("vscode-file://vscode-app");
+        let response = local_stripe_profile_options(Some(origin.clone())).unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&origin)
+        );
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            Some(&HeaderValue::from_static("GET, OPTIONS"))
         );
     }
 }

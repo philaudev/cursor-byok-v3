@@ -3,12 +3,12 @@ mod output;
 mod render;
 
 use crate::{
+    Error, Result,
     cursor::{protocol::proto::agent::v1 as pb, tools::codec as interaction},
     model::ToolResult,
-    Error, Result,
 };
 
-use super::{gate, mcp_state, ReadImage, ToolCompletion};
+use super::{ReadImage, ToolCompletion, gate, mcp_state};
 use crate::cursor::tools::{
     edit,
     runtime::{ExecStage, PendingExec},

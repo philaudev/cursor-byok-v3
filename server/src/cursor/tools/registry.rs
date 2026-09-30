@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{model::ToolDefinition, Error, Result};
+use crate::{Error, Result, model::ToolDefinition};
 
 #[derive(Deserialize)]
 struct Manifest {

@@ -2,17 +2,17 @@
 use serde_json::{Map, Value};
 
 use crate::{
+    Error, Result,
     cursor::{
         protocol::proto::agent::v1 as pb,
         tools::{
             edit::{self, EditWrite},
             runtime::{
-                ExecContext, McpRoute, DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS,
+                DEFAULT_SHELL_BLOCK_UNTIL_MS, ExecContext, MAX_SHELL_BLOCK_UNTIL_MS, McpRoute,
             },
         },
     },
     model::ToolCall,
-    Error, Result,
 };
 
 pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::AgentServerMessage> {
@@ -23,6 +23,18 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| Error::Protocol(format!("{} is missing {name}", call.name)))
+    };
+    // Claude 系模型常按 Claude Code 习惯输出别名参数(如 file_path),逐个回退兼容。
+    let string_aliased = |names: &[&str]| -> Result<String> {
+        for name in names {
+            if let Some(value) = call.arguments.get(name).and_then(Value::as_str) {
+                return Ok(value.to_string());
+            }
+        }
+        Err(Error::Protocol(format!(
+            "{} is missing {}",
+            call.name, names[0]
+        )))
     };
     let optional_string = |name: &str| {
         call.arguments
@@ -65,7 +77,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             })
         }
         "read" => Message::ReadArgs(pb::ReadArgs {
-            path: string("path")?,
+            path: string_aliased(&["path", "file_path", "filePath"])?,
             tool_call_id: call.call_id.clone(),
             offset: int("offset"),
             limit: call
@@ -76,7 +88,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             encoding_hint: optional_string("encoding_hint"),
         }),
         "delete" => Message::DeleteArgs(pb::DeleteArgs {
-            path: string("path")?,
+            path: string_aliased(&["path", "file_path", "filePath"])?,
             tool_call_id: call.call_id.clone(),
         }),
         "grep" => Message::GrepArgs(pb::GrepArgs {
@@ -88,7 +100,9 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             context_after: int("-A"),
             context: int("-C"),
             case_insensitive: call.arguments.get("-i").and_then(Value::as_bool),
-            r#type: optional_string("type"),
+            r#type: optional_string("type")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             head_limit: int("head_limit"),
             multiline: call.arguments.get("multiline").and_then(Value::as_bool),
             sort: optional_string("sort"),
@@ -125,14 +139,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
             timeout_ms: None,
         }),
         "readlints" => Message::DiagnosticsArgs(pb::DiagnosticsArgs {
-            path: call
-                .arguments
-                .get("paths")
-                .and_then(Value::as_array)
-                .and_then(|paths| paths.first())
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .into(),
+            path: optional_string("path").unwrap_or_default(),
             tool_call_id: call.call_id.clone(),
         }),
         "task" => Message::SubagentArgs(pb::SubagentArgs {
@@ -160,7 +167,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
                 Some(value) => {
                     return Err(Error::Protocol(format!(
                         "unknown Task environment: {value}"
-                    )))
+                    )));
                 }
             },
             cloud_base_branch: optional_string("cloud_base_branch"),
@@ -180,7 +187,7 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
         other => {
             return Err(Error::Protocol(format!(
                 "tool {other} is not executed through ExecServerMessage"
-            )))
+            )));
         }
     };
     let accept_hook_additional_contexts =
@@ -211,7 +218,11 @@ pub(crate) fn await_read_request(
         id,
         call,
         pb::exec_server_message::Message::ReadArgs(pb::ReadArgs {
-            path: format!("{}/{}.txt", context.terminals_folder.trim_end_matches('/'), shell_id),
+            path: format!(
+                "{}/{}.txt",
+                context.terminals_folder.trim_end_matches('/'),
+                shell_id
+            ),
             tool_call_id: call.call_id.clone(),
             ..Default::default()
         }),
@@ -553,7 +564,7 @@ pub(crate) fn json_object_to_prost(
 }
 
 fn prost_value(value: &Value) -> prost_types::Value {
-    use prost_types::{value::Kind, ListValue, Struct, Value as ProstValue};
+    use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
     let kind = match value {
         Value::Null => Kind::NullValue(0),
         Value::Bool(v) => Kind::BoolValue(*v),
@@ -578,20 +589,54 @@ mod tests {
     use crate::cursor::tools::runtime::ExecContext;
     use crate::model::ToolCall;
 
+    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: name.into(),
+            arguments_text: String::new(),
+            arguments,
+            argument_error: None,
+        }
+    }
+
+    fn diagnostics_path(arguments: serde_json::Value) -> String {
+        let message = request(
+            1,
+            &tool_call("ReadLints", arguments),
+            &ExecContext::default(),
+        )
+        .unwrap();
+        let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = message.message
+        else {
+            panic!("expected an ExecServerMessage");
+        };
+        let Some(pb::exec_server_message::Message::DiagnosticsArgs(args)) = exec.message else {
+            panic!("expected DiagnosticsArgs");
+        };
+        args.path
+    }
+
+    #[test]
+    fn read_lints_encodes_one_path() {
+        assert_eq!(
+            diagnostics_path(json!({ "path": "src/main.rs" })),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn read_lints_without_path_checks_workspace() {
+        assert_eq!(diagnostics_path(json!({})), "");
+    }
+
     #[test]
     fn bash_is_encoded_as_a_shell_exec_request() {
         // The dispatcher routes `bash`/`Bash` to the shell executor, so the
         // request codec must encode it as a Shell stream instead of erroring
         // with `tool bash is not executed through ExecServerMessage`.
-        let call = ToolCall {
-            index: 0,
-            call_id: "call-1".into(),
-            model_call_id: "model-1".into(),
-            name: "Bash".into(),
-            arguments_text: String::new(),
-            arguments: json!({ "command": "ls -la" }),
-            argument_error: None,
-        };
+        let call = tool_call("Bash", json!({ "command": "ls -la" }));
         let message = request(1, &call, &ExecContext::default()).unwrap();
         let Some(pb::agent_server_message::Message::ExecServerMessage(exec)) = message.message
         else {

@@ -26,6 +26,12 @@ pub struct RunEngine {
     provider: Arc<dyn Provider>,
 }
 
+/// Provider-visible tail appended when the committed history ends with the
+/// assistant, which happens when Cursor resumes a turn that had already
+/// finished (for example after a cancelled follow-up).
+const CONTINUE_MESSAGE_ID: &str = "runtime:continue";
+const CONTINUE_INSTRUCTION: &str = "Continue from where you left off.";
+
 impl RunEngine {
     pub fn new(store: Store, provider: Arc<dyn Provider>) -> Self {
         Self { store, provider }
@@ -172,6 +178,11 @@ impl RunEngine {
             };
         }
 
+        // A provider refusal for an over-limit prompt triggers one compaction
+        // per run. A second refusal after compacting means the current input
+        // itself does not fit, and compacting again would only destroy history.
+        let initial_checkpoint = checkpoint;
+        let mut overflow_compacted = false;
         'model: loop {
             if cancellation.is_cancelled() {
                 return (RunOutcome::Cancelled, usage);
@@ -186,7 +197,17 @@ impl RunEngine {
             };
             let compaction_estimate = (prepared.action != RunAction::Compact)
                 .then(|| {
-                    super::compaction::compaction_estimate(prepared, &history, context_usage_anchor)
+                    if checkpoint == initial_checkpoint {
+                        super::compaction::compaction_estimate(prepared, &history, context_usage_anchor)
+                    } else {
+                        let mut prepared_fresh = prepared.clone();
+                        prepared_fresh.checkpoint_context_tokens = None;
+                        super::compaction::compaction_estimate(
+                            &prepared_fresh,
+                            &history,
+                            context_usage_anchor,
+                        )
+                    }
                 })
                 .flatten();
             if let Some(estimated_tokens) = compaction_estimate {
@@ -223,18 +244,23 @@ impl RunEngine {
                 checkpoint_id = checkpoint.0,
                 "starting model call"
             );
-            let mut history = if prepared.action == RunAction::Compact {
-                match crate::model::project_compaction_messages(&messages) {
-                    Ok(history) => history,
-                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
-                }
-            } else {
-                history
-            };
+            let mut history = history;
             crate::model::normalize_provider_tool_call_ids(&mut history);
             if let Err(error) = hydrate_tool_images(&self.store, &mut history).await {
                 return (RunOutcome::Failed(error.into()), usage);
             }
+            // The usage anchor counts persisted messages only; a transient
+            // tail is provider-visible but never committed.
+            let anchored_messages = history.len();
+            let history = if prepared.action == RunAction::Compact {
+                super::history::user_terminated(
+                    history,
+                    "compaction:instruction",
+                    super::compaction::INSTRUCTIONS,
+                )
+            } else {
+                super::history::user_terminated(history, CONTINUE_MESSAGE_ID, CONTINUE_INSTRUCTION)
+            };
             let history_fingerprint = prompt_history_fingerprint(&prepared.prompt, &history);
             let projected_message_count = history.len();
             let request = crate::model::ModelRequest {
@@ -310,7 +336,7 @@ impl RunEngine {
                                         update_context_usage_anchor(
                                             &mut context_usage_anchor,
                                             cycle_usage,
-                                            request.history.len(),
+                                            anchored_messages,
                                         );
                                         accumulate_usage(&mut usage, cycle_usage);
                                     }
@@ -320,7 +346,7 @@ impl RunEngine {
                                         update_context_usage_anchor(
                                             &mut context_usage_anchor,
                                             cycle_usage,
-                                            request.history.len(),
+                                            anchored_messages,
                                         );
                                         accumulate_usage(&mut usage, cycle_usage);
                                     }
@@ -367,13 +393,65 @@ impl RunEngine {
                             update_context_usage_anchor(
                                 &mut context_usage_anchor,
                                 cycle_usage,
-                                request.history.len(),
+                                anchored_messages,
                             );
                             accumulate_usage(&mut usage, cycle_usage);
                         }
                         if cancellation.is_cancelled() {
                             let _ = emit(client, RunEvent::CycleInterrupted).await;
                             return (RunOutcome::Cancelled, usage);
+                        }
+                        // The estimate that cleared the compaction check can
+                        // still land over the real limit: it trails the
+                        // provider's own count by whatever the request adds
+                        // after the anchor was taken. The provider is the
+                        // authority, so treat its refusal as the trigger the
+                        // estimate missed. Without this a conversation that
+                        // crosses the line is wedged: every retry rebuilds the
+                        // same prompt and gets the same refusal.
+                        if !overflow_compacted
+                            && prepared.action != RunAction::Compact
+                            && matches!(&cycle_failure.failure, RunFailure::Provider(message)
+                                if super::compaction::is_context_overflow(message))
+                        {
+                            tracing::warn!(
+                                provider_call_index,
+                                checkpoint_id = checkpoint.0,
+                                "provider rejected the prompt as over-limit; compacting and retrying"
+                            );
+                            overflow_compacted = true;
+                            checkpoint = match super::messages::append_batches(
+                                &self.store,
+                                prepared,
+                                client,
+                                cancellation,
+                                checkpoint,
+                                std::mem::take(&mut pending_insertions),
+                            )
+                            .await
+                            {
+                                Ok((checkpoint, _)) => checkpoint,
+                                Err(outcome) => return (outcome, usage),
+                            };
+                            let messages =
+                                match self.store.load_checkpoint_messages(checkpoint).await {
+                                    Ok(messages) => messages,
+                                    Err(error) => return (RunOutcome::Failed(error.into()), usage),
+                                };
+                            match self
+                                .auto_compact(prepared, checkpoint, &messages, client, cancellation)
+                                .await
+                            {
+                                Ok((next_checkpoint, compaction_usage)) => {
+                                    checkpoint = next_checkpoint;
+                                    context_usage_anchor = None;
+                                    if let Some(compaction_usage) = compaction_usage {
+                                        accumulate_usage(&mut usage, compaction_usage);
+                                    }
+                                    continue 'model;
+                                }
+                                Err(outcome) => return (outcome, usage),
+                            }
                         }
                         if !should_retry(&cycle_failure, retries) {
                             return (RunOutcome::Failed(cycle_failure.failure), usage);
@@ -473,7 +551,7 @@ impl RunEngine {
                 update_context_usage_anchor(
                     &mut context_usage_anchor,
                     cycle_usage,
-                    request.history.len(),
+                    anchored_messages,
                 );
                 accumulate_usage(&mut usage, cycle_usage);
             }
@@ -734,7 +812,10 @@ impl RunEngine {
             .begin_provider_call(&prepared.run_id)
             .await
             .map_err(|error| RunOutcome::Failed(error.into()))?;
-        let history = crate::model::project_compaction_messages(&compactable)
+        let history = crate::model::project_messages(&compactable)
+            .map(|history| {
+                super::compaction::compaction_history(history, prepared.model.context_window_tokens)
+            })
             .map_err(|error| RunOutcome::Failed(error.into()))?;
         let prompt = crate::model::PromptSpec {
             instructions: prepared.compaction_prompt.instructions.clone(),

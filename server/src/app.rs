@@ -148,7 +148,7 @@ impl App {
         let reaper_shutdown = shutdown.clone();
         let reaper_task_shutdown = reaper_shutdown.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 tokio::select! {
                     _ = interval.tick() => {

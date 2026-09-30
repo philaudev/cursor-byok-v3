@@ -1,7 +1,7 @@
 //! Dispatches server-local Tool calls.
 //! Synchronous local tool dispatch.
 
-use crate::{model::ToolCall, Result};
+use crate::{Result, model::ToolCall};
 
 use super::ToolStart;
 use crate::cursor::tools::tool_call_result as result;

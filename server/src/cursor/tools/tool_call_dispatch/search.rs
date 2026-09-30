@@ -2,6 +2,7 @@
 //! Cursor tool orchestration for application-owned Semble search.
 
 use crate::{
+    Result,
     cursor::tools::{
         runtime::now_ms,
         tool_call_result::{self as result, ToolResultSender},
@@ -9,7 +10,6 @@ use crate::{
     model::ToolCall,
     search,
     store::Store,
-    Result,
 };
 
 use super::ToolStart;
@@ -37,21 +37,46 @@ pub(super) fn start(
     })
 }
 
+pub(super) fn start_outline(results: &ToolResultSender, call: &ToolCall) -> Result<ToolStart> {
+    let arguments = call.arguments.clone();
+    let call = call.clone();
+    let results = results.clone();
+    let started_at_ms = now_ms();
+    tokio::spawn(async move {
+        let output = search::execute_outline(arguments).await;
+        match result::semble(&call, started_at_ms, output) {
+            Ok(completion) => results.send(completion),
+            Err(error) => results.send_error(error),
+        }
+    });
+    Ok(ToolStart {
+        messages: Vec::new(),
+        completion: None,
+    })
+}
+
 pub(super) async fn tgrep_outcome(
     call: &ToolCall,
     configured_path: Option<&str>,
     registry: &search::TgrepRegistry,
+    workspace_hint: Option<&str>,
 ) -> search::TgrepOutcome {
-    let target_path_str = call
-        .arguments
-        .get("path")
-        .or_else(|| call.arguments.get("target_directory"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(".");
-    let target_path = std::path::Path::new(target_path_str);
-    let repo_root = search::tgrep::find_repo_root(target_path);
+    let target_path = match search::tgrep::tgrep_workspace_path(&call.arguments, workspace_hint) {
+        Ok(path) => path,
+        Err(failure) => return search::TgrepOutcome::Failure(failure),
+    };
+    let repo_root = search::tgrep::find_repo_root(&target_path);
 
-    registry.mark_used(&repo_root).await;
+    if !search::tgrep::is_indexable_repo_root(&repo_root) {
+        return search::tgrep::execute_tgrep_outcome(
+            &call.arguments,
+            configured_path,
+            true,
+            workspace_hint,
+        )
+        .await;
+    }
+
     let readiness = registry.ensure_server(&repo_root, configured_path).await;
 
     if readiness == search::ServerReadiness::Unhealthy {
@@ -68,7 +93,13 @@ pub(super) async fn tgrep_outcome(
         search::ServerReadiness::Starting | search::ServerReadiness::Indexing
     );
 
-    search::tgrep::execute_tgrep_outcome(&call.arguments, configured_path, force_no_index).await
+    search::tgrep::execute_tgrep_outcome(
+        &call.arguments,
+        configured_path,
+        force_no_index,
+        workspace_hint,
+    )
+    .await
 }
 
 pub(super) fn local_tgrep_completion(
@@ -89,7 +120,9 @@ pub(super) fn local_tgrep_completion(
                 .get("path")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(".");
-            Ok(format!("No matches found for pattern `{pattern}` in {path}"))
+            Ok(format!(
+                "No matches found for pattern `{pattern}` in {path}"
+            ))
         }
         search::TgrepOutcome::Failure(failure) => Err(failure.to_string()),
     };
@@ -98,4 +131,3 @@ pub(super) fn local_tgrep_completion(
         completion: Some(result::grep_completion(call, started_at_ms, output)?),
     })
 }
-

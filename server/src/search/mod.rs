@@ -4,6 +4,7 @@ mod catalog;
 mod engine;
 mod federation;
 mod fetch;
+pub(crate) mod outline;
 mod search_provider;
 
 pub use cache::{WebCache, WebCacheEntry};
@@ -76,4 +77,5 @@ mod contract_tests {
     }
 }
 
+pub use outline::execute as execute_outline;
 pub(crate) use search_provider::execute as execute_semble;

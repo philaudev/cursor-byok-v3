@@ -1,20 +1,20 @@
 //! Tracks running Tool executions and coordinates cancellation and cleanup.
 use std::{
     collections::{HashMap, HashSet},
-    time::Instant,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
+    time::Instant,
 };
 
 use tokio::sync::Mutex;
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolCall, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolCall};
 
 use super::edit::EditWrite;
 
-pub(crate) const DEFAULT_SHELL_BLOCK_UNTIL_MS: u64 = 30_000;
+pub(crate) const DEFAULT_SHELL_BLOCK_UNTIL_MS: u64 = 60_000;
 pub(crate) const MAX_SHELL_BLOCK_UNTIL_MS: u64 = 180_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub struct BackgroundShellState {
 #[cfg(windows)]
 pub fn is_pid_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+        CloseHandle, ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE,
     };
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -998,12 +998,14 @@ mod tests {
         };
         let call = task(serde_json::json!({"prompt":"inspect", "subagent_type":"advisor"}));
         assert!(context.task_disabled(&call));
-        assert!(context
-            .prepare_call(&call)
-            .unwrap()
-            .arguments
-            .get("model")
-            .is_none());
+        assert!(
+            context
+                .prepare_call(&call)
+                .unwrap()
+                .arguments
+                .get("model")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1019,11 +1021,13 @@ mod tests {
         }));
 
         assert!(context.task_disabled(&call));
-        assert!(context
-            .prepare_call(&call)
-            .unwrap()
-            .arguments
-            .get("model")
-            .is_none());
+        assert!(
+            context
+                .prepare_call(&call)
+                .unwrap()
+                .arguments
+                .get("model")
+                .is_none()
+        );
     }
 }

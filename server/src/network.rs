@@ -1,7 +1,16 @@
 //! Owns reusable outbound HTTP clients configured from persisted proxy settings.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
+use hickory_resolver::{
+    config::{NameServerConfigGroup, ResolverConfig, ResolverOpts},
+    TokioAsyncResolver,
+};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -10,6 +19,74 @@ use crate::{
 };
 
 const LOCAL_NO_PROXY: &str = "localhost,127.0.0.0/8,::1";
+
+static DNS_RESOLVER: LazyLock<Arc<HickoryDnsResolver>> =
+    LazyLock::new(|| Arc::new(HickoryDnsResolver::new()));
+
+/// Returns the shared custom DNS resolver backed by Cloudflare (1.1.1.1) and Google (8.8.8.8).
+pub fn dns_resolver() -> Arc<HickoryDnsResolver> {
+    DNS_RESOLVER.clone()
+}
+
+/// A DNS resolver that uses Cloudflare (1.1.1.1, 1.0.0.1) and Google (8.8.8.8, 8.8.4.4)
+/// public DNS servers to bypass ISP-level DNS blocking/poisoning.
+#[derive(Clone)]
+pub struct HickoryDnsResolver {
+    resolver: TokioAsyncResolver,
+}
+
+impl HickoryDnsResolver {
+    pub fn new() -> Self {
+        let mut group = NameServerConfigGroup::cloudflare();
+        group.merge(NameServerConfigGroup::google());
+        let config = ResolverConfig::from_parts(None, vec![], group);
+        let mut opts = ResolverOpts::default();
+        opts.timeout = Duration::from_secs(3);
+        opts.attempts = 2;
+        opts.num_concurrent_reqs = 2;
+        let resolver = TokioAsyncResolver::tokio(config, opts);
+        Self { resolver }
+    }
+}
+
+impl Default for HickoryDnsResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Resolve for HickoryDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        let resolver = self.resolver.clone();
+        Box::pin(async move {
+            if host.eq_ignore_ascii_case("localhost") {
+                let addrs: Vec<SocketAddr> = vec![
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                    SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+                ];
+                let iter: Addrs = Box::new(addrs.into_iter());
+                return Ok(iter);
+            }
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                let addrs: Vec<SocketAddr> = vec![SocketAddr::new(ip, 0)];
+                let iter: Addrs = Box::new(addrs.into_iter());
+                return Ok(iter);
+            }
+
+            let response = resolver
+                .lookup_ip(&host)
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            let addrs: Vec<SocketAddr> = response
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, 0))
+                .collect();
+            let iter: Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct NetworkClients {
@@ -55,6 +132,8 @@ impl NetworkClients {
         }
         let client = client_builder(&self.store)
             .await?
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         cache.cursor = Some(client.clone());
@@ -97,7 +176,9 @@ pub async fn client_builder(store: &Store) -> Result<reqwest::ClientBuilder> {
     let settings = store.proxy_settings_secret().await?;
     // Use the platform TLS stack for compatibility with provider gateways that
     // only offer legacy TLS 1.2 cipher suites unsupported by rustls.
-    let mut builder = reqwest::Client::builder().use_native_tls();
+    let mut builder = reqwest::Client::builder()
+        .use_native_tls()
+        .dns_resolver(dns_resolver());
     if settings.mode.is_custom() {
         builder = builder.proxy(custom_proxy(&settings)?);
     }
@@ -121,6 +202,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
+        str::FromStr,
         sync::mpsc,
         thread,
     };
@@ -128,6 +210,44 @@ mod tests {
     use crate::store::{ProxyMode, ProxySettingsInput};
 
     use super::*;
+
+    #[tokio::test]
+    async fn dns_resolver_resolves_localhost_and_ip_literals() {
+        use reqwest::dns::Resolve;
+
+        let resolver = HickoryDnsResolver::new();
+
+        // Localhost
+        let addrs: Vec<SocketAddr> = resolver
+            .resolve(reqwest::dns::Name::from_str("localhost").unwrap())
+            .await
+            .unwrap()
+            .collect();
+        assert!(addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST)));
+
+        // IP literal
+        let addrs: Vec<SocketAddr> = resolver
+            .resolve(reqwest::dns::Name::from_str("127.0.0.1").unwrap())
+            .await
+            .unwrap()
+            .collect();
+        assert_eq!(addrs, vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)]);
+    }
+
+    #[tokio::test]
+    async fn dns_resolver_resolves_remote_domain() {
+        use reqwest::dns::Resolve;
+
+        let resolver = HickoryDnsResolver::new();
+        let addrs: Vec<SocketAddr> = resolver
+            .resolve(reqwest::dns::Name::from_str("one.one.one.one").unwrap())
+            .await
+            .unwrap()
+            .collect();
+        assert!(!addrs.is_empty());
+        assert!(addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))
+            || a.ip() == IpAddr::V4(Ipv4Addr::new(1, 0, 0, 1))));
+    }
 
     #[tokio::test]
     async fn custom_proxy_applies_to_async_and_blocking_clients() {

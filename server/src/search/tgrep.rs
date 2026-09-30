@@ -74,7 +74,115 @@ pub fn resolve_tgrep_binary(configured_path: Option<&str>) -> Option<PathBuf> {
     None
 }
 
+/// Returns true if `path` is a user home directory, root drive, or system root directory.
+pub fn is_user_home_or_system_root(path: &Path) -> bool {
+    if path.parent().is_none() {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if path == home {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_home)) = (path.canonicalize(), home.canonicalize()) {
+            if canonical_path == canonical_home {
+                return true;
+            }
+        }
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        let profile_path = Path::new(&userprofile);
+        if path == profile_path {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_profile)) = (path.canonicalize(), profile_path.canonicalize()) {
+            if canonical_path == canonical_profile {
+                return true;
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = Path::new(&home);
+        if path == home_path {
+            return true;
+        }
+        if let (Ok(canonical_path), Ok(canonical_home)) = (path.canonicalize(), home_path.canonicalize()) {
+            if canonical_path == canonical_home {
+                return true;
+            }
+        }
+    }
+
+    let path_str = path.to_string_lossy();
+    if path_str.eq_ignore_ascii_case("C:\\Windows")
+        || path_str.eq_ignore_ascii_case("C:\\Program Files")
+        || path_str.eq_ignore_ascii_case("C:\\Program Files (x86)")
+        || path_str.eq_ignore_ascii_case("C:\\ProgramData")
+        || path_str.eq_ignore_ascii_case("C:\\Users")
+        || path_str.eq_ignore_ascii_case("/home")
+        || path_str.eq_ignore_ascii_case("/Users")
+        || path_str.eq_ignore_ascii_case("/etc")
+        || path_str.eq_ignore_ascii_case("/var")
+        || path_str.eq_ignore_ascii_case("/usr")
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Returns true if `path` is a user home root or a direct system/config boundary folder under user home.
+pub fn is_home_or_config_boundary(path: &Path) -> bool {
+    if is_user_home_or_system_root(path) {
+        return true;
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        for config_name in [
+            "AppData",
+            "Local Settings",
+            ".cursor",
+            ".cursor-byok-v3",
+            ".agents",
+            ".cache",
+            ".npm",
+            ".cargo",
+            ".rustup",
+            ".vscode",
+            ".config",
+        ] {
+            let config_path = home.join(config_name);
+            if path == config_path {
+                return true;
+            }
+            if let (Ok(p), Ok(c)) = (path.canonicalize(), config_path.canonicalize()) {
+                if p == c {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Checks if a directory qualifies as a project repository root that is safe to index with `tgrep serve`.
+pub fn is_indexable_repo_root(path: &Path) -> bool {
+    if is_home_or_config_boundary(path) {
+        return false;
+    }
+    path.join(".git").exists()
+        || path.join("Cargo.toml").exists()
+        || path.join("package.json").exists()
+        || path.join("go.mod").exists()
+        || path.join("pyproject.toml").exists()
+}
+
 /// Finds the root directory of the repository/project for a given path.
+///
+/// Priority:
+/// 1. Enclosing Git repository root (`.git` directory or file for submodules/worktrees).
+/// 2. Enclosing Cargo/pnpm/npm workspace root (`Cargo.toml` with `[workspace]`, `pnpm-workspace.yaml`, etc.).
+/// 3. Outermost ancestor containing project markers (`Cargo.toml`, `package.json`, `go.mod`, etc.) before reaching system/home boundary.
 pub fn find_repo_root(path: &Path) -> PathBuf {
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -91,17 +199,57 @@ pub fn find_repo_root(path: &Path) -> PathBuf {
             .unwrap_or_else(|| path.clone())
     };
 
+    // 1. Highest priority: Git repository boundary (.git).
     let mut current = candidate_path.as_path();
-
     while let Some(parent) = current.parent() {
-        if current.join(".git").exists()
-            || current.join(".tgrep").exists()
-            || current.join("Cargo.toml").exists()
-            || current.join("package.json").exists()
-        {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
+        if current.join(".git").exists() {
             return current.to_path_buf();
         }
         current = parent;
+    }
+
+    // 2. Second priority: Workspace root markers (Cargo.toml [workspace], pnpm-workspace.yaml).
+    let mut current = candidate_path.as_path();
+    while let Some(parent) = current.parent() {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
+        if current.join("pnpm-workspace.yaml").exists() {
+            return current.to_path_buf();
+        }
+        let cargo_toml = current.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                if content.contains("[workspace]") {
+                    return current.to_path_buf();
+                }
+            }
+        }
+        current = parent;
+    }
+
+    // 3. Third priority: Outermost project boundary before hitting home/system boundary.
+    let mut outermost = None;
+    let mut current = candidate_path.as_path();
+    while let Some(parent) = current.parent() {
+        if is_home_or_config_boundary(current) {
+            break;
+        }
+        if current.join("Cargo.toml").exists()
+            || current.join("package.json").exists()
+            || current.join("go.mod").exists()
+            || current.join("pyproject.toml").exists()
+        {
+            outermost = Some(current.to_path_buf());
+        }
+        current = parent;
+    }
+
+    if let Some(root) = outermost {
+        return root;
     }
 
     if path.is_dir() {
@@ -128,6 +276,7 @@ pub(crate) async fn execute_tgrep_outcome(
     arguments: &Value,
     configured_path: Option<&str>,
     force_no_index: bool,
+    workspace_hint: Option<&str>,
 ) -> crate::search::TgrepOutcome {
     if let Err(failure) = validate_tgrep_arguments(arguments) {
         return crate::search::TgrepOutcome::Failure(failure);
@@ -146,15 +295,14 @@ pub(crate) async fn execute_tgrep_outcome(
         .get("pattern")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let target_path_str = arguments
-        .get("path")
-        .or_else(|| arguments.get("target_directory"))
-        .and_then(Value::as_str)
-        .unwrap_or(".");
-    let target_path = Path::new(target_path_str);
-    let repo_root = find_repo_root(target_path);
+    let target_path = match tgrep_workspace_path(arguments, workspace_hint) {
+        Ok(path) => path,
+        Err(failure) => return crate::search::TgrepOutcome::Failure(failure),
+    };
+    let target_path_str = target_path.to_string_lossy().to_string();
+    let repo_root = find_repo_root(&target_path);
     let mut args: Vec<String> = vec!["--color".into(), "never".into(), "--no-heading".into()];
-    if force_no_index {
+    if force_no_index || !is_indexable_repo_root(&repo_root) {
         args.push("--no-index".into());
     } else {
         let index_dir = repo_root.join(".tgrep");
@@ -190,7 +338,12 @@ pub(crate) async fn execute_tgrep_outcome(
     if arguments.get("multiline").and_then(Value::as_bool).unwrap_or(false) {
         args.push("-U".into());
     }
-    if let Some(file_type) = arguments.get("type").and_then(Value::as_str) {
+    if let Some(file_type) = arguments
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         args.extend(["-t".into(), file_type.into()]);
     }
     if let Some(limit) = arguments.get("head_limit").and_then(Value::as_u64) {
@@ -201,9 +354,9 @@ pub(crate) async fn execute_tgrep_outcome(
     } else if output_mode == "files_with_matches" {
         args.push(".*".into());
     }
-    args.push(target_path_str.into());
+    args.push(target_path_str);
 
-    let output = match tgrep_command(&binary).args(&args).output().await {
+    let mut output = match tgrep_command(&binary).args(&args).output().await {
         Ok(output) => output,
         Err(error) => {
             return crate::search::TgrepOutcome::Failure(
@@ -213,8 +366,40 @@ pub(crate) async fn execute_tgrep_outcome(
             )
         }
     };
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    // Self-healing fallback if indexed search fails due to a corrupted index file on disk
+    if output.status.code() != Some(0) && output.status.code() != Some(1) {
+        if stderr.contains("corrupted index") || (stderr.contains("index") && stderr.contains("error")) {
+            let index_dir = repo_root.join(".tgrep");
+            if index_dir.exists() {
+                let _ = std::fs::remove_dir_all(&index_dir);
+            }
+            let mut fallback_args: Vec<String> = Vec::new();
+            let mut skip_next = false;
+            for arg in &args {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if arg == "--index-path" {
+                    skip_next = true;
+                    continue;
+                }
+                fallback_args.push(arg.clone());
+            }
+            if !fallback_args.contains(&"--no-index".to_string()) {
+                fallback_args.insert(0, "--no-index".to_string());
+            }
+            if let Ok(retry_output) = tgrep_command(&binary).args(&fallback_args).output().await {
+                output = retry_output;
+                stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            }
+        }
+    }
+
     match output.status.code() {
         Some(0) if stdout.is_empty() => crate::search::TgrepOutcome::NoMatch,
         Some(0) => crate::search::TgrepOutcome::Match(stdout),
@@ -229,7 +414,42 @@ pub(crate) async fn execute_tgrep_outcome(
     }
 }
 
-fn validate_tgrep_arguments(arguments: &Value) -> std::result::Result<(), crate::search::TgrepFailure> {
+/// Returns the workspace path to search, resolving relative paths to absolute paths.
+/// If `workspace_hint` is provided, relative paths are resolved against it instead of `current_dir`.
+pub(crate) fn tgrep_workspace_path(
+    arguments: &Value,
+    workspace_hint: Option<&str>,
+) -> std::result::Result<PathBuf, crate::search::TgrepFailure> {
+    let path_str = arguments
+        .get("path")
+        .or_else(|| arguments.get("target_directory"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .unwrap_or(".");
+
+    let path = Path::new(path_str);
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(hint) = workspace_hint.map(str::trim).filter(|s| !s.is_empty()) {
+        let base = Path::new(hint);
+        if path_str == "." {
+            base.to_path_buf()
+        } else {
+            base.join(path)
+        }
+    } else {
+        std::env::current_dir()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    Ok(absolute_path)
+}
+
+fn validate_tgrep_arguments(
+    arguments: &Value,
+) -> std::result::Result<(), crate::search::TgrepFailure> {
     let invalid = |reason: &str| crate::search::TgrepFailure::InvalidRequest {
         reason: reason.into(),
     };
@@ -240,10 +460,23 @@ fn validate_tgrep_arguments(arguments: &Value) -> std::result::Result<(), crate:
     {
         return Err(invalid("pattern must be non-empty"));
     }
-    if arguments.get("type").is_some_and(|value| {
-        value.as_str().is_none_or(|file_type| file_type.trim().is_empty())
-    }) {
-        return Err(invalid("type must be a non-empty file type when provided"));
+    if let Some(value) = arguments.get("type") {
+        if !value.is_null() {
+            if let Some(file_type) = value.as_str() {
+                let trimmed = file_type.trim();
+                if !trimmed.is_empty()
+                    && !trimmed
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+')
+                {
+                    return Err(invalid(
+                        "type must be a valid file type identifier (e.g. js, py, rust)",
+                    ));
+                }
+            } else {
+                return Err(invalid("type must be a string if provided"));
+            }
+        }
     }
     if arguments
         .get("offset")
@@ -274,7 +507,7 @@ pub async fn execute_tgrep(
     arguments: &Value,
     configured_path: Option<&str>,
 ) -> std::result::Result<String, String> {
-    match execute_tgrep_outcome(arguments, configured_path, false).await {
+    match execute_tgrep_outcome(arguments, configured_path, false, None).await {
         crate::search::TgrepOutcome::Match(output) => Ok(output),
         crate::search::TgrepOutcome::NoMatch => {
             let pattern = arguments.get("pattern").and_then(Value::as_str).unwrap_or_default();
@@ -457,18 +690,135 @@ mod tests {
         let root = find_repo_root(current_file);
         assert!(root.exists(), "Resolved root must exist");
         assert!(
-            root.join("Cargo.toml").exists() || root.join(".tgrep").exists(),
-            "Resolved root should contain Cargo.toml or .tgrep"
+            root.join("Cargo.toml").exists(),
+            "Resolved root should contain Cargo.toml"
+        );
+        assert!(
+            root.join(".git").exists(),
+            "find_repo_root must resolve up to the enclosing .git repository root"
+        );
+    }
+
+    #[test]
+    fn tgrep_find_repo_root_resolves_outer_workspace_root_in_monorepo() {
+        // From deep subfolder server/src/search, it should resolve to the monorepo root containing .git and workspace Cargo.toml
+        let server_dir = std::env::current_dir().unwrap();
+        let root = find_repo_root(&server_dir);
+        assert!(
+            root.join(".git").exists(),
+            "Monorepo root must contain .git repository"
+        );
+        let cargo_toml = root.join("Cargo.toml");
+        assert!(cargo_toml.exists(), "Monorepo root must contain Cargo.toml");
+        let content = std::fs::read_to_string(cargo_toml).unwrap();
+        assert!(
+            content.contains("[workspace]"),
+            "Monorepo root must contain workspace definition"
+        );
+    }
+
+    #[test]
+    fn user_home_is_never_an_indexable_repo_root() {
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_user_home_or_system_root(&home));
+            assert!(!is_indexable_repo_root(&home));
+            let root = find_repo_root(&home);
+            assert!(!is_indexable_repo_root(&root), "find_repo_root must not return an indexable root for home directory");
+
+            let subpath = home.join(".cursor").join("projects");
+            let sub_root = find_repo_root(&subpath);
+            assert!(!is_indexable_repo_root(&sub_root), "subdirectories in home must not be treated as indexable repo roots");
+        }
+    }
+
+    #[test]
+    fn blacklisted_locations_are_never_indexable() {
+        if let Some(home) = dirs::home_dir() {
+            for config_name in ["AppData", ".cursor", ".agents", ".vscode", ".cache", ".npm", ".cargo"] {
+                let path = home.join(config_name);
+                assert!(
+                    is_home_or_config_boundary(&path),
+                    "boundary {config_name} must be recognized"
+                );
+                assert!(
+                    !is_indexable_repo_root(&path),
+                    "boundary {config_name} must not be indexable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn root_drive_is_never_an_indexable_repo_root() {
+        let drive = Path::new(if cfg!(windows) { "C:\\" } else { "/" });
+        assert!(is_user_home_or_system_root(drive));
+        assert!(!is_indexable_repo_root(drive));
+    }
+
+    #[test]
+    fn tgrep_workspace_path_resolves_missing_or_relative_paths() {
+        for arguments in [json!({"pattern": "test"}), json!({"path": "."})] {
+            let path = tgrep_workspace_path(&arguments, None).unwrap();
+            assert!(path.is_absolute());
+        }
+    }
+
+    #[test]
+    fn tgrep_workspace_path_uses_workspace_hint_for_relative_paths() {
+        let workspace = if cfg!(windows) {
+            "D:\\Admin\\Documents\\PROJECTS\\conruabien"
+        } else {
+            "/home/user/projects/conruabien"
+        };
+        let empty_args = json!({"pattern": "test"});
+        let dot_args = json!({"pattern": "test", "path": "."});
+        let sub_args = json!({"pattern": "test", "path": "src/main.rs"});
+
+        assert_eq!(
+            tgrep_workspace_path(&empty_args, Some(workspace)).unwrap(),
+            Path::new(workspace)
+        );
+        assert_eq!(
+            tgrep_workspace_path(&dot_args, Some(workspace)).unwrap(),
+            Path::new(workspace)
+        );
+        assert_eq!(
+            tgrep_workspace_path(&sub_args, Some(workspace)).unwrap(),
+            Path::new(workspace).join("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn tgrep_workspace_path_accepts_an_absolute_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let arguments = json!({"path": directory.path()});
+
+        assert_eq!(
+            tgrep_workspace_path(&arguments, None).unwrap(),
+            directory.path()
         );
     }
 
     #[tokio::test]
-    async fn tgrep_rejects_empty_type_without_spawning() {
+    async fn tgrep_allows_empty_type() {
         let args = json!({
             "pattern": "test",
             "type": ""
         });
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
+        assert!(matches!(
+            result,
+            crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn tgrep_rejects_invalid_type_syntax() {
+        let args = json!({
+            "pattern": "test",
+            "type": "invalid type; name!"
+        });
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(
@@ -483,7 +833,7 @@ mod tests {
             "pattern": "test",
             "offset": 1
         });
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(
@@ -495,7 +845,7 @@ mod tests {
     #[tokio::test]
     async fn tgrep_reports_unavailable_as_typed_failure() {
         let args = json!({"pattern": "test"});
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(crate::search::TgrepFailure::Unavailable)
@@ -505,7 +855,7 @@ mod tests {
     #[tokio::test]
     async fn tgrep_rejects_empty_pattern() {
         let args = json!({"pattern": ""});
-        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false).await;
+        let result = execute_tgrep_outcome(&args, Some("missing-tgrep.exe"), false, None).await;
         assert!(matches!(
             result,
             crate::search::TgrepOutcome::Failure(
@@ -578,7 +928,7 @@ mod tests {
             "glob": "*.rs"
         });
         let result = execute_tgrep(&args, None).await;
-        assert!(result.is_ok(), "tgrep glob filter should succeed");
+        assert!(result.is_ok(), "tgrep glob filter should succeed: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("tgrep.rs"));
     }

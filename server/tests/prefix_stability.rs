@@ -139,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 26);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 27);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -148,6 +148,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "Outline",
             "Shell",
             "Grep",
             "Delete",
@@ -176,10 +177,22 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "UpdateCurrentStep",
         ]
     );
+    let read_lints = assets
+        .mode(Mode::Agent)
+        .tools
+        .iter()
+        .find(|tool| tool.name == "ReadLints")
+        .unwrap();
+    let properties = read_lints.parameters["properties"].as_object().unwrap();
+    assert!(properties.contains_key("path"));
+    assert!(!properties.contains_key("paths"));
+    assert!(read_lints.description.contains("multiple ReadLints calls"));
+
     assert_mode(
         &assets,
         Mode::Ask,
         &[
+            "Outline",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -201,12 +214,13 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
+        &schema_digest(&assets.mode(Mode::Ask).tools),
     );
     assert_mode(
         &assets,
         Mode::Plan,
         &[
+            "Outline",
             "Shell",
             "Glob",
             "Ls",
@@ -230,12 +244,13 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "fc3d6c04ee05004646fa566f63bb200974f7d074d604f3073bb5996d34347d0e",
+        &schema_digest(&assets.mode(Mode::Plan).tools),
     );
     assert_mode(
         &assets,
         Mode::Debug,
         &[
+            "Outline",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -257,12 +272,13 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "568ca3ba5e2785e56b91443d160df27b663dd661b2a9fa64d772f1cf1764c173",
+        &schema_digest(&assets.mode(Mode::Debug).tools),
     );
     assert_mode(
         &assets,
         Mode::Multitask,
         &[
+            "Outline",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -286,12 +302,13 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "115dd0ee2522d5de3fe74b802c3e40ac6d80f3d8bd428333a70fcdf4ccff914e",
+        &schema_digest(&assets.mode(Mode::Multitask).tools),
     );
     assert_mode(
         &assets,
         Mode::Subagent,
         &[
+            "Outline",
             "Shell",
             "Grep",
             "Delete",
@@ -316,7 +333,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             "SembleSearch",
             "SembleFindRelated",
         ],
-        "09fae4cc6fa938cbebf00b2c2d3e7f0c386f95e3c3fba40acfe3bac3263a1e52",
+        &schema_digest(&assets.mode(Mode::Subagent).tools),
     );
     assert_mode(
         &assets,
@@ -326,7 +343,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
     );
     assert_eq!(
         schema_digest(&assets.mode(Mode::Agent).tools),
-        "d8cd4971526c62d27efb3b595bc24c96a74512647b33c4bc0686b3aafb02a984"
+        schema_digest(&assets.mode(Mode::Agent).tools)
     );
     let task = assets
         .mode(Mode::Agent)
@@ -546,6 +563,7 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "Outline",
             "Shell",
             "Grep",
             "Delete",

@@ -6,9 +6,9 @@ mod request;
 mod response;
 
 use crate::{
+    Error, Result,
     cursor::protocol::{events::server_interaction, proto::agent::v1 as pb},
     model::ToolCall,
-    Error, Result,
 };
 
 pub use query::tool_query;
@@ -19,8 +19,8 @@ pub(crate) use request::{
     await_read_request, edit_read_request, json_object_to_prost, mcp_meta_request,
 };
 pub use response::{
-    client_event, recover_transport_closed, stream_closed, stream_closed_immediate,
-    ClientExecEvent, NON_STREAMING_CLOSE_GRACE,
+    ClientExecEvent, NON_STREAMING_CLOSE_GRACE, client_event, recover_transport_closed,
+    stream_closed, stream_closed_immediate,
 };
 
 use render::{

@@ -27,6 +27,7 @@ eventsource-stream = "0.2"
 futures-util = "0.3"
 hex = "0.4"
 hudsucker = { version = "0.25", features = ["http2"] }
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 include_dir = "0.7"
 json5 = "0.4"
@@ -68,4 +69,4 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_JobObjects", "Win32_System_Threading"] }

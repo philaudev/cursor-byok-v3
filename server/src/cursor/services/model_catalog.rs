@@ -1,6 +1,6 @@
 //! Publishes the configured model catalog to Cursor.
 use axum::{
-    body::{Body, Bytes},
+    body::{to_bytes, Body, Bytes},
     extract::{Extension, State},
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
@@ -255,18 +255,19 @@ fn context_options(context_window_tokens: Option<u64>) -> Vec<(String, String)> 
 
 pub async fn available_models(
     State(registry): State<TransportRegistry>,
-    Extension(proxy): Extension<CursorProxy>,
+    _proxy: Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
+    let _ = to_bytes(request.into_body(), usize::MAX).await;
     let models = registry.store().models().await?;
     let plugin_models = match registry.plugins() {
         Some(plugins) => plugins.configured_models().await,
         None => Vec::new(),
     };
-    tracing::info!(
+    tracing::debug!(
         model_count = models.len(),
         plugin_model_count = plugin_models.len(),
-        "appending BYOK models to Cursor AvailableModels"
+        "serving local BYOK models for Cursor AvailableModels"
     );
     let mut available_models = models.iter().map(available_model).collect::<Vec<_>>();
     available_models.extend(plugin_models.iter().map(available_plugin_model));
@@ -279,29 +280,24 @@ pub async fn available_models(
         models: available_models,
     }
     .encode_to_vec();
-    match proxy::forward_buffered(&proxy, request).await {
-        Ok(upstream) => merge_response(upstream, local),
-        Err(error) => {
-            tracing::warn!(%error, "Cursor AvailableModels upstream unavailable; using local catalog");
-            Ok(local_response(local))
-        }
-    }
+    Ok(local_response(local))
 }
 
 pub async fn usable_models(
     State(registry): State<TransportRegistry>,
-    Extension(proxy): Extension<CursorProxy>,
+    _proxy: Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
+    let _ = to_bytes(request.into_body(), usize::MAX).await;
     let models = registry.store().models().await?;
     let plugin_models = match registry.plugins() {
         Some(plugins) => plugins.configured_models().await,
         None => Vec::new(),
     };
-    tracing::info!(
+    tracing::debug!(
         model_count = models.len(),
         plugin_model_count = plugin_models.len(),
-        "appending BYOK models to Cursor GetUsableModels"
+        "serving local BYOK models for Cursor GetUsableModels"
     );
     let local = UsableModelsAddition {
         models: models
@@ -311,13 +307,7 @@ pub async fn usable_models(
             .collect(),
     }
     .encode_to_vec();
-    match proxy::forward_buffered(&proxy, request).await {
-        Ok(upstream) => merge_response(upstream, local),
-        Err(error) => {
-            tracing::warn!(%error, "Cursor GetUsableModels upstream unavailable; using local catalog");
-            Ok(local_response(local))
-        }
-    }
+    Ok(local_response(local))
 }
 
 pub async fn default_model_for_cli(
@@ -408,6 +398,7 @@ fn default_model_nudge_response(
     }
 }
 
+#[allow(dead_code)]
 fn merge_response(upstream: proxy::BufferedResponse, extra: Vec<u8>) -> Result<Response<Body>> {
     if !upstream.status.is_success() {
         tracing::warn!(status = %upstream.status, "Cursor model catalog upstream rejected request; using local catalog");

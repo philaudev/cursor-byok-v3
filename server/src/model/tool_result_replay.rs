@@ -28,7 +28,7 @@ fn replay_limit(name: &str) -> Option<usize> {
         "PatchEdit" | "PatchEditLines" | "PatchEditSpan" | "StrReplace" => Some(4 * KIB),
         "Edit" | "EditNotebook" | "Write" | "WebFetch" => Some(32 * KIB),
         "CallMcpTool" | "FetchMcpResource" | "ListMcpResources" | "GetMcpTools"
-        | "SembleSearch" | "SembleFindRelated" => Some(32 * KIB),
+        | "SembleSearch" | "SembleFindRelated" | "Outline" | "FileStructure" => Some(32 * KIB),
         _ => None,
     }
 }

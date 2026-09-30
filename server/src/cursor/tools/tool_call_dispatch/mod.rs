@@ -11,11 +11,11 @@ mod search;
 use std::collections::BTreeMap;
 
 use crate::{
+    Error, Result,
     cursor::protocol::proto::agent::v1 as pb,
     model::ToolCall,
     search::{WebFetch, WebSearch},
     store::Store,
-    Error, Result,
 };
 
 use super::{
@@ -63,6 +63,7 @@ pub(super) async fn start(
     if tool_name == "grep" {
         if let Some(store) = store {
             if let Ok(settings) = store.search_settings().await {
+                let workspace_hint = context.workspace_paths.first().map(|s| s.as_str());
                 match settings.grep_engine {
                     crate::store::GrepEngine::Ripgrep => {}
                     crate::store::GrepEngine::Tgrep => {
@@ -70,15 +71,21 @@ pub(super) async fn start(
                             call,
                             settings.tgrep_path.as_deref(),
                             tgrep_registry,
+                            workspace_hint,
                         )
                         .await;
-                        return search::local_tgrep_completion(call, crate::cursor::tools::runtime::now_ms(), outcome);
+                        return search::local_tgrep_completion(
+                            call,
+                            crate::cursor::tools::runtime::now_ms(),
+                            outcome,
+                        );
                     }
                     crate::store::GrepEngine::Auto => {
                         let outcome = search::tgrep_outcome(
                             call,
                             settings.tgrep_path.as_deref(),
                             tgrep_registry,
+                            workspace_hint,
                         )
                         .await;
                         if !outcome.should_auto_fallback() {
@@ -104,6 +111,7 @@ pub(super) async fn start(
         | "generateimage" => interaction::start(runtime, call).await,
         "todowrite" | "updatecurrentstep" => local::start(call, message_index),
         "awaitshell" => await_shell::start(runtime, results, call, context).await,
+        "outline" | "filestructure" => search::start_outline(results, call),
         "semblesearch" | "semblefindrelated" => search::start(results, call, store.cloned()),
         "inspectchanges" => inspect_changes::start(results, call, context),
         "gitarchaeology" => git_archaeology::start(results, call, context),
@@ -173,7 +181,7 @@ mod tests {
     use crate::{
         cursor::tools::{
             runtime::CursorToolRuntime,
-            tool_call_result::{tool_result_channel, ToolResultSender},
+            tool_call_result::{ToolResultSender, tool_result_channel},
         },
         model::ToolCall,
         store::{GrepEngine, SearchSettings, Store},
@@ -198,9 +206,12 @@ mod tests {
 
     async fn dispatcher_with_engine(engine: GrepEngine) -> (Store, ToolResultSender) {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::connect(&format!("sqlite://{}", directory.path().join("test.db").display()))
-            .await
-            .unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
         store
             .set_search_settings(SearchSettings {
                 grep_engine: engine,
@@ -216,9 +227,12 @@ mod tests {
     async fn auto_infrastructure_failure_falls_back_once_without_local_completion() {
         let fake_binary = tempfile::NamedTempFile::new().unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::connect(&format!("sqlite://{}", directory.path().join("test.db").display()))
-            .await
-            .unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
         store
             .set_search_settings(SearchSettings {
                 grep_engine: GrepEngine::Auto,
@@ -249,16 +263,22 @@ mod tests {
             panic!("expected one protocol fallback request")
         };
         assert_eq!(exec.exec_id, "auto-infrastructure");
-        assert!(matches!(exec.message, Some(pb::exec_server_message::Message::GrepArgs(_))));
+        assert!(matches!(
+            exec.message,
+            Some(pb::exec_server_message::Message::GrepArgs(_))
+        ));
     }
 
     #[tokio::test]
     async fn explicit_tgrep_infrastructure_failure_does_not_fallback() {
         let fake_binary = tempfile::NamedTempFile::new().unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::connect(&format!("sqlite://{}", directory.path().join("test.db").display()))
-            .await
-            .unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
         store
             .set_search_settings(SearchSettings {
                 grep_engine: GrepEngine::Tgrep,
@@ -282,7 +302,9 @@ mod tests {
         .unwrap();
 
         assert!(started.messages.is_empty());
-        let completion = started.completion.expect("tgrep-only must complete locally");
+        let completion = started
+            .completion
+            .expect("tgrep-only must complete locally");
         assert_eq!(completion.result().call_id, "tgrep-infrastructure");
         assert!(completion.result().is_error);
     }
@@ -290,9 +312,9 @@ mod tests {
     #[tokio::test]
     async fn auto_fallback_reserve_failure_returns_one_terminal_error_without_retry() {
         let (store, results) = dispatcher_with_engine(GrepEngine::Auto).await;
-        let runtime = CursorToolRuntime::with_shared_ids(Arc::new(std::sync::atomic::AtomicU32::new(
-            u32::MAX,
-        )));
+        let runtime = CursorToolRuntime::with_shared_ids(Arc::new(
+            std::sync::atomic::AtomicU32::new(u32::MAX),
+        ));
         let call = grep_call("auto-reserve-failure", json!({"pattern": "needle"}));
         let completed = HashSet::new();
         let started = HashSet::new();
@@ -374,18 +396,28 @@ mod tests {
         .unwrap();
 
         assert!(started.messages.is_empty());
-        let completion = started.completion.expect("explicit tgrep must complete locally");
+        let completion = started
+            .completion
+            .expect("explicit tgrep must complete locally");
         assert_eq!(completion.result().call_id, "tgrep-unavailable");
         assert!(completion.result().is_error);
-        assert!(completion.result().content.contains("tgrep binary not found"));
+        assert!(
+            completion
+                .result()
+                .content
+                .contains("tgrep binary not found")
+        );
     }
 
     #[tokio::test]
     async fn auto_no_match_returns_one_local_success() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::connect(&format!("sqlite://{}", directory.path().join("test.db").display()))
-            .await
-            .unwrap();
+        let store = Store::connect(&format!(
+            "sqlite://{}",
+            directory.path().join("test.db").display()
+        ))
+        .await
+        .unwrap();
         store
             .set_search_settings(SearchSettings {
                 grep_engine: GrepEngine::Auto,

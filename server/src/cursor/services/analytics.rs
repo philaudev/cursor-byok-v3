@@ -30,7 +30,10 @@ pub async fn bootstrap_statsig(
 ) -> Result<Response<Body>> {
     match proxy::forward_buffered(&upstream, request).await {
         Ok(response) if response.status.is_success() => match patch_upstream(response) {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                tracing::info!("Cursor Statsig bootstrap patched from upstream");
+                Ok(response)
+            }
             Err(error) => {
                 tracing::warn!(%error, "Cursor Statsig bootstrap was invalid; using local bootstrap");
                 local_response()
@@ -47,6 +50,7 @@ pub async fn bootstrap_statsig(
     }
 }
 
+#[allow(dead_code)]
 fn patch_upstream(response: proxy::BufferedResponse) -> Result<Response<Body>> {
     let (framed, payload) = unary_payload(&response.body)?;
     let mut message = BootstrapStatsigResponse::decode(payload)?;
@@ -173,4 +177,28 @@ fn encode_unary(message: &impl Message, framed: bool) -> Bytes {
     output.put_u32(payload.len() as u32);
     output.extend_from_slice(&payload);
     output.freeze()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_bootstrap_statsig_upstream_succeeds() {
+        let store = crate::store::Store::connect("sqlite::memory:").await.unwrap();
+        let clients = crate::network::NetworkClients::new(store);
+        let proxy = proxy::CursorProxy::cursor(clients);
+        let request = Request::builder()
+            .method("POST")
+            .uri(BOOTSTRAP_STATSIG_PATH)
+            .header(header::CONTENT_TYPE, "application/proto")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy::forward_buffered_with_timeout(&proxy, request, std::time::Duration::from_secs(30)).await.unwrap();
+        assert_eq!(response.status, StatusCode::OK);
+        println!("Response body len: {}", response.body.len());
+        let patched = patch_upstream(response).unwrap();
+        assert_eq!(patched.status(), StatusCode::OK);
+    }
 }

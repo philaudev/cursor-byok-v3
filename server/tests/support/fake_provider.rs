@@ -7,11 +7,11 @@ use std::{
 };
 
 use cursor_server::{
+    Error,
     model::{ModelInvocation, ModelRequest},
     provider::{ModelEvent, Provider, ProviderStream},
-    Error,
 };
-use futures_util::{stream, StreamExt};
+use futures_util::{StreamExt, stream};
 use tokio_util::sync::CancellationToken;
 
 enum FakeResponse {

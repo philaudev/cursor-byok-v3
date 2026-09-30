@@ -1,11 +1,11 @@
 //! AwaitShell's timed and file-backed execution paths.
 
 use crate::{
+    Error, Result,
     cursor::tools::runtime::{
-        CursorToolRuntime, ExecContext, DEFAULT_SHELL_BLOCK_UNTIL_MS, MAX_SHELL_BLOCK_UNTIL_MS,
+        CursorToolRuntime, DEFAULT_SHELL_BLOCK_UNTIL_MS, ExecContext, MAX_SHELL_BLOCK_UNTIL_MS,
     },
     model::ToolCall,
-    Error, Result,
 };
 
 use super::ToolStart;

@@ -138,6 +138,7 @@ pub(crate) async fn prepare(
     if let Some(rules_dir) = local_rules_dir {
         context::merge_local_rules(&mut request_context, rules_dir);
     }
+    context::merge_local_skills(&mut request_context);
     let request_context = request_context;
     let ActionProjection {
         mode: mode_number,

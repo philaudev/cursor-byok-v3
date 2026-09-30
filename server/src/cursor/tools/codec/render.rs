@@ -2,6 +2,7 @@
 use serde_json::Value;
 
 use crate::{
+    Error, Result,
     cursor::{
         protocol::proto::agent::v1 as pb,
         tools::{
@@ -10,7 +11,6 @@ use crate::{
         },
     },
     model::ToolCall,
-    Error, Result,
 };
 
 use super::server_interaction;
@@ -219,7 +219,8 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "todowrite" => Tool::UpdateTodosToolCall(pb::UpdateTodosToolCall::default()),
         "strreplace" | "editnotebook" | "write" => Tool::EditToolCall(pb::EditToolCall::default()),
         "readlints" => Tool::ReadLintsToolCall(pb::ReadLintsToolCall::default()),
-        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges" | "gitarchaeology" => {
+        "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges"
+        | "gitarchaeology" | "outline" | "filestructure" => {
             Tool::McpToolCall(pb::McpToolCall::default())
         }
         "createplan" => Tool::CreatePlanToolCall(pb::CreatePlanToolCall::default()),
@@ -287,6 +288,20 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
             .and_then(Value::as_str)
             .map(str::to_string)
     };
+    // 与执行侧一致的参数别名兼容(如 Claude Code 习惯的 file_path),仅影响展示。
+    let aliased = |names: &[&str]| -> String {
+        names
+            .iter()
+            .find_map(|name| call.arguments.get(name).and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let optional_aliased = |names: &[&str]| -> Option<String> {
+        names
+            .iter()
+            .find_map(|name| call.arguments.get(name).and_then(Value::as_str))
+            .map(str::to_string)
+    };
     match output.tool.as_mut() {
         Some(pb::tool_call::Tool::ShellToolCall(tool)) => {
             tool.description = optional("description");
@@ -300,7 +315,7 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
         }
         Some(pb::tool_call::Tool::DeleteToolCall(tool)) => {
             tool.args = Some(pb::DeleteArgs {
-                path: string("path"),
+                path: aliased(&["path", "file_path", "filePath"]),
                 tool_call_id: call.call_id.clone(),
             })
         }
@@ -340,7 +355,7 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
         }
         Some(pb::tool_call::Tool::ReadToolCall(tool)) => {
             tool.args = Some(pb::ReadToolArgs {
-                path: string("path"),
+                path: aliased(&["path", "file_path", "filePath"]),
                 offset: call
                     .arguments
                     .get("offset")
@@ -369,7 +384,7 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
         }
         Some(pb::tool_call::Tool::EditToolCall(tool)) => {
             let stream_content = if normalized(&call.name) == "write" {
-                optional("contents").unwrap_or_default()
+                optional_aliased(&["contents", "content"]).unwrap_or_default()
             } else {
                 optional("new_string").unwrap_or_default()
             };
@@ -377,22 +392,14 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
                 path: if normalized(&call.name) == "editnotebook" {
                     string("target_notebook")
                 } else {
-                    string("path")
+                    aliased(&["path", "file_path", "filePath"])
                 },
                 stream_content: Some(edit::normalize_newlines(&stream_content)),
             })
         }
         Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) => {
             tool.args = Some(pb::ReadLintsToolArgs {
-                paths: call
-                    .arguments
-                    .get("paths")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect(),
+                paths: optional("path").into_iter().collect(),
             })
         }
         Some(pb::tool_call::Tool::McpToolCall(tool)) => {
@@ -437,7 +444,7 @@ pub fn render_tool_call(call: &ToolCall, completed: bool) -> Result<pb::ToolCall
         }
         Some(pb::tool_call::Tool::WebSearchToolCall(tool)) => {
             tool.args = Some(pb::WebSearchArgs {
-                search_term: string("search_term"),
+                search_term: aliased(&["search_term", "query"]),
                 tool_call_id: call.call_id.clone(),
             })
         }
@@ -580,6 +587,8 @@ fn semble_tool_name(name: &str) -> Option<&'static str> {
         "semblesearch" => Some("search"),
         "semblefindrelated" => Some("find_related"),
         "inspectchanges" => Some("inspect_changes"),
+        "gitarchaeology" => Some("git_archaeology"),
+        "outline" | "filestructure" => Some("outline"),
         _ => None,
     }
 }
@@ -593,8 +602,46 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::tool_placeholder;
+    use super::{render_tool_call, tool_placeholder};
     use crate::cursor::protocol::proto::agent::v1 as pb;
+    use crate::model::ToolCall;
+    use serde_json::json;
+
+    #[test]
+    fn read_lints_renders_single_path_as_client_paths() {
+        let call = ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: "ReadLints".into(),
+            arguments_text: String::new(),
+            arguments: json!({ "path": "src/main.rs" }),
+            argument_error: None,
+        };
+        let rendered = render_tool_call(&call, false).unwrap();
+        let Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) = rendered.tool else {
+            panic!("expected ReadLintsToolCall");
+        };
+        assert_eq!(tool.args.unwrap().paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn read_lints_without_path_renders_empty_paths() {
+        let call = ToolCall {
+            index: 0,
+            call_id: "call-1".into(),
+            model_call_id: "model-1".into(),
+            name: "ReadLints".into(),
+            arguments_text: String::new(),
+            arguments: json!({}),
+            argument_error: None,
+        };
+        let rendered = render_tool_call(&call, false).unwrap();
+        let Some(pb::tool_call::Tool::ReadLintsToolCall(tool)) = rendered.tool else {
+            panic!("expected ReadLintsToolCall");
+        };
+        assert!(tool.args.unwrap().paths.is_empty());
+    }
 
     #[test]
     fn bash_renders_as_a_shell_placeholder() {

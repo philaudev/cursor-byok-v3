@@ -1,8 +1,8 @@
 //! Converts Cursor interaction completions into Tool results.
 use crate::{
+    Error, Result,
     cursor::{protocol::proto::agent::v1 as pb, tools::codec as interaction},
     search::{FetchedPage, SearchHit},
-    Error, Result,
 };
 
 use super::ToolCompletion;
@@ -344,7 +344,7 @@ fn missing(name: &str) -> Error {
 mod tests {
     use serde_json::json;
 
-    use super::{complete_web_fetch, PendingInteraction};
+    use super::{PendingInteraction, complete_web_fetch};
     use crate::{
         cursor::protocol::proto::agent::v1 as pb,
         model::ToolCall,

@@ -7,6 +7,7 @@ pub mod embedding;
 pub mod error;
 pub mod index;
 pub mod language;
+pub mod outline;
 pub mod search;
 pub mod source;
 pub mod types;
@@ -14,6 +15,7 @@ pub mod types;
 pub use config::SembleConfig;
 pub use embedding::{Embedder, StaticEmbedder};
 pub use error::{Error, Result};
+pub use outline::{extract_outline, FileOutline, SymbolKind, SymbolNode};
 pub use search::SearchEngine;
 pub use types::{
     Chunk, ContentType, FindRelatedRequest, IndexStats, SearchRequest, SearchResponse, SearchResult,

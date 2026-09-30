@@ -517,7 +517,7 @@
               "type": "string"
             },
             "type": {
-              "description": "File type to search (rg --type). Supply only a valid, non-empty ripgrep file type such as js, py, rust, go, or java; omit this field entirely when no language filter is needed. More efficient than `glob` for standard file types.",
+              "description": "File type to search (rg --type, e.g. \"js\", \"py\", \"rust\", \"go\"). Omit or pass empty string if no language filter is needed. More efficient than `glob` for standard file types.",
               "type": "string"
             }
           },
@@ -531,13 +531,50 @@
       "type": "function",
       "function": {
         "name": "InspectChanges",
-        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or a specific file with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff of a single file instead of running `git diff <file>` via Shell: pass the absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to get its focused unified diff.\n- Checking working tree status, modified/added/deleted files, or staged/unstaged changes before and after code modifications.\n- Reviewing repository-wide diffs without flooding context with raw terminal output.\n\nUsage Guidelines:\n- Pass the absolute project/repo directory path (e.g. `path: \"C:/path/to/repo\"`) to get an overview of all modified and untracked files with summarized diffs.\n- Pass an absolute file path (e.g. `path: \"C:/path/to/repo/src/main.rs\"`) to inspect its complete unified diff.\n- Always use absolute paths.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
+        "description": "Inspects uncommitted Git changes (status and diff) for a workspace repository or specific files with structured, token-safe summaries.\n\nUse this tool for:\n- Inspecting uncommitted changes or diff across the workspace or for a batch of files in one call (`files: [\"src/main.rs\", \"Cargo.toml\"]`).\n- Checking change manifest only without diff overhead (`mode: \"summary\"`).\n- Isolating staged index changes (`scope: \"staged\"`) or unstaged changes (`scope: \"unstaged\"`).\n- Reviewing repository-wide diffs without flooding context with raw terminal output (`mode: \"review\"` or `mode: \"diff\"`).\n\nUsage Guidelines:\n- Pass the absolute project/repo directory path (e.g. `path: \"C:/path/to/repo\"`).\n- Use `mode: \"summary\"` when only an inventory of changed files is needed before selecting specific diffs.\n- Use `files` with repository-relative paths to retrieve diffs for multiple specific files in a single tool call.\n- Use `scope: \"staged\"` or `scope: \"unstaged\"` to filter index vs working tree changes.\n- Automatically filters large binary files and lockfiles to preserve token budget.",
         "parameters": {
           "type": "object",
           "properties": {
             "path": {
               "description": "The absolute path to the Git repository directory or a specific file to inspect.",
               "type": "string"
+            },
+            "mode": {
+              "description": "Output mode: summary returns manifest only; diff returns selected diffs; review returns manifest and bounded diff.",
+              "enum": [
+                "summary",
+                "diff",
+                "review"
+              ],
+              "type": "string"
+            },
+            "scope": {
+              "description": "Git change scope: all, staged index changes, or unstaged working-tree changes.",
+              "enum": [
+                "all",
+                "staged",
+                "unstaged"
+              ],
+              "type": "string"
+            },
+            "files": {
+              "description": "Optional repository-relative exact paths to inspect in one call.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_files": {
+              "description": "Maximum manifest files returned. Values above the server limit are clamped.",
+              "minimum": 1,
+              "maximum": 100,
+              "type": "integer"
+            },
+            "max_diff_chars": {
+              "description": "Maximum combined diff characters returned. Values above the server limit are clamped.",
+              "minimum": 0,
+              "maximum": 8000,
+              "type": "integer"
             }
           },
           "required": [
@@ -599,6 +636,29 @@
     {
       "type": "function",
       "function": {
+        "name": "Outline",
+        "description": "Extracts the high-level outline and symbol structure of a source file (classes, interfaces, structs, enums, methods, functions, fields, signatures, visibility, line ranges) using in-process Tree-sitter AST parsing.\n\nSupported Languages:\nJava, TypeScript, JavaScript, Python, Rust, Go, C, C++, C#.\n\nWhen to use Outline:\n- Inspecting large or unfamiliar files (>200 lines) to get a complete architectural map and API contract without reading the entire body.\n- Locating exact method or class line ranges before making surgical edits with `Read` (using `offset`/`limit`) or `StrReplace`.\n- Checking class hierarchy, implemented interfaces, fields, and method signatures.\n- Conserving token budget and avoiding context window bloat.\n\nWhen NOT to use Outline:\n- Reading the implementation logic/body of a specific function (use `Read` with targeted `offset` and `limit` after locating it via `Outline`).\n- Finding symbols across the entire repository (use `SembleSearch` or `Grep` first).\n\nUsage Guidelines:\n- Always pass absolute file path (`path`).\n- Language is automatically detected from file extension; `language` parameter is optional.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "language": {
+              "description": "Optional explicit language identifier (e.g. 'java', 'rust', 'typescript', 'python', 'go', 'cpp'). If omitted, language is detected from file extension.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The absolute path of the source file to inspect.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Read",
         "description": "Reads a file from the local filesystem. This tool can also read image files when called with the appropriate path. Formats supported: jpeg/jpg, png, gif, webp.",
         "parameters": {
@@ -627,16 +687,13 @@
       "type": "function",
       "function": {
         "name": "ReadLints",
-        "description": "Read and display linter errors from the current workspace. You can provide paths to specific files or directories, or omit the argument to get diagnostics for all files.",
+        "description": "Read and display linter errors from the current workspace. Provide one file or directory path to scope diagnostics, or omit path to check the whole workspace. To check multiple specific files or directories, issue multiple ReadLints calls in the same response so they can be handled independently.",
         "parameters": {
           "type": "object",
           "properties": {
-            "paths": {
-              "description": "Optional. An array of paths to files or directories to read linter errors for. You can use either relative paths in the workspace or absolute paths. If provided, returns diagnostics for the specified files/directories only. If not provided, returns diagnostics for all files in the workspace.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
+            "path": {
+              "description": "Optional path to one file or directory. Omit it to get diagnostics for the whole workspace.",
+              "type": "string"
             }
           }
         }
@@ -646,12 +703,12 @@
       "type": "function",
       "function": {
         "name": "Shell",
-        "description": "Executes a given command in a shell session with optional foreground timeout.\n\nIMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files, sleeping) - use the specialized tools for this instead.\n\nYou can monitor commands by configuring `notify_on_output`. You will be notified at the end of your turn whenever stdout/stderr output matches the regex `pattern`. Output redirected only to a file will not trigger it. Configure a 5-or-fewer-word `reason` explaining what you are watching for, and optionally configure `debounce_ms`.\n\n<sandboxing>\nBy default, your commands will run in a sandbox. The sandbox allows most writes to the workspace and reads to the rest of the filesystem. Some other syscalls are also disallowed like access to USB devices.\n\nThe sandbox includes network access for common package managers and version control providers (e.g. npm, pypi, crates.io, Maven Central, GitHub, etc.). Standard operations like package installs and fetching dependencies will work without requesting additional permissions.\n\nFor broader network access beyond the allowed domains, you may still need to request 'full_network' permissions.\n\nThe required_permissions argument is used to request additional permissions. If you know you will need a permission, request it. Requesting permissions will slow down the command execution as it will ask the user for approval. Do not hesitate to request permissions if you are certain you need them. For commands you know will need unrestricted network access, request the full_network permission rather than waiting for the command to fail and asking for it later.\n\nThe following permissions are supported:\n\n- full_network: Grants unrestricted network access. This is useful for any commands that need to contact the outside internet, outside of the allowed domains.\n- all: Disables the sandbox entirely. If all is requested the command will run outside of the sandbox.\n\nIf you think a command failed due to sandbox restrictions, run the command again with the required_permissions argument to request what you need.\n</sandboxing>",
+        "description": "Executes a given command in a shell session with optional foreground timeout.\n\nIMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files, sleeping) - use the specialized tools for this instead.\n\nCRITICAL EXECUTION RULES:\n- NEVER immediately re-run or duplicate a command if it was moved to background. Check the background process state or inspect terminal output instead of spawning duplicate runs.\n- For test suites, compilation, builds, or package installs, explicitly configure `block_until_ms` (e.g. 60000 - 180000) upfront so the command completes in the foreground.\n\nYou can monitor commands by configuring `notify_on_output`. You will be notified at the end of your turn whenever stdout/stderr output matches the regex `pattern`. Output redirected only to a file will not trigger it. Configure a 5-or-fewer-word `reason` explaining what you are watching for, and optionally configure `debounce_ms`.\n\n<sandboxing>\nBy default, your commands will run in a sandbox. The sandbox allows most writes to the workspace and reads to the rest of the filesystem. Some other syscalls are also disallowed like access to USB devices.\n\nThe sandbox includes network access for common package managers and version control providers (e.g. npm, pypi, crates.io, Maven Central, GitHub, etc.). Standard operations like package installs and fetching dependencies will work without requesting additional permissions.\n\nFor broader network access beyond the allowed domains, you may still need to request 'full_network' permissions.\n\nThe required_permissions argument is used to request additional permissions. If you know you will need a permission, request it. Requesting permissions will slow down the command execution as it will ask the user for approval. Do not hesitate to request permissions if you are certain you need them. For commands you know will need unrestricted network access, request the full_network permission rather than waiting for the command to fail and asking for it later.\n\nThe following permissions are supported:\n\n- full_network: Grants unrestricted network access. This is useful for any commands that need to contact the outside internet, outside of the allowed domains.\n- all: Disables the sandbox entirely. If all is requested the command will run outside of the sandbox.\n\nIf you think a command failed due to sandbox restrictions, run the command again with the required_permissions argument to request what you need.\n</sandboxing>",
         "parameters": {
           "type": "object",
           "properties": {
             "block_until_ms": {
-              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms (30 seconds). For commands expected to take longer (e.g. test suites, builds, compilation, package installs), explicitly set `block_until_ms: 60000` to `180000` (up to 180000ms / 3 minutes) to wait in the foreground rather than backgrounding early. Set to 0 to immediately run long-lived background jobs (e.g. dev servers). Values above 180000ms are clamped to 180000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
+              "description": "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 60000ms (60 seconds). For commands expected to take longer (e.g. test suites, builds, compilation, package installs), explicitly set `block_until_ms: 60000` to `180000` (up to 180000ms / 3 minutes) to wait in the foreground rather than backgrounding early. Set to 0 to immediately run long-lived background jobs (e.g. dev servers). Values above 180000ms are clamped to 180000ms; for work expected to run longer, use `block_until_ms: 0` and observe the managed background job later. If a command moves to background, NEVER execute the exact same command again in the foreground; wait for completion or inspect the terminal session file (`terminals/$id.txt`). For a long-lived process, keep the command itself in the foreground and use `block_until_ms: 0`; do not combine it with `nohup`, `&`, `disown`, or another self-backgrounding wrapper, because Cursor must manage the real process. Do not specify a `timeout` parameter; no such parameter exists.",
               "type": "number"
             },
             "command": {

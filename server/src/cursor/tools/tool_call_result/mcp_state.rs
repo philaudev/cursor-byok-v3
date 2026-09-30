@@ -1,9 +1,9 @@
 //! Tracks MCP state required to build Tool results.
 use serde_json::Value;
 
-use crate::{cursor::protocol::proto::agent::v1 as pb, model::ToolResult, Error, Result};
+use crate::{Error, Result, cursor::protocol::proto::agent::v1 as pb, model::ToolResult};
 
-use super::{prost_json, ToolCompletion};
+use super::{ToolCompletion, prost_json};
 use crate::cursor::tools::runtime::PendingExec;
 
 pub(super) fn complete(
@@ -51,6 +51,20 @@ pub(super) fn complete(
                     .is_none_or(|pattern| pattern.is_match(&server.server_identifier));
                 let mut matched_tool = false;
                 for tool in &server.tools {
+                    if !tool.description.trim().is_empty() {
+                        crate::cursor::compile::context::cache_mcp_tool_description(
+                            &server.server_identifier,
+                            &tool.tool_name,
+                            &tool.description,
+                        );
+                        if !server.server_name.is_empty() {
+                            crate::cursor::compile::context::cache_mcp_tool_description(
+                                &server.server_name,
+                                &tool.tool_name,
+                                &tool.description,
+                            );
+                        }
+                    }
                     if tool_filter.is_some_and(|value| value != tool.tool_name)
                         || (!server_matches_pattern
                             && pattern
