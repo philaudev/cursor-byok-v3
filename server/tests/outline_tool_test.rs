@@ -77,3 +77,23 @@ async fn test_outline_on_tsx_file() {
     let val = result.unwrap();
     println!("--- React TSX Outline for OpportunityKanbanBoard.tsx ---\n{}", val["rendered"].as_str().unwrap());
 }
+
+#[tokio::test]
+async fn test_outline_on_dart_order_form_logic() {
+    let dart_path = "D:/Admin/Documents/PROJECTS/conruabien/crm_application/lib/features/orders/presentation/order_form_logic.dart";
+    if !std::path::Path::new(dart_path).exists() {
+        return;
+    }
+
+    let args = json!({
+        "path": dart_path,
+    });
+
+    let result = cursor_server::search::execute_outline(args).await;
+    assert!(result.is_ok(), "Dart outline execution should succeed: {:?}", result.err());
+
+    let val = result.unwrap();
+    println!("--- Dart Outline for order_form_logic.dart ---\n{}", val["rendered"].as_str().unwrap());
+    assert_eq!(val["language"], "dart");
+    assert!(val["symbols"].as_array().unwrap().len() > 0);
+}

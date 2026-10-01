@@ -12,6 +12,7 @@ pub fn parser_for(language: &str) -> Option<Parser> {
         "java" => tree_sitter_java::LANGUAGE.into(),
         "c" => tree_sitter_c::LANGUAGE.into(),
         "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        "dart" => tree_sitter_dart::LANGUAGE.into(),
         _ => return None,
     };
     let mut parser = Parser::new();
