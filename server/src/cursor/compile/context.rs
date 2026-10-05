@@ -261,21 +261,49 @@ fn parse_skill_file(path: &Path) -> Option<ParsedSkill> {
     })
 }
 
-fn resolve_skill_identifier(parsed_name: Option<&str>, path: &Path) -> String {
-    if let Some(name) = parsed_name {
-        return name.to_string();
+fn normalize_path_key(path_str: &str) -> String {
+    let normalized = path_str.replace('\\', "/");
+    #[cfg(windows)]
+    {
+        normalized.to_lowercase()
     }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
+fn resolve_skill_identifier_from_path(path: &Path) -> String {
     if path.is_dir() {
         path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_lowercase()
     } else {
-        path.file_stem()
+        let file_name = path
+            .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_lowercase()
+            .unwrap_or_default();
+        if file_name.eq_ignore_ascii_case("skill.md") {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_lowercase()
+        } else {
+            path.file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_lowercase()
+        }
     }
+}
+
+fn resolve_skill_identifier(parsed_name: Option<&str>, path: &Path) -> String {
+    if let Some(name) = parsed_name {
+        return name.to_string();
+    }
+    resolve_skill_identifier_from_path(path)
 }
 
 fn skill_identifier(skill: &pb::AgentSkill, path: &Path) -> String {
@@ -286,29 +314,30 @@ fn skill_identifier(skill: &pb::AgentSkill, path: &Path) -> String {
             }
         }
     }
-    if path.is_dir() {
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_lowercase()
-    } else {
-        path.file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_lowercase()
+    if skill.content.trim().is_empty() && path.is_file() {
+        if let Some(parsed) = parse_skill_file(path) {
+            if let Some(name) = parsed.name {
+                return name;
+            }
+        }
     }
+    resolve_skill_identifier_from_path(path)
 }
 
 pub fn merge_skills_from_directories(context: &mut pb::RequestContext, directories: &[PathBuf]) {
     let mut known_paths = context
         .agent_skills
         .iter()
-        .map(|s| s.full_path.clone())
+        .map(|s| normalize_path_key(&s.full_path))
+        .filter(|p| !p.is_empty())
         .collect::<HashSet<_>>();
     let mut known_names = HashSet::new();
 
     for skill in &context.agent_skills {
-        known_names.insert(skill_identifier(skill, Path::new(&skill.full_path)));
+        let name_key = skill_identifier(skill, Path::new(&skill.full_path));
+        if !name_key.is_empty() {
+            known_names.insert(name_key);
+        }
     }
 
     for dir in directories {
@@ -337,10 +366,14 @@ pub fn merge_skills_from_directories(context: &mut pb::RequestContext, directori
                 if let Some(skill_file) = skill_md {
                     if let Some(parsed) = parse_skill_file(&skill_file) {
                         let name_key = resolve_skill_identifier(parsed.name.as_deref(), &path);
-                        let path_key = parsed.skill.full_path.clone();
-                        if !known_paths.contains(&path_key) && !known_names.contains(&name_key) {
+                        let path_key = normalize_path_key(&parsed.skill.full_path);
+                        if !known_paths.contains(&path_key)
+                            && (name_key.is_empty() || !known_names.contains(&name_key))
+                        {
                             known_paths.insert(path_key);
-                            known_names.insert(name_key);
+                            if !name_key.is_empty() {
+                                known_names.insert(name_key);
+                            }
                             context.agent_skills.push(parsed.skill);
                         }
                     }
@@ -348,10 +381,14 @@ pub fn merge_skills_from_directories(context: &mut pb::RequestContext, directori
             } else if path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
                 if let Some(parsed) = parse_skill_file(&path) {
                     let name_key = resolve_skill_identifier(parsed.name.as_deref(), &path);
-                    let path_key = parsed.skill.full_path.clone();
-                    if !known_paths.contains(&path_key) && !known_names.contains(&name_key) {
+                    let path_key = normalize_path_key(&parsed.skill.full_path);
+                    if !known_paths.contains(&path_key)
+                        && (name_key.is_empty() || !known_names.contains(&name_key))
+                    {
                         known_paths.insert(path_key);
-                        known_names.insert(name_key);
+                        if !name_key.is_empty() {
+                            known_names.insert(name_key);
+                        }
                         context.agent_skills.push(parsed.skill);
                     }
                 }
@@ -476,10 +513,19 @@ pub fn compile_context(context: &pb::RequestContext, today: &str) -> String {
     if !rules.is_empty() {
         sections.push(format!("<rules>\n{}\n</rules>", rules.join("\n")));
     }
+    let mut seen_skill_paths = HashSet::new();
     let skills = context
         .agent_skills
         .iter()
         .filter(|skill| !skill.disable_model_invocation)
+        .filter(|skill| {
+            let key = normalize_path_key(&skill.full_path);
+            if key.is_empty() {
+                true
+            } else {
+                seen_skill_paths.insert(key)
+            }
+        })
         .map(|skill| {
             format!(
                 "<agent_skill fullPath=\"{}\">{}</agent_skill>",
@@ -968,6 +1014,53 @@ mod tests {
 
         assert_eq!(context.agent_skills.len(), 1);
         assert_eq!(context.agent_skills[0].description, "Custom 1");
+    }
+
+    #[test]
+    fn merge_local_skills_dedupes_ide_skill_without_content_and_different_slash() {
+        let directory = tempfile::tempdir().unwrap();
+        let skill_dir = directory.path().join("my-tool");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_file,
+            "---\ndescription: My tool description\n---\nBody here",
+        )
+        .unwrap();
+
+        let mut context = pb::RequestContext::default();
+        // Giả lập IDE đã gửi skill này xuống trước với path có slash khác hoặc không có content
+        let ide_path_str = skill_file.to_string_lossy().replace('/', "\\");
+        context.agent_skills.push(pb::AgentSkill {
+            full_path: ide_path_str,
+            content: String::new(),
+            description: "IDE tool description".into(),
+            ..Default::default()
+        });
+
+        merge_skills_from_directories(&mut context, &[directory.path().to_path_buf()]);
+
+        // Đảm bảo không bị load trùng thành 2 skills
+        assert_eq!(context.agent_skills.len(), 1);
+    }
+
+    #[test]
+    fn compile_context_deduplicates_skills() {
+        let mut context = pb::RequestContext::default();
+        context.agent_skills.push(pb::AgentSkill {
+            full_path: "C:\\tools\\skill\\SKILL.md".into(),
+            description: "Desc 1".into(),
+            ..Default::default()
+        });
+        context.agent_skills.push(pb::AgentSkill {
+            full_path: "c:/tools/skill/SKILL.md".into(),
+            description: "Desc 2".into(),
+            ..Default::default()
+        });
+
+        let compiled = compile_context(&context, "Today");
+        let count = compiled.matches("<agent_skill ").count();
+        assert_eq!(count, 1);
     }
 
     #[test]
