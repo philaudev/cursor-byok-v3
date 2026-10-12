@@ -5,6 +5,7 @@ mod engine;
 mod federation;
 mod fetch;
 pub(crate) mod outline;
+pub(crate) mod symbol_search;
 mod search_provider;
 
 pub use cache::{WebCache, WebCacheEntry};
@@ -78,4 +79,5 @@ mod contract_tests {
 }
 
 pub use outline::execute as execute_outline;
+pub use symbol_search::execute as execute_symbol_search;
 pub(crate) use search_provider::execute as execute_semble;

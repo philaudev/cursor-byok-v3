@@ -220,7 +220,7 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
         "strreplace" | "editnotebook" | "write" => Tool::EditToolCall(pb::EditToolCall::default()),
         "readlints" => Tool::ReadLintsToolCall(pb::ReadLintsToolCall::default()),
         "callmcptool" | "semblesearch" | "semblefindrelated" | "inspectchanges"
-        | "gitarchaeology" | "outline" | "filestructure" => {
+        | "gitarchaeology" | "outline" | "filestructure" | "symbolsearch" => {
             Tool::McpToolCall(pb::McpToolCall::default())
         }
         "createplan" => Tool::CreatePlanToolCall(pb::CreatePlanToolCall::default()),
@@ -589,6 +589,7 @@ fn semble_tool_name(name: &str) -> Option<&'static str> {
         "inspectchanges" => Some("inspect_changes"),
         "gitarchaeology" => Some("git_archaeology"),
         "outline" | "filestructure" => Some("outline"),
+        "symbolsearch" => Some("symbol_search"),
         _ => None,
     }
 }

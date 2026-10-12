@@ -139,7 +139,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .as_path(),
     )
     .unwrap();
-    assert_eq!(assets.mode(Mode::Agent).tools.len(), 27);
+    assert_eq!(assets.mode(Mode::Agent).tools.len(), 28);
     assert_eq!(
         assets
             .mode(Mode::Agent)
@@ -149,6 +149,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
             .collect::<Vec<_>>(),
         vec![
             "Outline",
+            "SymbolSearch",
             "Shell",
             "Grep",
             "Delete",
@@ -193,6 +194,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         Mode::Ask,
         &[
             "Outline",
+            "SymbolSearch",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -221,6 +223,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         Mode::Plan,
         &[
             "Outline",
+            "SymbolSearch",
             "Shell",
             "Glob",
             "Ls",
@@ -251,6 +254,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         Mode::Debug,
         &[
             "Outline",
+            "SymbolSearch",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -279,6 +283,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         Mode::Multitask,
         &[
             "Outline",
+            "SymbolSearch",
             "AskQuestion",
             "CallMcpTool",
             "Delete",
@@ -309,6 +314,7 @@ fn every_prompt_mode_loads_the_captured_tool_set() {
         Mode::Subagent,
         &[
             "Outline",
+            "SymbolSearch",
             "Shell",
             "Grep",
             "Delete",
@@ -564,6 +570,7 @@ fn subagent_uses_the_subagent_prompt_and_only_the_captured_tool_delta() {
             .collect::<Vec<_>>(),
         vec![
             "Outline",
+            "SymbolSearch",
             "Shell",
             "Grep",
             "Delete",

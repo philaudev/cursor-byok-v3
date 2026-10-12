@@ -26,6 +26,7 @@ pub(crate) fn complete(
         "inspectchanges" => ("inspect_changes", "Inspect uncommitted git changes"),
         "gitarchaeology" => ("git_archaeology", "Investigate Git history"),
         "outline" | "filestructure" => ("outline", "Extract symbol structure and outline"),
+        "symbolsearch" => ("symbol_search", "Find structural symbol declarations"),
         _ => (call.name.as_str(), "Search the codebase"),
     };
     let description = call

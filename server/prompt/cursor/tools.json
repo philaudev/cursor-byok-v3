@@ -659,6 +659,44 @@
     {
       "type": "function",
       "function": {
+        "name": "SymbolSearch",
+        "description": "Finds code declarations structurally across one file or directory using in-process Tree-sitter parsing. Returns matching classes, interfaces, structs, enums, functions, methods, and types with file paths and line ranges. This performs syntax-based declaration search; it does not resolve language-server types, imports, or references.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "exact_match": {
+              "description": "Require the symbol name to equal query exactly. Defaults to false.",
+              "type": "boolean"
+            },
+            "kinds": {
+              "description": "Optional symbol-kind filters. Omit to search every supported kind.",
+              "items": {
+                "enum": ["class", "interface", "struct", "enum", "trait", "record", "function", "method", "constructor", "field", "property", "constant", "type", "module", "package"],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_results": {
+              "description": "Maximum matching declarations to return. Defaults to 50.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "description": "Absolute source file or directory to search.",
+              "type": "string"
+            },
+            "query": {
+              "description": "Symbol name or name fragment to find.",
+              "type": "string"
+            }
+          },
+          "required": ["path", "query"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "Read",
         "description": "Reads a file from the local filesystem. This tool can also read image files when called with the appropriate path. Formats supported: jpeg/jpg, png, gif, webp.",
         "parameters": {
