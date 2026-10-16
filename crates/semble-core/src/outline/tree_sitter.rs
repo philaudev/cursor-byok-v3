@@ -1060,7 +1060,7 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
                 visibility: None,
                 start_line,
                 end_line,
-                children: Vec::new(),
+                children: extract_ts_function_children(node, source),
             })
         }
         "lexical_declaration" | "variable_declaration" => extract_ts_function_binding(node, source),
@@ -1079,6 +1079,29 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
 }
 
 
+fn unwrap_ts_function_value<'a>(node: Node<'a>, source: &str) -> Option<Node<'a>> {
+    if matches!(node.kind(), "arrow_function" | "function_expression") {
+        return Some(node);
+    }
+    if node.kind() != "call_expression" {
+        return None;
+    }
+
+    let callee = node.child_by_field_name("function")?;
+    let callee = node_text(callee, source).trim();
+    let is_react_wrapper = matches!(callee, "React.memo" | "React.forwardRef" | "memo" | "forwardRef");
+    if !is_react_wrapper {
+        return None;
+    }
+
+    let arguments = node.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let function = arguments
+        .children(&mut cursor)
+        .find(|argument| matches!(argument.kind(), "arrow_function" | "function_expression"));
+    function
+}
+
 fn extract_ts_function_binding(node: Node<'_>, source: &str) -> Option<SymbolNode> {
     let mut cursor = node.walk();
     for declarator in node.children(&mut cursor) {
@@ -1087,16 +1110,14 @@ fn extract_ts_function_binding(node: Node<'_>, source: &str) -> Option<SymbolNod
         }
 
         let value = declarator.child_by_field_name("value")?;
-        if !matches!(value.kind(), "arrow_function" | "function_expression") {
-            continue;
-        }
+        let function = unwrap_ts_function_value(value, source)?;
 
         let name = declarator
             .child_by_field_name("name")
             .map(|name| node_text(name, source).trim().to_string())?;
-        let params = value
+        let params = function
             .child_by_field_name("parameters")
-            .or_else(|| value.child_by_field_name("parameter"))
+            .or_else(|| function.child_by_field_name("parameter"))
             .map(|params| node_text(params, source).trim().to_string())
             .map(|params| if params.starts_with('(') { params } else { format!("({params})") })
             .unwrap_or_else(|| "()".into());
@@ -1109,7 +1130,7 @@ fn extract_ts_function_binding(node: Node<'_>, source: &str) -> Option<SymbolNod
             visibility: None,
             start_line,
             end_line,
-            children: extract_ts_function_children(value, source),
+            children: extract_ts_function_children(function, source),
         });
     }
     None
@@ -1218,9 +1239,10 @@ fn extract_ts_local_bindings(node: Node<'_>, source: &str, children: &mut Vec<Sy
         }
 
         let name = node_text(name, source).trim().to_string();
-        let is_function = value.is_some_and(|value| matches!(value.kind(), "arrow_function" | "function_expression"));
-        let nested_children = if is_function {
-            value.map(|value| extract_ts_function_children(value, source)).unwrap_or_default()
+        let function_value = value.and_then(|value| unwrap_ts_function_value(value, source));
+        let is_function = function_value.is_some();
+        let nested_children = if let Some(function) = function_value {
+            extract_ts_function_children(function, source)
         } else {
             value
                 .filter(|value| value.kind() == "object")

@@ -130,3 +130,41 @@ const LegacyVoucher = function ({ readOnly }) {
     assert_eq!(legacy_voucher.children[0].name, "readOnly");
     assert_eq!(legacy_voucher.children[1].name, "visible");
 }
+
+#[test]
+fn extracts_memoized_and_declared_react_components() {
+    let javascript_source = r#"
+const TransactionRow = React.memo(({ row, selected }) => {
+    const isSelected = selected === row.id;
+    return isSelected;
+});
+
+export default function ReceiptPaymentListPage({ fixedType }) {
+    const navigate = useNavigate();
+    const [loading, setLoading] = useState(false);
+    const fetchTransactions = async () => {
+        const response = await getTransactions();
+        return response;
+    };
+}
+"#;
+
+    let outline = extract_outline(javascript_source, "ReceiptPaymentListPage.js", Some("javascript"));
+    assert_eq!(outline.symbols.len(), 2);
+
+    let transaction_row = &outline.symbols[0];
+    assert_eq!(transaction_row.name, "TransactionRow");
+    assert_eq!(transaction_row.children[0].name, "row");
+    assert_eq!(transaction_row.children[1].name, "selected");
+    assert_eq!(transaction_row.children[2].name, "isSelected");
+
+    let page = &outline.symbols[1];
+    assert_eq!(page.name, "ReceiptPaymentListPage");
+    assert_eq!(page.visibility.as_deref(), Some("export"));
+    assert_eq!(page.children[0].name, "fixedType");
+    assert_eq!(page.children[1].name, "navigate");
+    assert_eq!(page.children[2].name, "loading");
+    assert_eq!(page.children[3].name, "setLoading");
+    assert_eq!(page.children[4].name, "fetchTransactions");
+    assert_eq!(page.children[4].children[0].name, "response");
+}
