@@ -80,3 +80,53 @@ impl Config {
     assert_eq!(outline.symbols[0].children.len(), 2);
     assert_eq!(outline.symbols[1].name, "impl Config");
 }
+
+#[test]
+fn extracts_javascript_react_component_outline() {
+    let javascript_source = r#"
+export const PaymentVoucher = ({ propId, isModal, onClose }) => {
+    const [isLoading, setIsLoading] = useState(false);
+    const initialFormData = {
+        type: "payment",
+        partnerId: propId,
+    };
+    const handleReset = () => setIsLoading(false);
+    useEffect(() => {
+        const interval = setInterval(handleReset, 1000);
+        return () => clearInterval(interval);
+    }, []);
+};
+
+const LegacyVoucher = function ({ readOnly }) {
+    const visible = !readOnly;
+    return visible;
+};
+"#;
+
+    let outline = extract_outline(javascript_source, "PaymentVoucher.js", Some("javascript"));
+    assert_eq!(outline.symbols.len(), 2);
+
+    let payment_voucher = &outline.symbols[0];
+    assert_eq!(payment_voucher.name, "PaymentVoucher");
+    assert_eq!(payment_voucher.kind, SymbolKind::Function);
+    assert_eq!(payment_voucher.visibility.as_deref(), Some("export"));
+    assert_eq!(payment_voucher.detail.as_deref(), Some("({ propId, isModal, onClose })"));
+    assert_eq!(payment_voucher.children[0].name, "propId");
+    assert_eq!(payment_voucher.children[3].name, "isLoading");
+    assert_eq!(payment_voucher.children[3].detail.as_deref(), Some(" state from useState(false)"));
+    assert_eq!(payment_voucher.children[4].name, "setIsLoading");
+    assert_eq!(payment_voucher.children[4].detail.as_deref(), Some(" state setter"));
+    assert_eq!(payment_voucher.children[5].name, "initialFormData");
+    assert_eq!(payment_voucher.children[5].children[0].name, "type");
+    assert_eq!(payment_voucher.children[5].children[1].name, "partnerId");
+    assert_eq!(payment_voucher.children[6].name, "handleReset");
+    assert_eq!(payment_voucher.children[6].kind, SymbolKind::Function);
+    assert_eq!(payment_voucher.children[7].name, "useEffect");
+    assert_eq!(payment_voucher.children[7].children[0].name, "interval");
+
+    let legacy_voucher = &outline.symbols[1];
+    assert_eq!(legacy_voucher.name, "LegacyVoucher");
+    assert_eq!(legacy_voucher.kind, SymbolKind::Function);
+    assert_eq!(legacy_voucher.children[0].name, "readOnly");
+    assert_eq!(legacy_voucher.children[1].name, "visible");
+}

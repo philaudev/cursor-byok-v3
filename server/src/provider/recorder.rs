@@ -1,13 +1,16 @@
 //! Records provider requests, responses, usage, and timing.
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc,
     },
     time::Instant,
 };
 
-use tokio::sync::Mutex;
+use tokio::{
+    sync::{mpsc, Mutex},
+    task::JoinHandle,
+};
 
 use crate::{
     model::{NewLlmCall, Usage},
@@ -71,8 +74,8 @@ struct Inner {
     base_call: NewLlmCall,
     detailed: bool,
     attempt: Mutex<AttemptState>,
-    flush_gate: Mutex<()>,
-    next_generation: AtomicU64,
+    chunk_sender: Mutex<Option<mpsc::UnboundedSender<BufferedLlmChunk>>>,
+    chunk_writer: Mutex<Option<JoinHandle<()>>>,
     finished: AtomicBool,
 }
 
@@ -80,7 +83,6 @@ struct AttemptState {
     call_id: String,
     started: Instant,
     next_chunk: AtomicI64,
-    chunks: ChunkBuffer,
     first_text_recorded: AtomicBool,
     first_valid_response_recorded: AtomicBool,
 }
@@ -91,19 +93,10 @@ impl AttemptState {
             call_id,
             started: Instant::now(),
             next_chunk: AtomicI64::new(0),
-            chunks: ChunkBuffer::default(),
             first_text_recorded: AtomicBool::new(false),
             first_valid_response_recorded: AtomicBool::new(false),
         }
     }
-}
-
-#[derive(Default)]
-struct ChunkBuffer {
-    chunks: Vec<BufferedLlmChunk>,
-    bytes: usize,
-    first_chunk_at: Option<Instant>,
-    generation: u64,
 }
 
 const MAX_BUFFERED_CHUNKS: usize = 32;
@@ -114,14 +107,21 @@ impl CallRecorder {
     pub async fn start(store: Store, mut call: NewLlmCall) -> Result<Self> {
         call.detailed = store.detailed_logging().await?;
         store.start_llm_call(&call).await?;
+        let (chunk_sender, chunk_receiver) = mpsc::unbounded_channel();
+        let writer_store = store.clone();
+        let writer_call_id = call.call_id.clone();
+        let detailed = call.detailed;
+        let chunk_writer = tokio::spawn(async move {
+            write_chunks(writer_store, writer_call_id, detailed, chunk_receiver).await;
+        });
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
                 base_call: call.clone(),
                 detailed: call.detailed,
                 attempt: Mutex::new(AttemptState::new(call.call_id.clone())),
-                flush_gate: Mutex::new(()),
-                next_generation: AtomicU64::new(0),
+                chunk_sender: Mutex::new(Some(chunk_sender)),
+                chunk_writer: Mutex::new(Some(chunk_writer)),
                 finished: AtomicBool::new(false),
             }),
         })
@@ -169,67 +169,30 @@ impl CallRecorder {
     }
 
     pub async fn response_chunk(&self, data: &[u8]) -> Result<()> {
-        let _flush_gate = self.inner.flush_gate.lock().await;
         if self.is_finished() {
             return Ok(());
         }
-        let (call_id, to_flush, schedule_flush) = {
-            let mut attempt = self.inner.attempt.lock().await;
-            if self.is_finished() {
-                return Ok(());
-            }
+        let chunk = {
+            let attempt = self.inner.attempt.lock().await;
             let seq = attempt.next_chunk.fetch_add(1, Ordering::Relaxed);
-            let schedule_flush = if attempt.chunks.chunks.is_empty() {
-                attempt.chunks.generation = self
-                    .inner
-                    .next_generation
-                    .fetch_add(1, Ordering::Relaxed)
-                    .wrapping_add(1);
-                attempt.chunks.first_chunk_at = Some(Instant::now());
-                Some(attempt.chunks.generation)
-            } else {
-                None
-            };
-            attempt.chunks.bytes += data.len();
             let elapsed = elapsed_ms(attempt.started);
-            attempt.chunks.chunks.push(if self.inner.detailed {
+            if self.inner.detailed {
                 BufferedLlmChunk::new(seq, elapsed, data)
             } else {
                 BufferedLlmChunk::metrics(seq, elapsed, data.len())
-            });
-            let expired = attempt
-                .chunks
-                .first_chunk_at
-                .is_some_and(|started| started.elapsed() >= MAX_BUFFER_AGE);
-            let to_flush = if attempt.chunks.chunks.len() >= MAX_BUFFERED_CHUNKS
-                || attempt.chunks.bytes >= MAX_BUFFERED_BYTES
-                || expired
-            {
-                let chunks = std::mem::take(&mut attempt.chunks.chunks);
-                attempt.chunks.bytes = 0;
-                attempt.chunks.first_chunk_at = None;
-                Some(chunks)
-            } else {
-                None
-            };
-            (attempt.call_id.clone(), to_flush, schedule_flush)
+            }
         };
-
-        if let Some(chunks) = to_flush {
-            self.inner
-                .store
-                .record_llm_chunks(&call_id, &chunks, self.inner.detailed)
-                .await?;
+        let sender = self.inner.chunk_sender.lock().await;
+        if self.is_finished() {
+            return Ok(());
         }
-
-        if let Some(generation) = schedule_flush {
-            let recorder = self.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(MAX_BUFFER_AGE).await;
-                if let Err(error) = recorder.flush_generation(generation).await {
-                    tracing::warn!(call_id = recorder.call_id(), %error, "failed to flush LLM response chunks");
-                }
-            });
+        if let Some(sender) = sender.as_ref() {
+            if sender.send(chunk).is_err() {
+                tracing::warn!(
+                    call_id = self.call_id(),
+                    "LLM response chunk writer stopped before the recorder finished"
+                );
+            }
         }
         Ok(())
     }
@@ -304,10 +267,7 @@ impl CallRecorder {
             let attempt = self.inner.attempt.lock().await;
             attempt.call_id.clone()
         };
-        self.inner
-            .store
-            .record_llm_usage(&call_id, usage)
-            .await
+        self.inner.store.record_llm_usage(&call_id, usage).await
     }
 
     pub async fn completed(&self, reason: FinishReason) -> Result<()> {
@@ -336,75 +296,27 @@ impl CallRecorder {
         error_kind: Option<&str>,
         error_message: Option<&str>,
     ) -> Result<()> {
-        let _flush_gate = self.inner.flush_gate.lock().await;
         if self.inner.finished.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let (call_id, elapsed, remaining_chunks) = {
-            let mut attempt = self.inner.attempt.lock().await;
-            let remaining = if !attempt.chunks.chunks.is_empty() {
-                let chunks = std::mem::take(&mut attempt.chunks.chunks);
-                attempt.chunks.bytes = 0;
-                attempt.chunks.first_chunk_at = None;
-                Some(chunks)
-            } else {
-                None
-            };
-            (attempt.call_id.clone(), elapsed_ms(attempt.started), remaining)
+        let (call_id, elapsed) = {
+            let attempt = self.inner.attempt.lock().await;
+            (attempt.call_id.clone(), elapsed_ms(attempt.started))
         };
-
-        if let Some(chunks) = remaining_chunks {
-            if let Err(error) = self
-                .inner
-                .store
-                .record_llm_chunks(&call_id, &chunks, self.inner.detailed)
-                .await
-            {
-                self.inner.finished.store(false, Ordering::Release);
-                return Err(error);
+        self.inner.chunk_sender.lock().await.take();
+        if let Some(writer) = self.inner.chunk_writer.lock().await.take() {
+            if let Err(error) = writer.await {
+                tracing::warn!(call_id = %call_id, %error, "LLM response chunk writer stopped unexpectedly");
             }
         }
-
         if let Err(error) = self
             .inner
             .store
-            .finish_llm_call(
-                &call_id,
-                status,
-                reason,
-                elapsed,
-                error_kind,
-                error_message,
-            )
+            .finish_llm_call(&call_id, status, reason, elapsed, error_kind, error_message)
             .await
         {
             self.inner.finished.store(false, Ordering::Release);
             return Err(error);
-        }
-        Ok(())
-    }
-
-    async fn flush_generation(&self, generation: u64) -> Result<()> {
-        let _flush_gate = self.inner.flush_gate.lock().await;
-        if self.is_finished() {
-            return Ok(());
-        }
-        let (call_id, to_flush) = {
-            let mut attempt = self.inner.attempt.lock().await;
-            if attempt.chunks.generation != generation || attempt.chunks.chunks.is_empty() {
-                (attempt.call_id.clone(), None)
-            } else {
-                let chunks = std::mem::take(&mut attempt.chunks.chunks);
-                attempt.chunks.bytes = 0;
-                attempt.chunks.first_chunk_at = None;
-                (attempt.call_id.clone(), Some(chunks))
-            }
-        };
-        if let Some(chunks) = to_flush {
-            self.inner
-                .store
-                .record_llm_chunks(&call_id, &chunks, self.inner.detailed)
-                .await?;
         }
         Ok(())
     }
@@ -415,6 +327,31 @@ impl CallRecorder {
             .try_lock()
             .map(|attempt| attempt.call_id.clone())
             .unwrap_or_else(|_| self.inner.base_call.call_id.clone())
+    }
+}
+
+async fn write_chunks(
+    store: Store,
+    call_id: String,
+    detailed: bool,
+    mut receiver: mpsc::UnboundedReceiver<BufferedLlmChunk>,
+) {
+    while let Some(first) = receiver.recv().await {
+        let mut chunks = vec![first];
+        let mut bytes = chunks[0].byte_count;
+        let deadline = tokio::time::Instant::now() + MAX_BUFFER_AGE;
+        while chunks.len() < MAX_BUFFERED_CHUNKS && bytes < MAX_BUFFERED_BYTES {
+            match tokio::time::timeout_at(deadline, receiver.recv()).await {
+                Ok(Some(chunk)) => {
+                    bytes += chunk.byte_count;
+                    chunks.push(chunk);
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+        if let Err(error) = store.record_llm_chunks(&call_id, &chunks, detailed).await {
+            tracing::warn!(call_id = %call_id, %error, "failed to persist LLM response chunks");
+        }
     }
 }
 

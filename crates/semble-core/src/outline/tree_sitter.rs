@@ -1063,6 +1063,7 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
                 children: Vec::new(),
             })
         }
+        "lexical_declaration" | "variable_declaration" => extract_ts_function_binding(node, source),
         "export_statement" => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -1077,9 +1078,280 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Python symbol extraction
-// -----------------------------------------------------------------------------
+
+fn extract_ts_function_binding(node: Node<'_>, source: &str) -> Option<SymbolNode> {
+    let mut cursor = node.walk();
+    for declarator in node.children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+
+        let value = declarator.child_by_field_name("value")?;
+        if !matches!(value.kind(), "arrow_function" | "function_expression") {
+            continue;
+        }
+
+        let name = declarator
+            .child_by_field_name("name")
+            .map(|name| node_text(name, source).trim().to_string())?;
+        let params = value
+            .child_by_field_name("parameters")
+            .or_else(|| value.child_by_field_name("parameter"))
+            .map(|params| node_text(params, source).trim().to_string())
+            .map(|params| if params.starts_with('(') { params } else { format!("({params})") })
+            .unwrap_or_else(|| "()".into());
+        let (start_line, end_line) = line_range(declarator, source);
+
+        return Some(SymbolNode {
+            name,
+            kind: SymbolKind::Function,
+            detail: Some(params),
+            visibility: None,
+            start_line,
+            end_line,
+            children: extract_ts_function_children(value, source),
+        });
+    }
+    None
+}
+
+fn extract_ts_function_children(function: Node<'_>, source: &str) -> Vec<SymbolNode> {
+    let mut children = Vec::new();
+    extract_ts_parameters(function, source, &mut children);
+
+    let Some(body) = function.child_by_field_name("body") else {
+        return children;
+    };
+    if body.kind() != "statement_block" {
+        return children;
+    }
+
+    let mut cursor = body.walk();
+    for statement in body.children(&mut cursor) {
+        match statement.kind() {
+            "lexical_declaration" | "variable_declaration" => {
+                extract_ts_local_bindings(statement, source, &mut children);
+            }
+            "expression_statement" => {
+                if let Some(effect) = extract_ts_effect_callback(statement, source) {
+                    children.push(effect);
+                }
+            }
+            _ => {}
+        }
+    }
+    children
+}
+
+fn extract_ts_parameters(function: Node<'_>, source: &str, children: &mut Vec<SymbolNode>) {
+    let Some(params) = function
+        .child_by_field_name("parameters")
+        .or_else(|| function.child_by_field_name("parameter"))
+    else {
+        return;
+    };
+
+    let parameter_node = if params.kind() == "formal_parameters" {
+        let mut cursor = params.walk();
+        let parameter = params.children(&mut cursor).find(|child| child.is_named());
+        parameter
+    } else {
+        Some(params)
+    };
+    let Some(parameter_node) = parameter_node else {
+        return;
+    };
+
+    if parameter_node.kind() == "object_pattern" {
+        children.extend(extract_ts_object_pattern_properties(parameter_node, source));
+    }
+}
+
+fn extract_ts_local_bindings(node: Node<'_>, source: &str, children: &mut Vec<SymbolNode>) {
+    let mut cursor = node.walk();
+    for declarator in node.children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+
+        let Some(name) = declarator.child_by_field_name("name") else {
+            continue;
+        };
+        let value = declarator.child_by_field_name("value");
+        let (start_line, end_line) = line_range(declarator, source);
+
+        if name.kind() == "array_pattern" {
+            let state_detail = value
+                .filter(|value| is_ts_call_to(*value, source, "useState"))
+                .map(|value| format!(" state from {}", node_text(value, source).trim()));
+            let mut pattern_cursor = name.walk();
+            for (index, element) in name
+                .children(&mut pattern_cursor)
+                .filter(|element| element.is_named())
+                .enumerate()
+            {
+                children.push(SymbolNode {
+                    name: node_text(element, source).trim().to_string(),
+                    kind: SymbolKind::Property,
+                    detail: if index == 1 && state_detail.is_some() {
+                        Some(" state setter".into())
+                    } else {
+                        state_detail.clone()
+                    },
+                    visibility: None,
+                    start_line,
+                    end_line,
+                    children: Vec::new(),
+                });
+            }
+            continue;
+        }
+
+        if name.kind() == "object_pattern" {
+            let detail = value.map(|value| format!(" from {}", shorten_ts_detail(node_text(value, source))));
+            let mut properties = extract_ts_object_pattern_properties(name, source);
+            for property in &mut properties {
+                property.detail = detail.clone();
+            }
+            children.extend(properties);
+            continue;
+        }
+
+        let name = node_text(name, source).trim().to_string();
+        let is_function = value.is_some_and(|value| matches!(value.kind(), "arrow_function" | "function_expression"));
+        let nested_children = if is_function {
+            value.map(|value| extract_ts_function_children(value, source)).unwrap_or_default()
+        } else {
+            value
+                .filter(|value| value.kind() == "object")
+                .map(|value| extract_ts_object_properties(value, source))
+                .unwrap_or_default()
+        };
+        let detail = if is_function {
+            None
+        } else {
+            value.map(|value| format!(" from {}", shorten_ts_detail(node_text(value, source))))
+        };
+        children.push(SymbolNode {
+            name,
+            kind: if is_function { SymbolKind::Function } else { SymbolKind::Property },
+            detail,
+            visibility: None,
+            start_line,
+            end_line,
+            children: nested_children,
+        });
+    }
+}
+
+fn extract_ts_object_pattern_properties(pattern: Node<'_>, source: &str) -> Vec<SymbolNode> {
+    let mut properties = Vec::new();
+    let mut cursor = pattern.walk();
+    for entry in pattern.children(&mut cursor) {
+        if !entry.is_named() {
+            continue;
+        }
+        let (start_line, end_line) = line_range(entry, source);
+        let key = entry.child_by_field_name("key");
+        let value = entry.child_by_field_name("value");
+        let (name, detail) = match (key, value) {
+            (Some(key), Some(value)) => {
+                let key = node_text(key, source).trim();
+                let value = node_text(value, source).trim();
+                if key == value {
+                    (value.to_string(), None)
+                } else {
+                    (value.to_string(), Some(format!("alias of {key}")))
+                }
+            }
+            (_, Some(value)) => (node_text(value, source).trim().to_string(), None),
+            _ => (node_text(entry, source).trim().to_string(), None),
+        };
+        properties.push(SymbolNode {
+            name,
+            kind: SymbolKind::Property,
+            detail,
+            visibility: None,
+            start_line,
+            end_line,
+            children: Vec::new(),
+        });
+    }
+    properties
+}
+
+fn is_ts_call_to(node: Node<'_>, source: &str, function_name: &str) -> bool {
+    node.kind() == "call_expression"
+        && node
+            .child_by_field_name("function")
+            .is_some_and(|function| node_text(function, source).trim() == function_name)
+}
+
+fn shorten_ts_detail(text: &str) -> String {
+    const MAX_DETAIL_LENGTH: usize = 80;
+    let text = text.trim().replace(['\n', '\r'], " ");
+    if text.chars().count() <= MAX_DETAIL_LENGTH {
+        return text;
+    }
+    format!("{}...", text.chars().take(MAX_DETAIL_LENGTH).collect::<String>())
+}
+
+fn extract_ts_effect_callback(statement: Node<'_>, source: &str) -> Option<SymbolNode> {
+    let expression = statement
+        .child_by_field_name("expression")
+        .or_else(|| {
+            let mut cursor = statement.walk();
+            let expression = statement.children(&mut cursor).find(|child| child.is_named());
+            expression
+        })?;
+    if expression.kind() != "call_expression" {
+        return None;
+    }
+    let function = expression.child_by_field_name("function")?;
+    if node_text(function, source).trim() != "useEffect" {
+        return None;
+    }
+    let arguments = expression.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let callback = arguments
+        .children(&mut cursor)
+        .find(|argument| matches!(argument.kind(), "arrow_function" | "function_expression"))?;
+    let (start_line, end_line) = line_range(expression, source);
+    Some(SymbolNode {
+        name: "useEffect".into(),
+        kind: SymbolKind::Function,
+        detail: Some("callback".into()),
+        visibility: None,
+        start_line,
+        end_line,
+        children: extract_ts_function_children(callback, source),
+    })
+}
+
+fn extract_ts_object_properties(object: Node<'_>, source: &str) -> Vec<SymbolNode> {
+    let mut properties = Vec::new();
+    let mut cursor = object.walk();
+    for pair in object.children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let Some(key) = pair.child_by_field_name("key") else {
+            continue;
+        };
+        let (start_line, end_line) = line_range(pair, source);
+        properties.push(SymbolNode {
+            name: node_text(key, source).trim().to_string(),
+            kind: SymbolKind::Property,
+            detail: None,
+            visibility: None,
+            start_line,
+            end_line,
+            children: Vec::new(),
+        });
+    }
+    properties
+}
+
 
 fn extract_python_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
     let (start_line, end_line) = line_range(node, source);
