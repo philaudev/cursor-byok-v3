@@ -8,21 +8,49 @@ use super::types::{FileOutline, SymbolKind, SymbolNode};
 
 pub fn extract_outline(source: &str, file_path: &str, language: Option<&str>) -> FileOutline {
     let total_lines = source.lines().count().max(1);
+    let detected = language.or_else(|| crate::language::detect_language(std::path::Path::new(file_path)));
 
-    let symbols = match language {
-        Some(lang) => match parser_for(lang) {
-            Some(mut parser) => match parser.parse(source, None) {
-                Some(tree) => extract_from_root(tree.root_node(), source, lang),
+    let symbols = match detected {
+        Some(lang) => {
+            let primary_lang = if lang == "typescript"
+                && (file_path.ends_with(".tsx") || source.contains("</") || source.contains("/>"))
+            {
+                "tsx"
+            } else {
+                lang
+            };
+            let parsed = parser_for(primary_lang).and_then(|mut parser| parser.parse(source, None));
+            let (tree, actual_lang) = match parsed {
+                Some(tree) if primary_lang == "typescript" && tree.root_node().has_error() => {
+                    if let Some(mut tsx_parser) = parser_for("tsx") {
+                        if let Some(tsx_tree) = tsx_parser.parse(source, None) {
+                            if !tsx_tree.root_node().has_error() {
+                                (Some(tsx_tree), "tsx")
+                            } else {
+                                (Some(tree), primary_lang)
+                            }
+                        } else {
+                            (Some(tree), primary_lang)
+                        }
+                    } else {
+                        (Some(tree), primary_lang)
+                    }
+                }
+                Some(tree) => (Some(tree), primary_lang),
+                None => (None, primary_lang),
+            };
+
+            match tree {
+                Some(t) => extract_from_root(t.root_node(), source, actual_lang),
                 None => Vec::new(),
-            },
-            None => Vec::new(),
-        },
+            }
+        }
         None => Vec::new(),
     };
 
     FileOutline {
         file_path: file_path.to_owned(),
-        language: language.map(str::to_owned),
+        language: detected.map(str::to_owned),
         total_lines,
         symbols,
     }
@@ -43,7 +71,7 @@ fn extract_symbol(node: Node<'_>, source: &str, language: &str) -> Option<Symbol
     match language {
         "java" => extract_java_symbol(node, source),
         "rust" => extract_rust_symbol(node, source),
-        "typescript" | "javascript" => extract_ts_symbol(node, source),
+        "typescript" | "tsx" | "javascript" => extract_ts_symbol(node, source),
         "python" => extract_python_symbol(node, source),
         "go" => extract_go_symbol(node, source),
         "c" | "cpp" => extract_cpp_symbol(node, source),
@@ -1034,6 +1062,43 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
                 children: Vec::new(),
             })
         }
+        "enum_declaration" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source).to_string())
+                .unwrap_or_else(|| "AnonymousEnum".into());
+            let mut children = Vec::new();
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for member in body.children(&mut cursor) {
+                    if member.kind() == "enum_assignment" || member.kind() == "property_identifier" {
+                        let (m_start, m_end) = line_range(member, source);
+                        let m_name = member
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, source).to_string())
+                            .unwrap_or_else(|| node_text(member, source).trim().to_string());
+                        children.push(SymbolNode {
+                            name: m_name,
+                            kind: SymbolKind::Constant,
+                            detail: None,
+                            visibility: None,
+                            start_line: m_start,
+                            end_line: m_end,
+                            children: Vec::new(),
+                        });
+                    }
+                }
+            }
+            Some(SymbolNode {
+                name,
+                kind: SymbolKind::Enum,
+                detail: None,
+                visibility: None,
+                start_line,
+                end_line,
+                children,
+            })
+        }
         "function_declaration" => {
             let name = node
                 .child_by_field_name("name")
@@ -1079,27 +1144,35 @@ fn extract_ts_symbol(node: Node<'_>, source: &str) -> Option<SymbolNode> {
 }
 
 
-fn unwrap_ts_function_value<'a>(node: Node<'a>, source: &str) -> Option<Node<'a>> {
-    if matches!(node.kind(), "arrow_function" | "function_expression") {
-        return Some(node);
-    }
-    if node.kind() != "call_expression" {
-        return None;
-    }
+fn unwrap_ts_function_value<'a>(mut node: Node<'a>, source: &str) -> Option<Node<'a>> {
+    loop {
+        if matches!(node.kind(), "arrow_function" | "function_expression") {
+            return Some(node);
+        }
+        if node.kind() != "call_expression" {
+            return None;
+        }
 
-    let callee = node.child_by_field_name("function")?;
-    let callee = node_text(callee, source).trim();
-    let is_react_wrapper = matches!(callee, "React.memo" | "React.forwardRef" | "memo" | "forwardRef");
-    if !is_react_wrapper {
-        return None;
-    }
+        let callee = node.child_by_field_name("function")?;
+        let callee = node_text(callee, source).trim();
+        let is_react_wrapper = matches!(
+            callee,
+            "React.memo" | "React.forwardRef" | "memo" | "forwardRef" | "observer"
+        );
+        if !is_react_wrapper {
+            return None;
+        }
 
-    let arguments = node.child_by_field_name("arguments")?;
-    let mut cursor = arguments.walk();
-    let function = arguments
-        .children(&mut cursor)
-        .find(|argument| matches!(argument.kind(), "arrow_function" | "function_expression"));
-    function
+        let arguments = node.child_by_field_name("arguments")?;
+        let mut cursor = arguments.walk();
+        let next = arguments.children(&mut cursor).find(|argument| {
+            matches!(
+                argument.kind(),
+                "arrow_function" | "function_expression" | "call_expression"
+            )
+        })?;
+        node = next;
+    }
 }
 
 fn extract_ts_function_binding(node: Node<'_>, source: &str) -> Option<SymbolNode> {
@@ -1172,19 +1245,30 @@ fn extract_ts_parameters(function: Node<'_>, source: &str, children: &mut Vec<Sy
         return;
     };
 
-    let parameter_node = if params.kind() == "formal_parameters" {
+    if params.kind() == "formal_parameters" {
         let mut cursor = params.walk();
-        let parameter = params.children(&mut cursor).find(|child| child.is_named());
-        parameter
+        for child in params.children(&mut cursor) {
+            if !child.is_named() {
+                continue;
+            }
+            let target = if child.kind() == "required_parameter" || child.kind() == "optional_parameter" {
+                child.child_by_field_name("pattern").unwrap_or(child)
+            } else {
+                child
+            };
+            if target.kind() == "object_pattern" {
+                children.extend(extract_ts_object_pattern_properties(target, source));
+            }
+        }
     } else {
-        Some(params)
-    };
-    let Some(parameter_node) = parameter_node else {
-        return;
-    };
-
-    if parameter_node.kind() == "object_pattern" {
-        children.extend(extract_ts_object_pattern_properties(parameter_node, source));
+        let target = if params.kind() == "required_parameter" || params.kind() == "optional_parameter" {
+            params.child_by_field_name("pattern").unwrap_or(params)
+        } else {
+            params
+        };
+        if target.kind() == "object_pattern" {
+            children.extend(extract_ts_object_pattern_properties(target, source));
+        }
     }
 }
 
@@ -1283,7 +1367,7 @@ fn extract_ts_object_pattern_properties(pattern: Node<'_>, source: &str) -> Vec<
                 if key == value {
                     (value.to_string(), None)
                 } else {
-                    (value.to_string(), Some(format!("alias of {key}")))
+                    (value.to_string(), Some(format!(" alias of {key}")))
                 }
             }
             (_, Some(value)) => (node_text(value, source).trim().to_string(), None),

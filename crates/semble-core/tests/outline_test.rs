@@ -168,3 +168,73 @@ export default function ReceiptPaymentListPage({ fixedType }) {
     assert_eq!(page.children[4].name, "fetchTransactions");
     assert_eq!(page.children[4].children[0].name, "response");
 }
+
+#[test]
+fn extracts_tsx_component_and_enum_outline() {
+    let tsx_source = r#"
+export enum OpportunityStage {
+    Draft = "draft",
+    Active = "active",
+}
+
+type OpportunityInfoTabProps = {
+    opportunityId: string;
+};
+
+const NestedButton = React.memo(
+    React.forwardRef(({ label }, ref) => {
+        const handleClick = () => {};
+        return <button ref={ref} onClick={handleClick}>{label}</button>;
+    })
+);
+
+export default function OpportunityInfoTab({ opportunityId }: OpportunityInfoTabProps) {
+    const [previewOpen, setPreviewOpen] = useState(false);
+    const handleSelectUnit = (val: string) => {
+        return val;
+    };
+    return (
+        <div>
+            <NestedButton label="Save" />
+        </div>
+    );
+}
+"#;
+
+    // Test with language = None (auto-detected as "tsx" via path)
+    let outline_auto = extract_outline(tsx_source, "OpportunityInfoTab.tsx", None);
+    assert_eq!(outline_auto.language.as_deref(), Some("tsx"));
+    assert_eq!(outline_auto.symbols.len(), 4);
+
+    let stage_enum = &outline_auto.symbols[0];
+    assert_eq!(stage_enum.name, "OpportunityStage");
+    assert_eq!(stage_enum.kind, SymbolKind::Enum);
+    assert_eq!(stage_enum.children.len(), 2);
+    assert_eq!(stage_enum.children[0].name, "Draft");
+    assert_eq!(stage_enum.children[1].name, "Active");
+
+    let props_type = &outline_auto.symbols[1];
+    assert_eq!(props_type.name, "OpportunityInfoTabProps");
+    assert_eq!(props_type.kind, SymbolKind::TypeAlias);
+
+    let nested_button = &outline_auto.symbols[2];
+    assert_eq!(nested_button.name, "NestedButton");
+    assert_eq!(nested_button.kind, SymbolKind::Function);
+    assert_eq!(nested_button.children[0].name, "label");
+    assert_eq!(nested_button.children[1].name, "handleClick");
+
+    let comp = &outline_auto.symbols[3];
+    assert_eq!(comp.name, "OpportunityInfoTab");
+    assert_eq!(comp.kind, SymbolKind::Function);
+    assert_eq!(comp.visibility.as_deref(), Some("export"));
+    assert_eq!(comp.children[0].name, "opportunityId");
+    assert_eq!(comp.children[1].name, "previewOpen");
+    assert_eq!(comp.children[2].name, "setPreviewOpen");
+    assert_eq!(comp.children[3].name, "handleSelectUnit");
+
+    // Test with explicit language = "typescript" to verify automatic TSX fallback
+    let outline_ts_fallback = extract_outline(tsx_source, "OpportunityInfoTab.tsx", Some("typescript"));
+    assert_eq!(outline_ts_fallback.symbols.len(), 4);
+    assert_eq!(outline_ts_fallback.symbols[3].name, "OpportunityInfoTab");
+}
+

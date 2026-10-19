@@ -8,6 +8,7 @@ pub fn parser_for(language: &str) -> Option<Parser> {
         "python" => tree_sitter_python::LANGUAGE.into(),
         "javascript" => tree_sitter_javascript::LANGUAGE.into(),
         "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
         "java" => tree_sitter_java::LANGUAGE.into(),
         "c" => tree_sitter_c::LANGUAGE.into(),
